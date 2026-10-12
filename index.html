@@ -1,0 +1,1859 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b3b42">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="YUDSKY HUB">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3c5'/%3E%3Cstop offset='1' stop-color='%230b3b42'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cg stroke='white' stroke-width='5' stroke-linecap='round' stroke-linejoin='round' fill='none'%3E%3Cpath d='M20 15 32 32 44 15'/%3E%3Cpath d='M32 32V37L27.5 41 35.5 46.500 32 50.500V54'/%3E%3C/g%3E%3Ccircle cx='20' cy='15' r='4.500' fill='white'/%3E%3Ccircle cx='44' cy='15' r='4.500' fill='white'/%3E%3Ccircle cx='32' cy='32' r='5.500' fill='%23ffd166'/%3E%3C/svg%3E">
+<meta name="robots" content="noindex,nofollow">
+<title>YUDSKY HUB</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eaf0f1; --card:#ffffff; --ink:#12232b; --mute:#5b6e76; --line:#d3dde0;
+  --pri:#0b5c66; --pri-d:#0b3b42; --on-pri:#ffffff; --soft:#dcefef; --alert:#c92f47; --field:#f7fafa;
+  --hf:'Bricolage Grotesque','Segoe UI',system-ui,sans-serif;
+  --bf:'Public Sans','Segoe UI',system-ui,-apple-system,sans-serif;
+}
+:root:not([data-theme="light"]){}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1a1f; --card:#162830; --ink:#e4eef0; --mute:#93a9b0; --line:#2a424b;
+    --pri:#3fb6c4; --pri-d:#0a2a30; --on-pri:#06222a; --soft:#1b3a42; --alert:#ff7b8f; --field:#10212a;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1a1f; --card:#162830; --ink:#e4eef0; --mute:#93a9b0; --line:#2a424b;
+  --pri:#3fb6c4; --pri-d:#0a2a30; --on-pri:#06222a; --soft:#1b3a42; --alert:#ff7b8f; --field:#10212a;
+}
+*{box-sizing:border-box}
+html{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--bf);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+button,input,select,textarea{font:inherit;color:inherit}
+.top{background:var(--pri-d);color:#fff;padding:12px 20px;display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center}
+.brand{display:flex;align-items:center;gap:14px}
+.brand h1{font:700 21px/1.1 var(--hf);margin:0;letter-spacing:.2px}
+.brand small{display:block;color:#9fc7cc;font-size:12.5px;margin-top:3px}
+.logo{width:46px;height:46px;flex:none;filter:drop-shadow(0 2px 6px rgba(0,0,0,.35))}
+.brand h1 span{color:#6fd0da;font-weight:600}
+.brand h1{letter-spacing:1.5px}
+.rpt{display:flex;flex-wrap:wrap;gap:10px;margin-left:auto;align-items:end}
+.rpt label{display:flex;flex-direction:column;font-size:12px;color:#9fc7cc;gap:3px}
+.rpt input{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:7px;padding:6px 9px;color-scheme:dark}
+.rpt input.z{width:70px}
+nav.tabs{display:flex;gap:4px;padding:0 14px;background:var(--card);border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:0;z-index:5}
+nav.tabs button{background:none;border:0;border-bottom:3px solid transparent;padding:12px 14px;cursor:pointer;font-weight:600;color:var(--mute);white-space:nowrap}
+nav.tabs button[aria-selected="true"]{color:var(--pri);border-bottom-color:var(--pri)}
+nav.tabs button:focus-visible,.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.pi:focus-visible{outline:3px solid var(--pri);outline-offset:1px}
+.wrap{max-width:1320px;margin:0 auto;padding:16px}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:600}
+.btn:hover{border-color:var(--pri)}
+.btn.pri{background:var(--pri);color:var(--on-pri);border-color:var(--pri)}
+.btn.danger{color:var(--alert);border-color:var(--alert)}
+.btn.sm{padding:5px 10px;font-size:13px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.bar .sp{flex:1}
+.hint{color:var(--mute);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+.card h3{font:700 16px var(--hf);margin:0 0 12px}
+.lay{display:grid;grid-template-columns:310px 1fr;gap:16px;align-items:start}
+@media (max-width:900px){.lay{grid-template-columns:1fr}}
+.side{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;position:sticky;top:56px;max-height:calc(100vh - 70px);overflow:auto}
+@media (max-width:900px){.side{position:static;max-height:360px}}
+.side input[type=search]{width:100%;margin-bottom:8px}
+.grp{font:700 12.5px var(--hf);color:var(--pri);margin:12px 0 4px;padding-bottom:3px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.pi{display:flex;gap:9px;align-items:center;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:8px;padding:6px 8px;cursor:pointer}
+.pi:hover{background:var(--field)}
+.pi.on{background:var(--soft);border-color:var(--pri)}
+.pi .rm{font:700 13px var(--hf);min-width:56px;color:var(--ink)}
+.pi .nm{flex:1;font-size:13.5px;line-height:1.25}
+.tg{font-size:10.5px;font-weight:700;border-radius:4px;padding:1px 5px;background:var(--soft);color:var(--pri);margin-left:4px}
+.tg.r{background:#f9dfe4;color:#a3142c}
+.tg.g{background:#d6f0dd;color:#15803d}
+.tg.b{background:#dbe7fb;color:#1d4ed8}
+.tg.o{background:#fde6d6;color:#c2410c}
+.tg.u{background:#eddcfb;color:#7e22ce}
+.lbl{font-size:12.5px;font-weight:600;color:var(--mute);margin-bottom:6px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:30px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--soft);border-radius:999px;padding:4px 6px 4px 12px;font-size:13.5px;font-weight:600}
+.chip button{border:0;background:rgba(0,0,0,.14);border-radius:50%;width:22px;height:22px;cursor:pointer;line-height:1;color:inherit;font-size:14px}
+.addrow{display:flex;gap:8px}
+.addrow input{flex:1}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:600;color:var(--mute)}
+label.f.ck{flex-direction:row;align-items:center;gap:8px;color:var(--ink);font-size:14px}
+input[type=text],input[type=date],input[type=time],input[type=number],input[type=search],select,textarea{
+  background:var(--field);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;color:var(--ink)}
+textarea{resize:vertical;line-height:1.45;min-height:90px}
+.g{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+.g.w{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.empty{padding:40px 16px;text-align:center;color:var(--mute)}
+.tbl{width:100%;border-collapse:collapse}
+.tbl td,.tbl th{padding:4px 5px;text-align:left;font-size:13px;vertical-align:middle}
+.tbl th{color:var(--mute);font-weight:600}
+.tbl input[type=text],.tbl select,.tbl input[type=number]{padding:5px 7px}
+.scroll{overflow-x:auto}
+.pv{overflow-x:auto;padding:4px 0 20px}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);width:min(720px,94vw);padding:18px}
+dialog::backdrop{background:rgba(5,15,20,.55)}
+dialog h3{margin:0 0 4px;font:700 18px var(--hf)}
+dialog textarea{min-height:300px;font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--pri-d);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50;max-width:90vw}
+.toast.on{opacity:1}
+
+/* ===== Kertas (preview + cetak) ===== */
+.paper{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#111;padding:12mm;font:9pt/1.38 'Public Sans','Segoe UI',Arial,sans-serif;box-shadow:0 2px 14px rgba(0,0,0,.18);-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.paper *{box-sizing:border-box}
+.ph{border-bottom:2px solid #0b3b42;padding-bottom:5pt;margin-bottom:7pt}
+.ph-t{font:700 17pt/1.1 'Bricolage Grotesque','Public Sans',sans-serif;color:#0b3b42}
+.ph-s{font-size:10pt;font-weight:600;margin-top:2pt}
+.sum{border:1px solid #333;margin-bottom:8pt}
+.sum-h{background:#0b3b42;color:#fff;font-weight:700;padding:2.5pt 6pt;font-size:8.5pt}
+.sum-grid{display:grid;grid-template-columns:repeat(5,1fr)}
+.sum-grid div{padding:4pt 6pt;border-right:1px solid #bbb;font-size:8.3pt}
+.sum-grid div:last-child{border-right:0}
+.sum-grid b{display:block;font-size:13pt;font-family:'Bricolage Grotesque',sans-serif}
+.sum-docs{columns:3;column-gap:10pt;list-style:none;margin:0;padding:4pt 6pt;border-top:1px solid #333;font-size:8.3pt}
+.sum-docs li{break-inside:avoid;padding:.6pt 0}
+.mk{display:inline-block;width:7pt;height:7pt;border-radius:50%;background:#c92f47;margin-right:4pt}
+.mk.p{background:#e0a21b;border-radius:2px}
+.mk.o{background:#6b7c83;border-radius:2px}
+h2.dh{font:700 10.5pt/1.2 'Bricolage Grotesque','Public Sans',sans-serif;background:#e3f0f1;border-left:4px solid #0b5c66;margin:9pt 0 3pt;padding:3pt 6pt;break-after:avoid}
+.pt{margin:5pt 0 7pt;padding:0 0 5pt;border-bottom:1px dashed #999}
+.pt-id{font-weight:700;break-after:avoid}
+.pt-id .no{display:inline-block;min-width:13pt}
+.lab{font-weight:700;margin-top:3pt;break-after:avoid}
+ul.dash{list-style:none;margin:0;padding:0 0 0 2pt}
+ul.dash li{padding-left:8pt;text-indent:-8pt;margin:.3pt 0}
+ul.dash li::before{content:"– "}
+.sub-kjs{font-weight:700;margin:6pt 0 2pt;font-size:9pt}
+.kjline{margin:2pt 0;font-weight:700}
+.note0{color:#555;font-style:italic}
+.paper.land{width:297mm;min-height:210mm;padding:8mm;font-size:7pt;line-height:1.3;page:land}
+.paper.land .ph{display:flex;justify-content:space-between;align-items:baseline;padding-bottom:3pt;margin-bottom:4pt}
+.paper.land .ph-t{font-size:13pt}
+.paper.land .ph-s{font-size:9pt;margin:0}
+.paper.land .sum{margin-bottom:5pt}
+.paper.land .sum-h{font-size:7.5pt;padding:1.5pt 6pt}
+.paper.land .sum-grid div{padding:2pt 6pt;font-size:7pt}
+.paper.land .sum-grid b{display:inline;font-size:9pt;margin-right:4pt}
+.paper.land .sum-docs{columns:4;font-size:7pt;padding:3pt 6pt}
+.cols{columns:3;column-gap:9pt;column-rule:1px solid #666}
+.paper.land h2.dh{font-size:8pt;margin:5pt 0 2pt;padding:2pt 4pt}
+.paper.land .pt{margin:3pt 0 4pt;padding-bottom:3pt}
+.paper.land ul.dash li{margin:0}
+.paper.land .lab{margin-top:2pt}
+.paper.land .sub-kjs{font-size:7.5pt;margin:4pt 0 1pt}
+.paper.land{padding:7mm;font-size:var(--fs,6.5pt);line-height:1.2}
+.paper.land .sum-grid div,.paper.land .sum-docs{font-size:1em}
+.cols{columns:var(--cols,3);column-gap:8pt}
+.paper.land h2.dh{font-size:1.15em;margin:3pt 0 1.5pt;padding:1.5pt 4pt}
+.paper.land .pt{margin:2pt 0 2.5pt;padding-bottom:2pt}
+.paper.land .lab{margin-top:1pt}
+.paper.land .sub-kjs{font-size:1.05em;margin:3pt 0 1pt}
+.paper.land ul.dash li{line-height:1.18}
+.measure-l{position:absolute;left:-9999px;top:0;width:283mm;visibility:hidden}
+.measure-l .paper{padding:0!important;width:auto!important;min-height:0!important;box-shadow:none!important;margin:0!important}
+/* denah */
+.fl{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:5pt;margin-top:4pt}
+.col{display:flex;flex-direction:column;gap:4pt}
+.room{border:1px solid #333;padding:2.5pt 4pt;font-size:7.2pt;line-height:1.3;break-inside:avoid}
+.room .rh{display:flex;justify-content:space-between;gap:4pt;font-weight:700;border-bottom:1px dotted #999;margin-bottom:1.5pt;font-size:7.8pt}
+.room .rh em{font-style:normal;color:#0b5c66;font-weight:700}
+.bd{min-height:9pt;display:flex;gap:3pt}
+.bd i{font-style:normal;font-weight:700;min-width:8pt;color:#555}
+.ns{border:2px solid #0b3b42;text-align:center;padding:16pt 4pt;font-weight:700;font-size:8.5pt;background:#e3f0f1}
+.ns small{display:block;font-weight:600;font-size:7.5pt;margin-top:2pt}
+.sec{font:700 9.5pt 'Bricolage Grotesque','Public Sans',sans-serif;margin:9pt 0 3pt;border-bottom:1.5px solid #0b3b42;padding-bottom:1.5pt;break-after:avoid}
+.gr{display:grid;grid-template-columns:repeat(3,1fr);gap:5pt}
+.gb{border:1px solid #333;padding:2.5pt 4pt;font-size:7.4pt;line-height:1.3;break-inside:avoid}
+.gb h4{margin:0 0 2pt;font:700 8.6pt 'Public Sans',sans-serif;border-bottom:1px solid #999;padding-bottom:1pt}
+.gb ol{margin:0;padding-left:11pt}
+.gb ol li{margin:.8pt 0}
+.gb .kj{font-weight:700;margin-top:3pt}
+.gr2{display:grid;grid-template-columns:1fr 1fr;gap:5pt}
+.free{border:1px solid #333;padding:3pt 5pt;min-height:34pt;white-space:pre-line;font-size:8pt;break-inside:avoid}
+.free b{display:block;margin-bottom:1.5pt}
+.st-h1{color:#15803d;font-weight:600}
+.st-baru{color:#1d4ed8;font-weight:600}
+.st-jaga{color:#c2410c;font-weight:600}
+.st-dinas{color:#7e22ce;font-weight:600}
+.paper+.paper{margin-top:14px}
+.measure{position:absolute;left:-9999px;top:0;width:186mm;visibility:hidden}
+.measure .paper{padding:0!important;width:auto!important;min-height:0!important;box-shadow:none!important;margin:0!important}
+.prbtns{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+.prbtns .btn{background:#fff;color:#0b3b42;border-color:#fff}
+.prbtns .btn.pri{background:#6fd0da;color:#06222a;border-color:#6fd0da}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{border:1px solid var(--line);background:var(--field);border-radius:999px;padding:6px 13px;cursor:pointer;font-weight:600;font-size:13px;color:var(--ink)}
+.seg button[aria-pressed="true"]{color:#fff;border-color:transparent}
+.seg button[data-s=""][aria-pressed="true"]{background:#5b6e76}
+.seg button[data-s="baru"][aria-pressed="true"]{background:#1d4ed8}
+.seg button[data-s="h1"][aria-pressed="true"]{background:#15803d}
+.seg button[data-s="jaga"][aria-pressed="true"]{background:#c2410c}
+.seg button[data-s="dinas"][aria-pressed="true"]{background:#7e22ce}
+.paper.den{font-size:6.9pt;padding:10mm}
+.paper.den .ph{padding-bottom:3pt;margin-bottom:4pt}
+.paper.den .ph-t{font-size:11pt}
+.leg{font-size:7pt;margin-top:2pt}
+.top2{display:grid;grid-template-columns:1fr 1fr;gap:4pt;margin-bottom:4pt}
+.plan{display:grid;grid-template-columns:1fr 21% 1fr;gap:4pt;align-items:start}
+.cor{border-left:1px dashed #888;border-right:1px dashed #888;padding:0 2pt;align-self:stretch}
+.cor .ns{padding:10pt 2pt;font-size:7.5pt}
+.cor{display:flex;flex-direction:column}
+.cor .back{margin-top:auto;display:flex;flex-direction:column}
+.gapc{height:30pt;width:0;border-left:1px dashed #888;margin:0 auto}
+.rm2{border:1px solid #222;padding:2pt 3pt;font-size:6.9pt;line-height:1.28;margin-bottom:3pt;break-inside:avoid}
+.rm2 .rh{display:flex;justify-content:space-between;gap:4pt;font-weight:700;border-bottom:1px dotted #999;margin-bottom:1pt;font-size:7.4pt}
+.rm2 .rh em{font-style:normal;color:#0b5c66}
+.rm2 .bd{min-height:8pt}
+.top2 .rm2{margin-bottom:0}
+.paper.den .gb{font-size:6.1pt;line-height:1.22;padding:1.5pt 3pt}
+.paper.den .gb h4{font-size:6.8pt;margin-bottom:1pt;padding-bottom:.5pt}
+.paper.den .gb ol{padding-left:9pt}
+.paper.den .gb ol li{margin:.3pt 0}
+.paper.den .gr{grid-template-columns:repeat(4,1fr);gap:3pt}
+.gb.emp{grid-column:1/-1}
+.plink{color:inherit;text-decoration:none}
+.app .plink{cursor:pointer}
+.app .plink:hover{background:#fff3b0}
+.pt{transition:background .4s}
+.pt.flash{background:#fff3b0}
+.stat{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.sc{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px 3px 8px;font-size:12px;font-weight:600;background:rgba(255,255,255,.12);color:#e6f4f5;white-space:nowrap}
+.sc::before{content:"";width:8px;height:8px;border-radius:50%;background:#9fb3b8}
+.sc-ok::before{background:#4ade80}
+.sc-wait::before{background:#fbbf24;animation:scp 1s infinite}
+.sc-warn::before{background:#fb923c}
+.sc-err::before{background:#f87171}
+#roleChip::before{display:none}
+@keyframes scp{50%{opacity:.3}}
+.ro .fab,.ro #addP,.ro nav.tabs button[data-t="impor"],.ro #t-impor,.ro #dupP,.ro #delP{display:none!important}
+.ro #t-set .card:not(#syncCard){pointer-events:none;opacity:.6}
+@media screen and (max-width:760px){.stat{width:100%}.sc{font-size:11px}}
+.mbar,.mOnly,.fab{display:none}
+.fab{position:fixed;right:16px;bottom:calc(80px + env(safe-area-inset-bottom,0px));width:58px;height:58px;border-radius:50%;background:var(--pri);color:var(--on-pri);border:0;font-size:32px;line-height:1;box-shadow:0 4px 14px rgba(0,0,0,.3);z-index:19;align-items:center;justify-content:center;cursor:pointer}
+@media screen and (max-width:760px){
+  body{padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+  body.m-editing{padding-bottom:16px}
+  .top{padding:10px 14px;gap:8px}
+  .brand h1{font-size:18px}
+  .logo{width:36px;height:36px}
+  .brand{gap:10px}
+  .brand small,.prbtns,.rpt label:first-child{display:none}
+  .rpt{width:100%;margin-left:0;display:grid;grid-template-columns:1fr 1fr 66px;gap:8px}
+  .rpt input,.rpt input.z{width:100%;font-size:16px;min-height:42px}
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:20;padding:0 0 env(safe-area-inset-bottom,0px);gap:0;justify-content:space-around;border-top:1px solid var(--line);border-bottom:0;box-shadow:0 -2px 10px rgba(0,0,0,.14);overflow:visible}
+  nav.tabs button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px 7px;font-size:10.5px;border-bottom:0;border-top:3px solid transparent;white-space:normal;text-align:center;min-width:0}
+  nav.tabs button::before{content:attr(data-i);font-size:19px;line-height:1}
+  nav.tabs button[aria-selected="true"]{border-top-color:var(--pri)}
+  body.m-editing nav.tabs{display:none}
+  .wrap{padding:10px}
+  input[type=text],input[type=date],input[type=time],input[type=number],input[type=search],select,textarea{font-size:16px;min-height:44px}
+  textarea{min-height:110px}
+  .btn{min-height:44px;font-size:15px}
+  .btn.sm{min-height:38px}
+  .card{padding:14px;border-radius:14px}
+  .lay{grid-template-columns:1fr}
+  .side{position:static;max-height:none;overflow:visible;border:0;background:transparent;padding:0}
+  .side .btn.pri{display:none}
+  .pi{padding:12px 10px;background:var(--card);border:1px solid var(--line);margin-bottom:6px}
+  .pi .rm{min-width:64px;font-size:15px}
+  .pi .nm{font-size:15px}
+  body:not(.m-editing) #editor{display:none}
+  body.m-editing .side{display:none}
+  .mbar{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:15;background:var(--bg);padding:8px 0;margin:-4px 0 6px}
+  .mOnly{display:block}
+  .g{grid-template-columns:1fr 1fr;gap:10px}
+  .g.w{grid-template-columns:1fr}
+  .bar .btn{flex:1 1 auto}
+  body[data-tab="pasien"]:not(.m-editing) .fab{display:flex}
+  .toast{bottom:calc(90px + env(safe-area-inset-bottom,0px))}
+  dialog{width:96vw;padding:14px}
+}
+
+#gate{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:20px}
+#gate .gbox{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px 24px;max-width:420px;width:100%;text-align:center;box-shadow:0 6px 30px rgba(0,0,0,.12)}
+#gate h2{font:700 24px var(--hf);margin:12px 0 4px;letter-spacing:1.5px}
+#gate p{color:var(--mute);margin:10px 0 18px}
+#gate .btn{width:100%;margin-top:8px;min-height:46px}
+.upd{position:fixed;top:0;left:0;right:0;z-index:60;background:#ffd166;color:#3a2a00;padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;font-weight:600;box-shadow:0 2px 10px rgba(0,0,0,.2)}
+.upd .btn{background:#3a2a00;color:#fff;border-color:#3a2a00}
+#outBtn{border:0;cursor:pointer}
+#outBtn::before{display:none}
+#gate[hidden],.upd[hidden]{display:none}
+.acc{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:6px}
+#printHost{display:none}
+@media print{
+  html,body{background:#fff!important}
+  .app,dialog,.toast{display:none!important}
+  #printHost{display:block}
+  @page{size:A4;margin:12mm}
+  @page land{size:A4 landscape;margin:7mm}
+  .paper{padding:0!important;width:auto!important;min-height:0!important;box-shadow:none!important;margin:0!important}
+  .paper+.paper{break-before:page}
+}
+</style>
+</head>
+<body>
+<div id="gate" hidden><div class="gbox">
+  <svg viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Logo YUDSKY HUB"><defs><linearGradient id="lgG2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3c5"/><stop offset="1" stop-color="#0b5c66"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="url(#lgG2)"/><g stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M20 15 32 32 44 15"/><path d="M32 32V37L27.5 41 35.5 46.5 32 50.5V54"/></g><circle cx="20" cy="15" r="4.5" fill="#fff"/><circle cx="44" cy="15" r="4.5" fill="#fff"/><circle cx="32" cy="32" r="5.5" fill="#ffd166"/></svg>
+  <h2>YUDSKY HUB</h2>
+  <p id="gMsg">Memuat…</p>
+  <button class="btn pri" id="gLogin" hidden>Masuk dengan Google</button>
+  <button class="btn" id="gOut" hidden>Keluar / ganti akun</button>
+</div></div>
+<div class="upd" id="upd" hidden>Versi baru YUDSKY HUB tersedia. <button class="btn sm" id="updBtn">Muat ulang sekarang</button></div>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 64 64" role="img" aria-label="Logo YUDSKY HUB"><defs><linearGradient id="lgY" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3c5"/><stop offset="1" stop-color="#0b5c66"/></linearGradient><radialGradient id="lgG" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#ffd166" stop-opacity=".55"/><stop offset="1" stop-color="#ffd166" stop-opacity="0"/></radialGradient></defs><rect width="64" height="64" rx="16" fill="url(#lgY)"/><rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#ffffff" stroke-opacity=".25"/><circle cx="32" cy="32" r="18" fill="url(#lgG)"/><g stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M20 15 32 32 44 15"/><path d="M32 32V37L27.5 41 35.5 46.5 32 50.5V54"/></g><circle cx="20" cy="15" r="4.5" fill="#fff"/><circle cx="44" cy="15" r="4.5" fill="#fff"/><circle cx="32" cy="32" r="5.5" fill="#ffd166"/></svg>
+      <div><h1>YUDSKY <span>HUB</span></h1><small>Operan pasien PJT Lantai 4</small></div>
+    </div>
+    <div class="stat"><span id="syncChip" class="sc sc-off"></span><span id="roleChip" class="sc" style="display:none"></span><button id="outBtn" class="sc" style="display:none" title="Keluar dari akun">Keluar</button></div>
+    <div class="rpt">
+      <label>Unit<input type="text" id="unit" style="width:130px" value="PJT Lantai 4"></label>
+      <label>Tanggal<input type="date" id="tgl"></label>
+      <label>Jam<input type="time" id="jam"></label>
+      <label>Zona<input type="text" id="zona" class="z"></label>
+    </div>
+    <div class="prbtns">
+      <button class="btn pri" id="hPrDenah">Cetak denah</button>
+      <button class="btn pri" id="hPrList">Cetak list</button>
+      <button class="btn" id="hPrBoth">Cetak keduanya</button>
+    </div>
+  </header>
+  <nav class="tabs" role="tablist" id="tabs">
+    <button role="tab" data-t="pasien" aria-selected="true">Pasien</button>
+    <button role="tab" data-t="denah" aria-selected="false">Denah</button>
+    <button role="tab" data-t="list" aria-selected="false">List pasien</button>
+    <button role="tab" data-t="impor" aria-selected="false">Impor</button>
+    <button role="tab" data-t="set" aria-selected="false">Pengaturan</button>
+  </nav>
+
+  <main class="wrap">
+    <!-- PASIEN -->
+    <section id="t-pasien">
+      <div class="lay">
+        <aside class="side">
+          <button class="btn pri" id="addP" style="width:100%;margin-bottom:8px">+ Tambah pasien</button>
+          <input type="search" id="q" placeholder="Cari nama, kamar, RM">
+          <div id="plist"></div>
+        </aside>
+        <div id="editor"></div>
+      </div>
+    </section>
+
+    <!-- DENAH -->
+    <section id="t-denah" hidden>
+      <div class="bar">
+        <button class="btn pri" id="prDenah">Cetak / simpan PDF denah</button>
+        <span class="hint" id="pgInfo" style="font-weight:700"></span>
+        <span class="hint">Di jendela cetak pilih tujuan “Simpan sebagai PDF”. Jika tidak terbuka, tekan Ctrl+P. Klik baris pasien di denah untuk membuka datanya di list. Agar link aktif di PDF, pakai Cetak keduanya.</span>
+      </div>
+      <div class="card">
+        <h3>Catatan harian di denah</h3>
+        <div class="g w">
+          <label class="f">Operkan ke Tmn Lain<textarea id="operkan" style="min-height:60px"></textarea></label>
+          <label class="f">Ganti Chief<textarea id="chief" style="min-height:60px"></textarea></label>
+        </div>
+      </div>
+      <div class="pv"><div id="pvDenah"></div></div>
+    </section>
+
+    <!-- LIST -->
+    <section id="t-list" hidden>
+      <div class="bar">
+        <button class="btn pri" id="prList">Cetak / simpan PDF list pasien</button>
+        <button class="btn" id="waBtn">Salin teks WhatsApp</button>
+        <span class="hint">Teks WhatsApp memakai format yang sama dengan kiriman biasa (tanda * untuk tebal).</span>
+      </div>
+      <div class="card" style="padding:10px 14px">
+        <div class="bar" style="margin:0;align-items:end">
+          <label class="f" style="min-width:200px">Ukuran huruf<select id="lFs"><option value="auto">Otomatis (sesuai maks. lembar)</option><option value="7">7 pt</option><option value="6.5">6,5 pt</option><option value="6">6 pt</option><option value="5.5">5,5 pt</option></select></label>
+          <label class="f">Maks. lembar<select id="lPg"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+          <label class="f">Kolom<select id="lCols"><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+          <span class="hint" id="lInfo" style="font-weight:700;padding-bottom:8px"></span>
+        </div>
+        <p class="hint" style="margin:8px 0 0">Saat mencetak, matikan opsi Headers and footers di jendela cetak agar halaman bersih dan lebih muat.</p>
+      </div>
+      <div class="pv"><div id="pvList"></div></div>
+    </section>
+
+    <!-- IMPOR -->
+    <section id="t-impor" hidden>
+      <div class="card">
+        <h3>SOAP WhatsApp ke list</h3>
+        <p class="hint" style="margin-top:-6px">Tempel SOAP dari WhatsApp. Yang diambil hanya identitas, assessment (diagnosis), terapi, dan plan. Hasilnya bisa diperiksa dan diubah sebelum masuk ke list.</p>
+        <textarea id="soapIn" style="min-height:200px" placeholder="Tempel SOAP WhatsApp di sini"></textarea>
+        <div id="soapOut" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h3>Berkas PDF operan (list dan denah)</h3>
+        <p class="hint" style="margin-top:-6px">Untuk operan yang masih memakai Google Form. Unggah PDF list pasien dan atau denah, periksa hasil bacaannya, lalu terapkan.</p>
+        <input type="file" id="pdfIn" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
+        <details style="margin-top:10px"><summary class="hint" style="cursor:pointer">Teks hasil baca atau tempel manual</summary>
+          <textarea id="pdfTxt" style="min-height:140px;margin-top:8px" placeholder="Jika PDF tidak terbaca, salin teks dari PDF lalu tempel di sini"></textarea>
+          <button class="btn sm" id="pdfParse" style="margin-top:8px">Baca teks</button>
+        </details>
+        <div id="pdfOut" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h3>Cocokkan kamar dan identitas dengan lembar perawat</h3>
+        <p class="hint" style="margin-top:-6px">Untuk antisipasi pasien pindah kamar. Unggah Laporan Dinas (timbang terima) perawat dalam bentuk Word (.docx) atau PDF. Aplikasi mencocokkan kamar, bed, nama, nomor RM, dan tanggal lahir dengan list, lalu menandai yang berbeda. Hanya kamar, bed, RM, dan tanggal lahir yang bisa disamakan. Diagnosis, terapi, plan, dan data lain tidak disentuh, dan pasien tidak ditambah atau dihapus. Berkas denah juga masih bisa dipakai di sini.</p>
+        <input type="file" id="mvIn" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+        <details style="margin-top:10px"><summary class="hint" style="cursor:pointer">Teks hasil baca atau tempel manual</summary>
+          <textarea id="mvTxt" style="min-height:120px;margin-top:8px" placeholder="Jika berkas tidak terbaca, salin teksnya lalu tempel di sini"></textarea>
+          <button class="btn sm" id="mvParse" style="margin-top:8px">Baca teks</button>
+        </details>
+        <div id="mvOut" style="margin-top:12px"></div>
+      </div>
+    </section>
+
+    <!-- PENGATURAN -->
+    <section id="t-set" hidden>
+      <div class="card" id="syncCard">
+        <h3>Akun, akses &amp; sinkronisasi</h3>
+        <div id="syncInfo"></div>
+        <div id="accBox"></div>
+        <div class="bar" style="margin:10px 0 0"><button class="btn" id="syncNow">Sinkronkan sekarang</button><button class="btn" id="outBtn2" hidden>Keluar dari akun ini</button><span class="sp"></span><span class="hint" id="verTxt"></span></div>
+      </div>
+      <div class="card">
+        <h3>Dokter</h3>
+        <p class="hint" style="margin-top:-6px">Kode dipakai di baris identitas pasien (mis. 417 Bed 4/<b>KS</b>/Ny. ...). “Tampil di list” mengatur apakah dokter punya bagian sendiri di list PDF.</p>
+        <div class="scroll"><table class="tbl" id="docTbl"></table></div>
+        <button class="btn sm" id="addDoc" style="margin-top:8px">+ Tambah dokter</button>
+      </div>
+      <div class="g w">
+        <div class="card">
+          <h3>Perawat penanggung jawab</h3>
+          <label class="f">Satu nama per baris<textarea id="nurses" style="min-height:140px"></textarea></label>
+        </div>
+        <div class="card">
+          <h3>Chief dan pemegang FU</h3>
+          <p class="hint" style="margin-top:-6px">Tambah atau hapus nama. Nama jadi pilihan di formulir pasien dan tampil di belakang baris pasien.</p>
+          <div class="lbl">Chief</div><div class="chips" id="chiefChips"></div>
+          <div class="addrow"><input type="text" id="chiefNew" placeholder="mis. dr. Arya"><button class="btn sm" id="chiefAdd">Tambah</button></div>
+          <div class="lbl" style="margin-top:16px">Pemegang FU</div><div class="chips" id="fuChips"></div>
+          <div class="addrow"><input type="text" id="fuNew" placeholder="Nama pemegang FU"><button class="btn sm" id="fuAdd">Tambah</button></div>
+        </div>
+        <div class="card">
+          <h3>Jumlah di ringkasan</h3>
+          <p class="hint" style="margin-top:-6px">Kosongkan untuk dihitung otomatis dari data pasien. Isi angka jika ingin menimpa.</p>
+          <div class="g" id="ovr"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Ruangan</h3>
+        <div class="scroll"><table class="tbl" id="roomTbl"></table></div>
+      </div>
+      <div class="card">
+        <h3>Data</h3>
+        <div class="bar" style="margin:0">
+          <button class="btn" id="bkBtn">Cadangkan / pulihkan data</button>
+          <button class="btn" id="smpBtn">Muat data contoh</button>
+          <button class="btn danger" id="clrBtn">Kosongkan semua pasien</button>
+          <button class="btn" id="thBtn">Ganti tema</button>
+        </div>
+        <p class="hint">Data tersimpan di server (jika sudah masuk) dan juga di perangkat ini. “Cadangkan” menyalin seluruh data sebagai teks. “Muat data contoh” dan “Kosongkan semua pasien” ikut mengubah data di server untuk semua pengguna.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<button class="fab" id="fab" aria-label="Tambah pasien">+</button>
+<div id="printHost"></div>
+<dialog id="dlg">
+  <h3 id="dT"></h3>
+  <p class="hint" id="dH" style="margin:0 0 10px"></p>
+  <textarea id="dA" spellcheck="false"></textarea>
+  <div class="bar" style="margin:12px 0 0">
+    <button class="btn pri" id="dCopy">Salin</button>
+    <button class="btn" id="dLoad" hidden>Muat dari teks ini</button>
+    <span class="sp"></span>
+    <button class="btn" id="dClose">Tutup</button>
+  </div>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+<script src="config.js"></script>
+
+<script>
+(function(){
+'use strict';
+var APP_VERSION='2026.10.12-1';
+var $=function(s,r){return (r||document).querySelector(s)};
+var $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
+var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
+var uid=function(){return 'x'+Math.random().toString(36).slice(2,9)};
+var HARI=['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
+var BULAN=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+var KEY='pjt4_app_v1';
+var S=null, selId=null, curTab='pasien';
+
+/* ---------- data awal ---------- */
+function defaultRooms(){
+  var beds={414:1,415:2,416:2,417:4,418:4,419:3,420:6,421:6};
+  var lab={410:'VIP',411:'SUPER VIP',412:'Pria - Kelas I'};
+  var a=[];for(var n=401;n<=421;n++)a.push({no:String(n),beds:beds[n]||1,label:lab[n]||''});return a;
+}
+function D(id,kode,nama,jenis,inList,tampilKode){return {id:id,kode:kode,nama:nama,jenis:jenis,inList:inList!==false,tampilKode:tampilKode!==false}}
+var cSeq=0;function nextC(){return Date.now()*1000+(cSeq++%1000)}
+function blankP(o){return Object.assign({id:uid(),_c:nextC(),room:'',bed:'',doctorId:'',kodeLuar:'',gelar:'',nama:'',dob:'',rm:'',btkv:false,tag:'',kategori:'kardio',status:'',chiefPj:'',juniorPj:'',kjsTo:'',kjsLabel:'',perawat:'',diagnosis:'',terapi:'',premed:'',selesai:'',pulang:'',plan:''},o||{})}
+var L=function(){return Array.prototype.slice.call(arguments).join('\n')};
+
+function sample(){
+  var docs=[D('ks','KS','dr. KS','kardio'),D('pt','PT','dr. PT','kardio'),D('aha','AHA','dr. AHA','kardio'),D('afg','AFG','dr. AFG','kardio'),D('mz','MZ','Prof. MZ','kardio'),D('ahn','AHN','dr. AHN','kardio'),D('arb','ARB','dr. ARB','kardio'),D('zd','ZD','dr. ZD','kardio'),D('afm','AFM','dr. AFM','kardio'),D('im','IM','Prof. IM','kardio'),D('pk','PK','Prof PK','kardio'),D('yp','YP','dr. YP','pediatri',true,false),D('aau','AAU','dr. AAU','pediatri',true,false),D('np','NP','dr. NP','lain',false,false)];
+  docs[4].alias='Muzakkir';docs[9].alias='Idar';
+  var P=blankP, pts=[];
+  pts.push(P({room:'417',bed:'4',doctorId:'ks',gelar:'Ny.',nama:'Siti Aminah',dob:'1967-01-24',rm:'1288389',perawat:'Avi',
+    diagnosis:L('Congestive Heart Failure NYHA III stage D (Heart Failure Reduced Ejection Fraction)','Multivalvular Heart Disease (Severe Aortic Stenosis ec RHD, Moderate to Severe Mitral Regurgitation, Moderate Tricuspid Regurgitation dengan High Probability of PH)','DM tipe 2 non obese','Bilateral Pleural Effusion on WSD','Hyperthyroidism','Hyponatremia (121 -> 123) Hipoosmolal (275 -> 274)','Syndrome Dyspepsia'),
+    terapi:L('Koreksi Hyponatremia : NaCl 3% 433 ml habis dalam 24 jam','Furosemide 40mg/8jam/iv (tunda)','Spironolactone 25mg/24jam/oral (tunda)','Propanolol 10mg/8jam/oral','Atorvastatin 20mg/24jam/oral','Ranitidine 50 mg/12 jam/intravena','Sucralfat syr 10cc/8jam/oral'),
+    selesai:L('Bolus Dextrose 40% 1 kolf (05-10-2026)','Bolus Dextrose 40% 1 kolf (04-10-2026)','Norephinephrine 0.05mcg/KgBB/min/SP'),
+    plan:L('Monitoring tanda vital, urine output dan hemodinamik','Cek elektrolit post koreksi')}));
+  pts.push(P({room:'406',doctorId:'ks',gelar:'Tn.',nama:'Budi Santoso',dob:'1959-04-05',rm:'1772246',perawat:'Imelda',
+    diagnosis:L('Chronic Coronary Syndrome CS I','Severe Evidence of CAD (Calsium score 600)','Coronary Artery Disease + Left Main Disease post PCI at LM dengan DK-Culotte two-stent strategy (DES LM–LAD dan DES LM–LCx) + Post PCI 1 DES di mid RCA','Mild Aortic Stenosis'),
+    terapi:L('IVFD NaCl 0.9% 500 cc/24 jam/IV -> Aff infus','Aspilet 80 mg/24 jam/oral','Ticagrelor 90 mg/12 jam/oral','Ramipril 2.5 mg/24 jam/oral','Bisoprolol 2.5 mg/24 jam/oral','Spironolactone 25 mg/24 jam/oral','Atorvastatin 40 mg/24 jam/oral','ISDN 5 mg/SL jika nyeri dada','Laxadyn 30cc/24jam/oral (TAO)'),
+    selesai:L('Rehidrasi NaCl 0.9% 1cc/kgBB/jam selama 12 jam','Heparin 12 IU/kgbb/jam/SP'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Bladder training -> Aff Kateter urin','H-1 perawatan hari ini')}));
+  pts.push(P({room:'415',bed:'1',doctorId:'afg',gelar:'Tn.',nama:'Andi Pratama',dob:'1961-11-24',rm:'1935518',btkv:true,perawat:'Qalby',
+    diagnosis:L('POD-16 Mitral valve replacement dengan Mechanical Valve','Atrial Fibrillation Normo ventricular Response (CHA2DS2-VA Score 2 points, HAS-BLED Score 1 point)','Heart Failure with Preserved Ejection Fraction','Post Insersi Chest Tube Dextra','Infected Hepatitis B','AKI dd Acute on CKD','Mild Hypokalemia (3.0) -> (3.2) -> (4.0) -> (4.5) (Perbaikan)','Bilateral pleural effusion','Hyponatremia (131) Hiperosmolar (315)'),
+    terapi:L('Digoksin 0.25mg/24jam/oral','Warfarin 5 mg/24 jam/oral','Furosemide 20 mg/24 jam/oral','Acetylsistein 200mg/8jam/oral','Paracetamol 500 mg/8 jam/oral'),
+    selesai:L('Koreksi Hipokalemia dengan KCL 25mEq habis dalam 12 jam (06-10-2026, 06.00, koreksi ke 3)','Koreksi Hipokalemia dengan KCL 25mEq habis dalam 12 jam (05-10-2026, 03.00, koreksi ke 2)','Koreksi Hipokalemia dengan KCL 25mEq habis dalam 12 jam (03-10-2026, koreksi ke 1)'),
+    plan:L('Monitoring tanda vital, hemodinamik, urine output dan balance cairan','Cek INR per 3 hari (Senin, 12 Oktober 2026)','EKG perhari','Usul konsul TS Pulmo')}));
+  pts.push(P({room:'415',bed:'2',doctorId:'mz',gelar:'Tn.',nama:'Rahmat Hidayat',dob:'1989-02-19',rm:'1442417',perawat:'Ari',
+    diagnosis:L('Frequent PVC 11% (Right sided PVC, superior axis, suggestive tricuspid annulus origin)','TB Paru on Treatment'),
+    terapi:L('IVFD NaCl 0.9% 500cc/24 jam/IV'),
+    plan:L('Monitoring tanda vital dan hemodinamik','EKG per hari','H-1 rawat jalan')}));
+  pts.push(P({room:'408',doctorId:'mz',gelar:'Tn.',nama:'Hasan Basri',dob:'1966-01-03',rm:'1229258',perawat:'Yudi',
+    diagnosis:L('Congestive Heart Failure NYHA III (Heart Failure reduce Ejection Fraction) (EF : 50%)','Atrial Fibrilation Normoventricular response (CHA2DS2VA score 2, HAS-BLED Score 1)','Chronic Coronary Syndrome Clinical Presentation type IV','Hypertensive Heart Disease','AKI dd Acute on CKD','Mild Hypokalemia (3.4)'),
+    terapi:L('IVFD NaCl 0.9% 500 cc/24 jam/IV','Furosemid 40 mg/8 jam/IV','Candesartan 16 mg/24 jam/oral','Eplerenon 25 mg/24 jam/oral','Bisoprolol 5 mg/24 jam/oral','Warfarin 2 mg/24 jam/oral','Atorvastatin 20 mg/24 jam/oral','KSR 600 mg/8 jam/oral','Na Deiclofenac 25mg/12jam/oral','Metylprednisoslone 8mg/12jam/oral','Paracetamol 1gr/8jam/oral','Kolkisin 0.5mg/24jam/oral (malam)'),
+    plan:L('Monitoring Urin Output dan Balance Cairan','Cek INR/3 hari (Minggu, 11-10-2026)','CA Standby PCI (Menunggu Jadwal)','Cek GDP, Profil Lipid & HbA1c, Asam Urat (Senin, 12-10-2026)')}));
+  pts.push(P({room:'404',kodeLuar:'TM',nama:'Putri Amelia',dob:'1977-09-20',rm:'1027824',kategori:'kjs_lain',kjsTo:'mz',kjsLabel:'Aritmia',
+    diagnosis:L('Bradycardia symptomatik'),plan:L('EP Study + CA (Senin, 12-10-2026)')}));
+  pts.push(P({room:'407',doctorId:'ahn',gelar:'Ny.',nama:'Dewi Lestari',dob:'1961-04-23',rm:'1681453',perawat:'Ari',
+    terapi:L('IVFD NaCl 500 cc/24 jam/IV','Clopidogrel 75 mg/24 jam/oral','Candesartan 16 mg/24 jam/oral','Bisoprolol 1.25 mg/24 jam/oral','Furosemide 40 mg/24 jam/oral (bila sesak)','Atorvastatin 20 mg/24 jam/oral'),
+    premed:L('Ranitidin 50 mg/IV (pagi 06.00)','Ondansetron 1 amp/IV (pagi 06.00)','Loading Clopidogrel 300 mg pagi','Alprazolam 0.5 mg malam sebelum tindakan (jika sulit tidur)'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Rencana tindakan CA Standby PCI (Kamis, 08-10-2026)','Rehidrasi post tindakan dengan NaCl 0.9% 1 cc/kgbb/jam selama 12 jam','Cek DR, Ur, Cr post tindakan','Konsul TS Introp')}));
+  pts.push(P({room:'416',bed:'1',doctorId:'ahn',gelar:'Tn',nama:'Joko Susilo',dob:'1962-07-08',rm:'1471029',perawat:'Indah',
+    diagnosis:L('Ischemic Heart Disease','Post POBA Investment procedure di RCA + patent stent di LAD dan LCx','Heart failure reduced ejection fraction','Hypertensive Heart Disease'),
+    terapi:L('IVFD NaCl 0.9% 500 cc/24 jam/IV','Heparin 12 IU/kgBB/jam/SP (H2)','Aspilet 80mg/24 Jam/Oral','Clopidogrel 75 mg/24 Jam/Oral','Ramipril 5 mg/24 Jam/Oral','Bisoprolol 2.5 mg/24 Jam/Oral','Atorvastatin 40mg/24 Jam/Oral'),
+    selesai:L('Rehidrasi post tindakan dengan NaCl 0.9 % 1 cc/kgbb/jam selama 12 jam'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Monitoring tanda perdarahan','Heparinisasi 2 hari','Cek APTT/hari','CT Angiography ekstremitas inferior (Senin, 12/10/2026)')}));
+  pts.push(P({room:'409',doctorId:'ahn',gelar:'Tn',nama:'Irwan Saputra',dob:'1970-05-26',rm:'1911527',perawat:'Qalby',
+    diagnosis:L('Chronic Coronary Syndrome CS Type III (Post PCI Desember 2023)','Ischemic Heart Disease Post POBA Investment procedure di RCA + patent stent di LAD','Hypertension on treatment'),
+    terapi:L('IVFD NaCl 0.9% 500 cc/24 jam/IV','Heparin 12IU/kgbb/jam/SP (I)','Nospirinal 80mg/24 jam/oral','Clopidogrel 75 mg/24 jam/oral','Candesartan 16 mg/24 jam/oral','Amlodipine 5 mg/24 jam/oral','Carvedilol 6.25 mg/12 jam/oral','Nitrokaf retard 2.5 mg/12 jam/oral','Atorvastatin 40 mg/24 jam/oral','Fleet enema (extra)'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Cek DR, Ur, Cr post rehidrasi (menunggu hasil)','Heparinisasi 2 hari','Cek APTT/hari')}));
+  pts.push(P({room:'420',bed:'6',doctorId:'ahn',gelar:'Tn.',nama:'Dedi Kurniawan',dob:'1993-03-23',rm:'1443143',btkv:true,perawat:'Yudi',
+    diagnosis:L('POD-5, Mitral Valve Replacement with Mechanical Valve + Tricuspid Valve Repair with Devega Procedure','Congestive Heart Failure NYHA III','Atrial Fibrilation Normo Ventricular Respon (CHADVA Score 0, HASBLED Score 1)'),
+    terapi:L('IVFD NaCl 0.9% 500 cc/24 jam/IV','Digoxin 0.25mg/24jam/oral','Furosemide 40mg/24jam/IV','Warfarin 2mg/24 jam/oral','Alprazolam 0,25mg/24jam/oral'),
+    pulang:L('Digoxin 0.25mg/24jam/oral','Furosemide 40mg/24jam/oral','Warfarin 2mg/24 jam/oral'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Ekg per hari','Cek INR saat kontrol Poli','Rencana Pulang mengikuti DPJP utama')}));
+  pts.push(P({room:'414',bed:'1',doctorId:'arb',gelar:'Ny.',nama:'Rina Marlina',dob:'1961-05-05',rm:'1225772',perawat:'Imelda',
+    diagnosis:L('Atrial Fibrilation Normo Ventricular Response (CHADS2VA Score 3 points HASBLED Score 1 point)','Acute Lung Oedema (Perbaikan)','Severe Mitral Stenosis due to RHD Wilkins score 11','Right Heart Failure','Pulmonary Hypertension Type 2','Acites grade II','Mild Hyponatremia (134) normoosmolar (290)','Mild Hypokalemia (perbaikan 3.4 -> 4.9)'),
+    terapi:L('IVFD NaCl 0,9% 500 cc / 24 jam','Digoxin 0.25 mg/24jam/oral','Warfarin 3 mg/24jam/oral (Stop)','Furosemide 40mg/24jam/iv','Candesartan 4 mg/24jam/oral','Spironolactone 25mg/24jam/oral','N-acetylsistein 200mg/8jam/oral','Paracetamol 1gr/8jam/iv'),
+    plan:L('Monitoring tanda vital dan hemodinamik','H-1 rawat jalan sesuai TS Pulmo')}));
+  pts.push(P({room:'405',doctorId:'zd',gelar:'Tn.',nama:'Agus Salim',dob:'1966-02-03',rm:'1398382',btkv:true,perawat:'Indah',
+    diagnosis:L('POD 8 CABG 3 graft','ROSC Post Cardiac Arrest','Ventricular Tachycardia with unstable hemodynamic post cardioversion (perbaikan)','Chronic Coronary Syndrome CS Type III','Coronary Artery Disease 3 Vessel Disease','Heart Failure Reduced Ejection Fraction','Hypertensive Heart Disease','Anemia Normositik normokrom (Hb : 10.6 -> 8.2)','Trombositopenia (107.000)','Hiponatremia (133)','Mild Hipokalemia (3.2)'),
+    terapi:L('Aspilet 80mg/24 jam/oral','Candesartan 4mg/24jam/oral (TUNDA)','Spironolactone 25mg/24jam/oral (TUNDA)','Bisoprolol 1.25mg/24jam/oral','Atorvastatin 40mg/24jam/oral','Laxadin syr 30cc/24jam/oral','KSR 600 mg/8 jam/oral'),
+    plan:L('Monitoring tanda vital dan hemodinamik')}));
+  pts.push(P({room:'421',bed:'4',doctorId:'zd',gelar:'Ny.',nama:'Sri Wahyuni',dob:'1955-06-28',rm:'1360663',kjsTo:'mz',kjsLabel:'Aritmia',perawat:'Avi',
+    diagnosis:L('Symptomatic Bradycardia ec TAVB post PPM Replacement H-1','Post PPM Implantation (2016) suspect Pacemaker Battery Depletion dd Malfunction PPM','Post ROSC ec Pulseless Polimorphic Ventricular Tachycardia','Chronic Coronary Syndrome CS Type 1','Mild to Moderate Coronary Artery Disease','Hypertensive Heart Disease','Anemia Normositik Normokrom (Perbaikan Hb 8.1->10.0->11.0)','Moderate Hipokalemia (perbaikan 3.4->2.9->3.5)'),
+    terapi:L('IVFD NaCl 0.9% 500 ml/24 jam/IV','Ramipril 2.5mg/24jam/oral','Atorvastatin 40mg/24jam/oral','KSR 600mg/8jam/oral','Paracetamol 1gr/8jam/IV (bila demam)','Omeprazole 40mg/12jam/iv','Ceftriaxone 2gr/24jam/IV (H-2)','Laxadin syr 30cc/24jam/oral'),
+    selesai:L('KCl 25 mEq dalam NaCl 0,9% 500 cc habis dalam 12 jam'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Echocardiography full study','EKG/hari','Cek ADT (menunggu hasil lab)','Cek DR, Ur/Cr, GDS, Elektrolit kontrol (Minggu, 11-10-2026)','Cek Profil lipid (Senin, 12-10-2026)')}));
+  pts.push(P({room:'421',bed:'1',doctorId:'zd',gelar:'Ny.',nama:'Nur Aisyah',dob:'1947-05-26',rm:'1045561',kjsTo:'mz',kjsLabel:'Aritmia',perawat:'Imelda',
+    diagnosis:L('Secondary Myocardial Infarction','Moderate Coronary Artery Disease','Symptomatic Bradycardia et causa TAVB post PPM Implantation (H-1)','ROSC post Cardiac Arrest ec Ventricular Tachycardia without Pulse','Hypertensive Heart Disease','Mild Hypokalemia (3.4)'),
+    terapi:L('IVFD NaCl 0.9% 500cc/24jam/intravena','Clopidogrel 75mg/24 jam/oral','Amlodipin 10mg/24 jam/oral','Atorvastatin 20mg/24 jam/oral','KSR 300mg/24jam/oral','Lactulosa syr 30 cc/24jam/oral','Ceftriaxone 2gr/24jam/IV (H-2)'),
+    plan:L('Monitoring tanda vital dan hemodinamik','EKG tiap hari')}));
+  pts.push(P({room:'420',bed:'4',doctorId:'zd',gelar:'Tn.',nama:'Rudi Hartono',dob:'1990-09-04',rm:'1967096',perawat:'Avi',
+    diagnosis:L('Congestive Heart Failure NYHA IV (Heart Failure Reduced ejection Fraction)','Chronic Coronary Syndrom Clinical Scenario type 4','Atrial Fibrilasi Normoventricular Response (CHA2DS2-VA Score 1 point HASBLED Score 0 point)','Ascites Grade 2','Sirosis Hepatis','Bilateral Pleural Effusion','Susp Trombositosis Essential dd/ Reaktif (1.263.000)','Hipoalbuminemia (3.1)'),
+    terapi:L('Furosemide 40mg/12 jam/IV','Spironolacton 50 mg/24 jam/oral','Uperio 50 mg/12 jam/oral','Warfarin 2 mg/24 jam/oral, usul switch Rivaroxaban 20 mg/24 jam/oral','Digoxin 0,25 mg/24 jam/oral','N-acetylsistein 200mg/8jam/oral','Lactulosa syr 30 ml/24 jam/oral'),
+    plan:L('Monitoring tanda vital, hemodinamik, urine output dan balans cairan','Cek INR/3 hari (10-10-2026)','Ukur Lingkar Perut/hari')}));
+  pts.push(P({room:'418',bed:'2',doctorId:'afm',gelar:'Tn.',nama:'Fajar Nugroho',dob:'1971-02-18',rm:'1307419',perawat:'Yudi',
+    diagnosis:L('Acute Decompensated Heart Failure Wet and Warm type (Perbaikan)','Atrial Fibrillation Normo Ventricular Response (CHA2DS2-VASc Score 3 points, HAS-BLED Score 1 Points)','Chronic Coronary Syndrome Clinical Scenario type 3','Apical LV Thrombus','AKI dd Acute on CKD','DM Tipe 2 Non Obese','Mild Hyponatremia (133) normoosmolal (288)'),
+    terapi:L('Connecta','Furosemide 40mg/8 jam/IV','Aspilet 80 mg/24 jam/oral (STOP)','Clopidogrel 75 mg/24 jam/oral','Warfarin 2 mg/24 jam/oral','Digoxin 0.25 mg/24 jam/oral','Atorvastatin 40 mg/24 jam/oral','Nitrokaf Retard 2,5 mg/12 jam/oral','ISDN 5 mg/SL (bila nyeri dada)','Ramipril 2,5 mg/24 jam/oral'),
+    selesai:L('Bolus Digoxin 0,5 mg/IV (Extra)','Furosemide bolus 80 mg/IV'),
+    plan:L('Monitoring tanda vital dan hemodinamik','Monitoring urine output dan balance cairan','EKG/hari','Cek INR/3 hari (Senin, 12-10-2026) (Target INR 2 - 3)','Cek Profil Lipid (Senin, 12-10-2026)','Echocardiography Full Study bila KU optimal','Rencana MRI Viability Cardiac (Terjadwal Selasa, 13-10-2026)')}));
+  pts.push(P({room:'421',bed:'6',doctorId:'yp',nama:'Nadia Salsabila',dob:'2010-06-19',rm:'1201629',kategori:'pediatri'}));
+  pts.push(P({room:'421',bed:'3',doctorId:'aau',nama:'Reza Firmansyah',dob:'2006-01-22',rm:'1238968',kategori:'pediatri'}));
+  pts.push(P({room:'418',bed:'3',doctorId:'np',nama:'Dimas Saputra',rm:'1810620',tag:'KJS Neuro',kategori:'kjs_lain'}));
+  pts.push(P({room:'420',bed:'5',doctorId:'np',nama:'Eka Wulandari',dob:'1970-02-28',rm:'1244098',kategori:'kjs_lain'}));
+  pts.forEach(function(p){p.status=/(^|\n)\s*H-1\b/i.test(p.plan||'')?'h1':''});
+  pts.forEach(function(p){if(p.rm)p.id='p'+String(p.rm).replace(/\D/g,'')});
+  return {v:2,chiefs:['dr. Arya','dr. Wyne','dr. Ija','dr. Jhordi'],juniors:[],chiefSeed:1,unit:'PJT Lantai 4',tgl:'2026-10-11',jam:'04:00',zona:'WITA',doctors:docs,patients:pts,nurses:['Qalby','Ari','Imelda','Yudi','Indah','Avi'],rooms:defaultRooms(),override:{kardio:'',btkv:'2',kjslain:'0',pediatri:'',pedikjs:''},operkan:'',chief:''};
+}
+function fresh(){
+  var d=new Date();var p=function(n){return String(n).padStart(2,'0')};
+  var s=sample();s.patients=[];s.tgl=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());s.jam='06:00';s.override={kardio:'',btkv:'',kjslain:'',pediatri:'',pedikjs:''};s.nurses=[];return s;
+}
+var saveT=null;
+function persistLocal(){clearTimeout(saveT);saveT=setTimeout(function(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}},250)}
+function save(){if(SYNC.booted&&S._fresh&&(!SYNC.db||SYNC.firstP===false))S._fresh=false;persistLocal();schedPush()}
+function load(){try{var r=localStorage.getItem(KEY);if(r){var o=JSON.parse(r);if(o&&o.patients)return o}}catch(e){}return null}
+
+/* ---------- helper ---------- */
+function toast(m){var t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(function(){t.classList.remove('on')},2400)}
+function lines(t){return String(t||'').split('\n').map(function(s){return s.trim().replace(/^[-–•]\s+/,'')}).filter(Boolean)}
+function docById(id){return S.doctors.filter(function(d){return d.id===id})[0]}
+function roomOf(no){return S.rooms.filter(function(r){return r.no===String(no)})[0]}
+function pad(n){return String(n).padStart(2,'0')}
+function parseD(s){if(!s)return null;var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s);return m?new Date(+m[1],+m[2]-1,+m[3]):null}
+function fmtDob(s){var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s);return m?m[3]+'-'+m[2]+'-'+m[1]:s}
+function umur(dob){var b=parseD(dob),r=parseD(S.tgl);if(!b||!r)return null;var a=r.getFullYear()-b.getFullYear();var m=r.getMonth()-b.getMonth();if(m<0||(m===0&&r.getDate()<b.getDate()))a--;return a>=0&&a<130?a:null}
+function tglPanjang(){var d=parseD(S.tgl);if(!d)return '';return HARI[d.getDay()]+', '+d.getDate()+' '+BULAN[d.getMonth()]+' '+d.getFullYear()}
+function jamTxt(){return (S.jam||'').replace(':','.')}
+function judulWaktu(){return tglPanjang()+', '+jamTxt()+' '+(S.zona||'')}
+function bedText(p){var r=roomOf(p.room);return p.room+((p.bed&&(!r||r.beds>1))?' Bed '+p.bed:'')}
+function shortName(n){n=String(n||'').trim().replace(/^dr\.?\s+/i,'');return n.replace(/\b\w/g,function(c){return c.toUpperCase()})}
+function identity(p,o){
+  o=o||{};var d=docById(p.doctorId);
+  var kode=d?(d.tampilKode?d.kode:''):(p.kodeLuar||'');
+  var nm=[p.gelar,p.nama].filter(Boolean).join(' ');
+  var a=p.dob?umur(p.dob):null;
+  var parts=[o.noRoom?'':bedText(p),kode,nm,p.dob?fmtDob(p.dob):'',a!=null?a+' tahun':'',p.rm?'RM '+p.rm:'',shortName(p.chiefPj),p.juniorPj?'FU '+shortName(p.juniorPj):''].filter(Boolean);
+  var s=parts.join('/');
+  var sfx=[p.btkv&&'KJS BTKV',p.tag].filter(Boolean).join(', ');
+  return s+(sfx?' - '+sfx:'');
+}
+function stats(){
+  var P=S.patients,o=S.override||{};
+  var auto={kardio:P.filter(function(p){return p.kategori==='kardio'}).length,btkv:P.filter(function(p){return p.btkv}).length,kjslain:P.filter(function(p){return p.kategori==='kjs_lain'}).length,pediatri:P.filter(function(p){return p.kategori==='pediatri'}).length,pedikjs:P.filter(function(p){return p.kategori==='pedi_kjs'}).length};
+  var r={};Object.keys(auto).forEach(function(k){r[k]=(o[k]!==''&&o[k]!=null)?o[k]:auto[k]});return r;
+}
+function ownOf(d){return S.patients.filter(function(p){return p.doctorId===d.id})}
+function kjsOf(d){return S.patients.filter(function(p){return p.kjsTo===d.id})}
+function docHead(d){
+  var own=ownOf(d),k=kjsOf(d),b=own.filter(function(p){return p.btkv}).length;
+  return d.nama+' : '+own.length+' pasien'+(b?' ('+b+' BTKV)':'')+(k.length?' + '+k.length+' KJS':'');
+}
+var KAT={kardio:'Kardio FU',kjs_lain:'KJS TS Lain',pediatri:'Pediatri',pedi_kjs:'Pedi KJS'};
+var STAT=[['','Biasa'],['baru','Pasien baru'],['h1','Rencana pulang (H-1)'],['jaga','Masuk saat jaga'],['dinas','Masuk saat dinas']];
+var TGC={h1:'g',baru:'b',jaga:'o',dinas:'u'},TGL={h1:'Pulang',baru:'Baru',jaga:'Jaga',dinas:'Dinas'};
+
+/* ---------- HTML: list pasien ---------- */
+function sec(label,text){var a=lines(text);if(!a.length)return '';return '<div class="lab">'+esc(label)+'</div><ul class="dash">'+a.map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ul>'}
+function ptBlock(p,i){
+  return '<article class="pt" id="'+aid(p)+'"><div class="pt-id"><span class="no">'+i+'.</span>'+idH(p,{nolink:1})+'</div>'+
+    sec('Diagnosis:',p.diagnosis)+sec('Mohon izin kami terapi dengan:',p.terapi)+sec('Premedikasi:',p.premed)+sec('Selesai:',p.selesai)+sec('Obat pulang:',p.pulang)+sec('Plan:',p.plan)+'</article>';
+}
+function mk(d){return '<i class="mk '+(d.jenis==='pediatri'?'p':d.jenis==='lain'?'o':'')+'"></i>'}
+function listHTML(lay0){
+  var given=!!lay0,lay=lay0||listLayout();
+  if(!given){var li=document.getElementById('lInfo');if(li)li.textContent='Huruf '+lay.fs+' pt, '+lay.cols+' kolom, perkiraan '+lay.pages+' lembar'}
+  var st=stats(),docs=S.doctors.filter(function(d){return d.inList});
+  var h='<div class="paper land" style="--fs:'+lay.fs+'pt;--cols:'+lay.cols+'"><header class="ph"><div class="ph-t">List Pasien '+esc(S.unit)+'</div><div class="ph-s">'+esc(judulWaktu())+'</div><div class="leg" style="margin:0">'+legHTML()+'</div></header>';
+  h+='<div class="sum"><div class="sum-h">JUMLAH PASIEN</div><div class="sum-grid">'+
+    '<div><b>'+esc(st.kardio)+'</b>Kardio FU</div><div><b>'+esc(st.btkv)+'</b>KJS BTKV</div><div><b>'+esc(st.kjslain)+'</b>KJS TS Lain</div><div><b>'+esc(st.pediatri)+'</b>Pediatri</div><div><b>'+esc(st.pedikjs)+'</b>Pedi KJS</div></div>'+
+    '<ul class="sum-docs">'+docs.map(function(d){return '<li>'+mk(d)+esc(docHead(d))+'</li>'}).join('')+'</ul></div>';
+  var listed={};docs.forEach(function(d){listed[d.id]=1});
+  if(!docs.length)h+='<p class="note0">Belum ada dokter yang ditampilkan. Atur di tab Pengaturan.</p>';
+  h+='<div class="cols">';
+  docs.forEach(function(d){
+    var own=ownOf(d),k=kjsOf(d);
+    h+='<section><h2 class="dh">'+mk(d)+esc(docHead(d))+'</h2>';
+    own.forEach(function(p,i){h+=ptBlock(p,i+1)});
+    if(k.length){
+      h+='<div class="sub-kjs">KJS:</div>';
+      k.forEach(function(p,i){
+        if(p.doctorId&&listed[p.doctorId])h+='<div class="kjline">'+(i+1)+'. '+idH(p)+'</div>';
+        else h+=ptBlock(p,i+1);
+      });
+    }
+    h+='</section>';
+  });
+  return h+'</div></div>';
+}
+/* ---------- HTML: denah ---------- */
+function placeBeds(r){
+  var n=r.beds,slots=new Array(n).fill(null),rest=[];
+  S.patients.filter(function(p){return p.room===r.no}).forEach(function(p){
+    var b=parseInt(p.bed,10);
+    if(b>=1&&b<=n&&!slots[b-1])slots[b-1]=p;else rest.push(p);
+  });
+  rest.forEach(function(p){var i=slots.indexOf(null);if(i>=0)slots[i]=p;else slots.push(p)});
+  return slots;
+}
+function roomBox(no){
+  var r=roomOf(no)||{no:String(no),beds:1,label:''};
+  var sl=placeBeds(r);
+  var h='<div class="room"><div class="rh"><span>Kamar '+esc(r.no)+'</span>'+(r.label?'<em>'+esc(r.label)+'</em>':'')+'</div>';
+  sl.forEach(function(p,i){
+    var multi=sl.length>1;
+    h+='<div class="bd">'+(multi?'<i>'+(i+1)+'.</i>':'')+'<span>'+(p?esc(identity(p,{noRoom:true})):'')+'</span></div>';
+  });
+  return h+'</div>';
+}
+var GROUPMODE=false,ANCH='v';
+function aid(p){return 'a-'+ANCH+'-'+p.id}
+function inListBlock(p){var d=docById(p.doctorId),k=docById(p.kjsTo);return !!((d&&d.inList)||(k&&k.inList))}
+var NURSEMODE=false;
+function identityC(p){var nm=[p.gelar,p.nama].filter(Boolean).join(' ');var kd='';if(NURSEMODE){var d=docById(p.doctorId);kd=d?(d.kode||''):(p.kodeLuar||'')}var s=[bedText(p),kd,nm,p.rm?'RM '+p.rm:''].filter(Boolean).join('/');return s+(p.btkv?' - KJS BTKV':'')}
+function idH(p,o){
+  o=o||{};var c=p.status?' st-'+p.status:'';
+  var t=GROUPMODE?identityC(p):identity(p,o);
+  var s='<span class="idl'+c+'">'+esc(t)+'</span>';
+  if(!o.nolink&&inListBlock(p))s='<a class="plink" href="#'+aid(p)+'" data-pid="'+p.id+'">'+s+'</a>';
+  return s;
+}
+function roomBox2(no){
+  var r=roomOf(no)||{no:String(no),beds:1,label:''};var sl=placeBeds(r);
+  var h='<div class="rm2"><div class="rh"><span>KAMAR '+esc(r.no)+'</span>'+(r.label?'<em>'+esc(r.label)+'</em>':'')+'</div>';
+  sl.forEach(function(p,i){h+='<div class="bd">'+(sl.length>1?'<i>'+(i+1)+'.</i>':'')+'<span>'+(p?idH(p):'')+'</span></div>'});
+  return h+'</div>';
+}
+function legHTML(){return '<span class="st-baru">Biru = pasien baru</span> | <span class="st-h1">Hijau = rencana pulang (H-1)</span> | <span class="st-jaga">Oranye = masuk saat jaga</span> | <span class="st-dinas">Ungu = masuk saat dinas</span>'}
+function fitsOnePage(html){
+  var m=document.createElement('div');m.className='measure';m.innerHTML=html;document.body.appendChild(m);
+  var px=m.firstChild.getBoundingClientRect().height;document.body.removeChild(m);
+  return px<=268*3.7795;
+}
+function denahHTML(){
+  var raw=denahRaw(),i=raw.indexOf('<!--SPLIT-->'),one=raw.replace('<!--SPLIT-->',''),out,info;
+  if(i<0||fitsOnePage(one)){out=one;info='Denah: 1 lembar'}
+  else{
+    var head=raw.slice(0,i),tail=raw.slice(i+12),m=/<div class="ph-t">(.*?)<\/div>/.exec(head),ttl=m?m[1]:'';
+    out=head+'</div><div class="paper den"><header class="ph"><div class="ph-t">'+ttl+' - lanjutan</div><div class="leg">'+legHTML()+'</div></header>'+tail;
+    info='Denah: 2 lembar (dipisah otomatis)';
+  }
+  var el=document.getElementById('pgInfo');if(el)el.textContent=info;
+  return out;
+}
+function denahRaw(){
+  var d=parseD(S.tgl);
+  var tj=d?HARI[d.getDay()].toUpperCase()+', '+d.getDate()+' '+BULAN[d.getMonth()]+' '+d.getFullYear()+', '+jamTxt()+' '+(S.zona||''):'';
+  var judul='DENAH PASIEN '+String(S.unit||'').replace(/^PJT\s*/i,'').toUpperCase()+' ('+tj+')';
+  var L1=[410,409,408,407,406,405,404,403,402,401],R1=[412,413,414,415,416,417,418,419];
+  var h='<div class="paper den"><header class="ph"><div class="ph-t">'+esc(judul)+'</div><div class="leg">'+legHTML()+'</div></header>';
+  h+='<div class="top2">'+roomBox2(420)+roomBox2(421)+'</div>';
+  h+='<div class="plan"><div>'+L1.map(function(n){return roomBox2(n)}).join('')+'</div><div class="cor"><div class="ns">NURSE STATION<small>'+esc(String(S.unit||'').toUpperCase())+'</small></div><div class="back"><div class="ns">NURSE STATION<small>BELAKANG</small></div><div class="gapc"></div>'+roomBox2(411)+'</div></div><div>'+R1.map(function(n){return roomBox2(n)}).join('')+'</div></div>';
+  h+='<!--SPLIT-->';GROUPMODE=true;
+  h+='<div class="gr" style="margin-top:6pt">';
+  var emptyD=[];
+  S.doctors.forEach(function(dk){
+    var own=ownOf(dk),k=kjsOf(dk);
+    if(!own.length&&!k.length){emptyD.push(dk.nama);return}
+    h+='<div class="gb"><h4>'+esc(dk.nama)+'</h4><ol>'+own.map(function(p){return '<li>'+idH(p)+'</li>'}).join('')+'</ol>';
+    var by={};k.forEach(function(p){var l=p.kjsLabel||'';(by[l]=by[l]||[]).push(p)});
+    Object.keys(by).forEach(function(l){h+='<div class="kj">KJS'+(l?' '+esc(l):'')+':</div><ol>'+by[l].map(function(p){return '<li>'+idH(p)+'</li>'}).join('')+'</ol>'});
+    h+='</div>';
+  });
+  if(emptyD.length)h+='<div class="gb emp"><b>Tanpa pasien:</b> '+esc(emptyD.join(', '))+'</div>';
+  h+='</div>';
+  if(S.nurses.length){NURSEMODE=true;
+    h+='<div class="gr" style="margin-top:6pt">';
+    S.nurses.forEach(function(nm){
+      var ps=S.patients.filter(function(p){return p.perawat===nm});
+      h+='<div class="gb"><h4>'+esc(nm)+'</h4><ol>'+ps.map(function(p){return '<li>'+idH(p)+'</li>'}).join('')+'</ol></div>';
+    });
+    var un=S.patients.filter(function(p){return !p.perawat||S.nurses.indexOf(p.perawat)<0});
+    if(un.length)h+='<div class="gb"><h4>Pasien tidak di follow up</h4><ol>'+un.map(function(p){return '<li>'+idH(p)+'</li>'}).join('')+'</ol></div>';
+    h+='</div>';
+  }
+  NURSEMODE=false;GROUPMODE=false;
+  h+='<div class="gr2" style="margin-top:6pt"><div class="free"><b>Operkan ke Tmn Lain:</b>'+esc(S.operkan)+'</div><div class="free"><b>Ganti Chief:</b>'+esc(S.chief)+'</div></div>';
+  return h+'</div>';
+}
+function denahHTMLOld(){
+  var left=[],mid=[],right=[];
+  for(var n=410;n>=401;n--)left.push(n);
+  for(var m=411;m<=419;m++)mid.push(m);
+  var h='<div class="paper"><header class="ph"><div class="ph-t">DENAH PASIEN '+esc((S.unit||'').toUpperCase().replace('PJT ',''))+'</div><div class="ph-s">'+esc(judulWaktu())+'</div></header>';
+  h+='<div class="fl"><div class="col">'+left.map(roomBox).join('')+'</div><div class="col">'+mid.map(roomBox).join('')+'</div><div class="col">'+roomBox(420)+roomBox(421)+'<div class="ns">NURSE STATION<small>'+esc(S.unit)+'</small></div></div></div>';
+  h+='<div class="sec">Pasien per dokter</div><div class="gr">';
+  S.doctors.forEach(function(d){
+    var own=ownOf(d),k=kjsOf(d);
+    h+='<div class="gb"><h4>'+esc(d.nama)+' ('+own.length+')</h4><ol>'+own.map(function(p){return '<li>'+esc(identity(p))+'</li>'}).join('')+'</ol>';
+    var by={};k.forEach(function(p){var l=p.kjsLabel||'';(by[l]=by[l]||[]).push(p)});
+    Object.keys(by).forEach(function(l){h+='<div class="kj">KJS'+(l?' '+esc(l):'')+':</div><ol>'+by[l].map(function(p){return '<li>'+esc(identity(p))+'</li>'}).join('')+'</ol>'});
+    h+='</div>';
+  });
+  h+='</div>';
+  if(S.nurses.length){
+    h+='<div class="sec">Perawat penanggung jawab</div><div class="gr">';
+    S.nurses.forEach(function(nm){
+      var ps=S.patients.filter(function(p){return p.perawat===nm});
+      h+='<div class="gb"><h4>'+esc(nm)+' ('+ps.length+')</h4><ol>'+ps.map(function(p){return '<li>'+esc(identity(p))+'</li>'}).join('')+'</ol></div>';
+    });
+    var un=S.patients.filter(function(p){return !p.perawat||S.nurses.indexOf(p.perawat)<0});
+    if(un.length)h+='<div class="gb"><h4>Belum ada PJ ('+un.length+')</h4><ol>'+un.map(function(p){return '<li>'+esc(identity(p))+'</li>'}).join('')+'</ol></div>';
+    h+='</div>';
+  }
+  h+='<div class="gr2" style="margin-top:8pt"><div class="free"><b>Operkan ke Tmn Lain:</b>'+esc(S.operkan)+'</div><div class="free"><b>Ganti Chief:</b>'+esc(S.chief)+'</div></div>';
+  return h+'</div>';
+}
+/* ---------- teks WhatsApp ---------- */
+function waText(){
+  var st=stats(),docs=S.doctors.filter(function(d){return d.inList});
+  var ic=function(d){return d.jenis==='pediatri'?'👶':'🫀'};
+  var o=[];
+  o.push('Tabe dokter mohon izin mengirimkan *List Pasien '+S.unit+', '+judulWaktu()+'*');
+  o.push('');o.push('🟡JUMLAH PASIEN :');
+  o.push('🫀KARDIO FU : LT 4 ('+st.kardio+')');o.push('🤕KJS BTKV: LT 4 ('+st.btkv+')');o.push('🤝KJS TS Lain : LT 4 ('+st.kjslain+')');o.push('👶PEDIATRI : LT 4 ('+st.pediatri+')');o.push('PEDI KJS('+st.pedikjs+')');o.push('');
+  docs.forEach(function(d){o.push(ic(d)+' '+docHead(d).replace(' : ',' : '))});
+  var blk=function(p,i){
+    var r=[];r.push((i+1)+'. '+identity(p));
+    var add=function(l,t){var a=lines(t);if(a.length){r.push(l);a.forEach(function(x){r.push('- '+x)})}};
+    add('Diagnosis:',p.diagnosis);add('Mohon izin kami terapi dengan:',p.terapi);add('Premedikasi:',p.premed);add('Selesai:',p.selesai);add('Obat pulang:',p.pulang);add('Plan:',p.plan);
+    return r.join('\n');
+  };
+  var listed={};docs.forEach(function(d){listed[d.id]=1});
+  docs.forEach(function(d){
+    o.push('-------------------------------------');
+    o.push('*'+ic(d)+' '+docHead(d)+'*');
+    ownOf(d).forEach(function(p,i){o.push(blk(p,i))});
+    var k=kjsOf(d);
+    if(k.length){o.push('**KJS');k.forEach(function(p,i){if(p.doctorId&&listed[p.doctorId])o.push((i+1)+'. '+identity(p));else o.push(blk(p,i))})}
+  });
+  o.push('');o.push('Tabe terima kasih dokter');
+  return o.join('\n');
+}
+
+/* ---------- tab ---------- */
+function showTab(t){
+  curTab=t;document.body.dataset.tab=t;document.body.classList.remove('m-editing');
+  $$('#tabs button').forEach(function(b){b.setAttribute('aria-selected',b.dataset.t===t?'true':'false')});
+  ['pasien','denah','list','impor','set'].forEach(function(x){$('#t-'+x).hidden=(x!==t)});
+  if(t==='pasien'){renderSide();renderEditor()}
+  if(t==='denah'){$('#pvDenah').innerHTML=denahHTML()}
+  if(t==='list'){syncList();$('#pvList').innerHTML=listHTML()}
+  if(t==='set'){renderSettings();renderSyncCard();renderAcc()}
+  window.scrollTo(0,0);
+}
+$('#tabs').addEventListener('click',function(e){var b=e.target.closest('button');if(b)showTab(b.dataset.t)});
+
+/* ---------- header laporan ---------- */
+function bindHeader(){
+  $('#unit').value=S.unit||'';$('#tgl').value=S.tgl||'';$('#jam').value=S.jam||'';$('#zona').value=S.zona||'';
+  $('#operkan').value=S.operkan||'';$('#chief').value=S.chief||'';
+}
+['unit','tgl','jam','zona'].forEach(function(k){$('#'+k).addEventListener('input',function(e){S[k]=e.target.value;save();if(curTab==='denah')$('#pvDenah').innerHTML=denahHTML();if(curTab==='list')$('#pvList').innerHTML=listHTML();if(curTab==='pasien')renderSide()})});
+['operkan','chief'].forEach(function(k){$('#'+k).addEventListener('input',function(e){S[k]=e.target.value;save();$('#pvDenah').innerHTML=denahHTML()})});
+
+/* ---------- sidebar pasien ---------- */
+function renderSide(){
+  var q=($('#q').value||'').toLowerCase().trim();
+  var groups=[];
+  S.doctors.forEach(function(d){groups.push({k:d.nama,ps:S.patients.filter(function(p){return p.doctorId===d.id})})});
+  groups.push({k:'DPJP lain / belum dipilih',ps:S.patients.filter(function(p){return !docById(p.doctorId)})});
+  var h='',tot=0;
+  groups.forEach(function(g){
+    var ps=g.ps.filter(function(p){return !q||(p.nama+' '+p.room+' '+p.rm+' '+p.kodeLuar).toLowerCase().indexOf(q)>=0});
+    if(!ps.length)return;tot+=ps.length;
+    h+='<div class="grp"><span>'+esc(g.k)+'</span><span>'+ps.length+'</span></div>';
+    ps.forEach(function(p){
+      h+='<button class="pi'+(p.id===selId?' on':'')+'" data-id="'+p.id+'"><span class="rm">'+esc(p.room?(p.room+(p.bed?'/'+p.bed:'')):'–')+'</span><span class="nm">'+esc([p.gelar,p.nama].filter(Boolean).join(' ')||'(tanpa nama)')+'</span>'+(p.status?'<span class="tg '+TGC[p.status]+'">'+TGL[p.status]+'</span>':'')+(p.btkv?'<span class="tg r">BTKV</span>':'')+(p.kjsTo?'<span class="tg">KJS</span>':'')+'</button>';
+    });
+  });
+  $('#plist').innerHTML=tot?h:'<div class="empty">Belum ada pasien.</div>';
+}
+$('#q').addEventListener('input',renderSide);
+$('#plist').addEventListener('click',function(e){var b=e.target.closest('.pi');if(b){selId=b.dataset.id;renderSide();renderEditor();openEd()}});
+$('#addP').addEventListener('click',function(){var p=blankP();S.patients.push(p);selId=p.id;save();$('#q').value='';renderSide();renderEditor();openEd();var f=$('#editor [data-f=nama]');if(f)f.focus()});
+
+/* ---------- editor pasien ---------- */
+function nameOpts(list,cur){list=(list||[]).slice();if(cur&&list.indexOf(cur)<0)list.push(cur);return opt('','–',!cur)+list.map(function(n){return opt(n,n,n===cur)}).join('')}
+function opt(v,l,sel){return '<option value="'+esc(v)+'"'+(sel?' selected':'')+'>'+esc(l)+'</option>'}
+function bedOpts(p){
+  var r=roomOf(p.room),n=r?r.beds:0,h=opt('','–',!p.bed);
+  for(var i=1;i<=Math.max(n,parseInt(p.bed,10)||0);i++)h+=opt(String(i),String(i),String(i)===String(p.bed));
+  return h;
+}
+function renderEditor(){
+  var ed=$('#editor'),p=S.patients.filter(function(x){return x.id===selId})[0];
+  if(!p){document.body.classList.remove('m-editing');ed.innerHTML='<div class="card empty">Pilih pasien di daftar, atau tekan “Tambah pasien”.</div>';return}
+  var rooms=S.rooms.map(function(r){return opt(r.no,r.no+(r.label?' · '+r.label:''),r.no===p.room)}).join('');
+  var docs=opt('','DPJP luar / belum dipilih',!p.doctorId)+S.doctors.map(function(d){return opt(d.id,d.nama+' ('+d.kode+')',d.id===p.doctorId)}).join('');
+  var kjs=opt('','Tidak ada',!p.kjsTo)+S.doctors.map(function(d){return opt(d.id,d.nama,d.id===p.kjsTo)}).join('');
+  var ns=opt('','Belum dipilih',!p.perawat)+S.nurses.map(function(n){return opt(n,n,n===p.perawat)}).join('');
+  var kat=Object.keys(KAT).map(function(k){return opt(k,KAT[k],k===p.kategori)}).join('');
+  var gel=['','Tn.','Ny.','Tn','Ny','An.','By.','Nn.'].map(function(g){return opt(g,g||'(tanpa)',g===p.gelar)}).join('');
+  var a=p.dob?umur(p.dob):null;
+  ed.innerHTML=
+  '<div class="mbar"><button type="button" class="btn sm" id="mBack">&lsaquo; Daftar</button><b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc((p.room?rbTxt(p.room,p.bed)+' \u00b7 ':'')+([p.gelar,p.nama].filter(Boolean).join(' ')||'Pasien baru'))+'</b></div>'+
+  '<div class="card"><h3>Identitas</h3><div class="g">'+
+    '<label class="f">Kamar<select data-f="room">'+opt('','–',!p.room)+rooms+'</select></label>'+
+    '<label class="f">Bed<select data-f="bed" id="bedSel">'+bedOpts(p)+'</select></label>'+
+    '<label class="f">Gelar<select data-f="gelar">'+gel+'</select></label>'+
+    '<label class="f">Nama<input type="text" data-f="nama" value="'+esc(p.nama)+'"></label>'+
+    '<label class="f">Tanggal lahir<input type="date" data-f="dob" value="'+esc(p.dob)+'"></label>'+
+    '<label class="f">Umur (otomatis)<input type="text" id="ageOut" value="'+(a!=null?a+' tahun':'')+'" readonly></label>'+
+    '<label class="f">No. RM<input type="text" data-f="rm" value="'+esc(p.rm)+'" inputmode="numeric"></label>'+
+  '</div></div>'+
+  '<div class="card"><h3>Penugasan</h3><div class="g">'+
+    '<label class="f">DPJP<select data-f="doctorId">'+docs+'</select></label>'+
+    '<label class="f">Kode DPJP luar<input type="text" data-f="kodeLuar" value="'+esc(p.kodeLuar)+'" placeholder="mis. TM"></label>'+
+    '<label class="f">Kategori hitungan<select data-f="kategori">'+kat+'</select></label>'+
+    '<label class="f">Perawat PJ<select data-f="perawat">'+ns+'</select></label>'+
+    '<label class="f">KJS ke dokter kami<select data-f="kjsTo">'+kjs+'</select></label>'+
+    '<label class="f">Jenis KJS<input type="text" data-f="kjsLabel" value="'+esc(p.kjsLabel)+'" placeholder="mis. Aritmia"></label>'+
+    '<label class="f">Tanda tambahan di nama<input type="text" data-f="tag" value="'+esc(p.tag)+'" placeholder="mis. KJS Neuro"></label>'+
+    '<label class="f">Chief yang pegang<input type="text" data-f="chiefPj" list="dlChief" value="'+esc(p.chiefPj)+'" placeholder="pilih / ketik nama"></label>'+
+    '<label class="f">Pemegang FU<input type="text" data-f="juniorPj" list="dlJunior" value="'+esc(p.juniorPj)+'" placeholder="pilih / ketik nama"></label>'+
+    '<datalist id="dlChief">'+(S.chiefs||[]).map(function(n){return '<option value="'+esc(n)+'">'}).join('')+'</datalist><datalist id="dlJunior">'+(S.juniors||[]).map(function(n){return '<option value="'+esc(n)+'">'}).join('')+'</datalist>'+
+    '<div style="grid-column:1/-1;display:flex;flex-direction:column;gap:6px;font-size:12.5px;font-weight:600;color:var(--mute)"><span>Status pasien</span><div class="seg" id="seg">'+STAT.map(function(s){return '<button type="button" data-s="'+s[0]+'" aria-pressed="'+((p.status||'')===s[0])+'">'+s[1]+'</button>'}).join('')+'</div></div>'+
+    '<label class="f ck" style="align-self:end;padding-bottom:8px"><input type="checkbox" data-f="btkv"'+(p.btkv?' checked':'')+'> KJS BTKV</label>'+
+  '</div></div>'+
+  '<div class="card"><h3>Klinis</h3><p class="hint" style="margin-top:-6px">Satu butir per baris. Tanda “-” di awal baris tidak perlu diketik.</p><div class="g w">'+
+    '<label class="f">Diagnosis<textarea data-f="diagnosis" style="min-height:150px">'+esc(p.diagnosis)+'</textarea></label>'+
+    '<label class="f">Mohon izin kami terapi dengan<textarea data-f="terapi" style="min-height:150px">'+esc(p.terapi)+'</textarea></label>'+
+    '<label class="f">Premedikasi<textarea data-f="premed">'+esc(p.premed)+'</textarea></label>'+
+    '<label class="f">Selesai<textarea data-f="selesai">'+esc(p.selesai)+'</textarea></label>'+
+    '<label class="f">Obat pulang<textarea data-f="pulang">'+esc(p.pulang)+'</textarea></label>'+
+    '<label class="f">Plan<textarea data-f="plan">'+esc(p.plan)+'</textarea></label>'+
+  '</div></div>'+
+  '<p class="hint" id="byLine" style="margin:0 0 8px"></p>'+
+  '<div class="bar"><button type="button" class="btn pri mOnly" id="mBack2">Selesai</button><button class="btn" id="dupP">Duplikat pasien</button><span class="sp"></span><button class="btn danger" id="delP">Hapus pasien</button></div>';
+  fillBy(p);if(!SYNC.canWrite)lockEditor();
+}
+$('#editor').addEventListener('input',function(e){
+  var t=e.target,f=t.dataset.f;if(!f)return;
+  var p=S.patients.filter(function(x){return x.id===selId})[0];if(!p)return;
+  p[f]=(t.type==='checkbox')?t.checked:t.value;
+  if(f==='room'){p.bed='';$('#bedSel').innerHTML=bedOpts(p)}
+  if(f==='dob'){var a=umur(p.dob);$('#ageOut').value=a!=null?a+' tahun':''}
+  save();renderSide();
+});
+$('#editor').addEventListener('click',function(e){
+  var t=e.target;
+  if(t.id==='dupP'){var p=S.patients.filter(function(x){return x.id===selId})[0];var c=JSON.parse(JSON.stringify(p));c.id=uid();c._c=(p._c||0)+0.5;delete c._t;delete c._by;c.bed='';S.patients.splice(S.patients.indexOf(p)+1,0,c);selId=c.id;save();renderSide();renderEditor();toast('Pasien diduplikat')}
+  if(t.id==='delP'){
+    if(!t.dataset.arm){t.dataset.arm='1';t.textContent='Klik lagi untuk menghapus';setTimeout(function(){if(t.isConnected){delete t.dataset.arm;t.textContent='Hapus pasien'}},3000);return}
+    S.patients=S.patients.filter(function(x){return x.id!==selId});selId=null;save();renderSide();renderEditor();toast('Pasien dihapus');
+  }
+});
+
+$('#editor').addEventListener('click',function(e){
+  var b=e.target.closest('.seg button');if(!b)return;
+  var p=S.patients.filter(function(x){return x.id===selId})[0];if(!p)return;
+  p.status=b.dataset.s;
+  $$('#seg button').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false')});
+  save();renderSide();
+});
+/* ---------- pengaturan ---------- */
+function renderSettings(){
+  var h='<tr><th>Kode</th><th>Nama tampil</th><th>Kata kunci nama (untuk impor)</th><th>Jenis</th><th>Tampil di list</th><th>Kode di identitas</th><th></th></tr>';
+  S.doctors.forEach(function(d,i){
+    h+='<tr data-i="'+i+'"><td><input type="text" data-k="kode" value="'+esc(d.kode)+'" style="width:80px"></td><td><input type="text" data-k="nama" value="'+esc(d.nama)+'" style="width:130px"></td>'+
+    '<td><input type="text" data-k="alias" value="'+esc(d.alias||'')+'" placeholder="mis. Muzakkir" style="width:130px"></td><td><select data-k="jenis">'+opt('kardio','Kardio',d.jenis==='kardio')+opt('pediatri','Pediatri',d.jenis==='pediatri')+opt('lain','Lainnya',d.jenis==='lain')+'</select></td>'+
+    '<td><input type="checkbox" data-k="inList"'+(d.inList?' checked':'')+'></td><td><input type="checkbox" data-k="tampilKode"'+(d.tampilKode?' checked':'')+'></td>'+
+    '<td><button class="btn sm danger" data-del="'+i+'">Hapus</button></td></tr>';
+  });
+  $('#docTbl').innerHTML=h;
+  $('#nurses').value=S.nurses.join('\n');
+  renderChips();
+  var ov=[['kardio','Kardio FU'],['btkv','KJS BTKV'],['kjslain','KJS TS Lain'],['pediatri','Pediatri'],['pedikjs','Pedi KJS']];
+  var st={};var P=S.patients;
+  $('#ovr').innerHTML=ov.map(function(o){return '<label class="f">'+o[1]+'<input type="number" min="0" data-o="'+o[0]+'" value="'+esc((S.override||{})[o[0]]||'')+'" placeholder="otomatis"></label>'}).join('');
+  var r='<tr><th>Kamar</th><th>Jumlah bed</th><th>Keterangan</th></tr>';
+  S.rooms.forEach(function(x,i){r+='<tr data-r="'+i+'"><td><b>'+esc(x.no)+'</b></td><td><input type="number" min="1" max="12" data-rk="beds" value="'+x.beds+'" style="width:80px"></td><td><input type="text" data-rk="label" value="'+esc(x.label)+'" style="max-width:240px"></td></tr>'});
+  $('#roomTbl').innerHTML=r;
+}
+$('#docTbl').addEventListener('input',function(e){
+  var tr=e.target.closest('tr[data-i]');if(!tr)return;var d=S.doctors[+tr.dataset.i],k=e.target.dataset.k;if(!d||!k)return;
+  d[k]=e.target.type==='checkbox'?e.target.checked:e.target.value;save();
+});
+$('#docTbl').addEventListener('click',function(e){
+  var b=e.target.closest('[data-del]');if(!b)return;
+  if(!b.dataset.arm){b.dataset.arm='1';b.textContent='Yakin?';setTimeout(function(){if(b.isConnected){delete b.dataset.arm;b.textContent='Hapus'}},3000);return}
+  var d=S.doctors[+b.dataset.del];S.patients.forEach(function(p){if(p.doctorId===d.id)p.doctorId='';if(p.kjsTo===d.id)p.kjsTo=''});
+  S.doctors.splice(+b.dataset.del,1);save();renderSettings();
+});
+$('#addDoc').addEventListener('click',function(){S.doctors.push(D(uid(),'','dr. ','kardio'));save();renderSettings()});
+$('#nurses').addEventListener('input',function(e){S.nurses=e.target.value.split('\n').map(function(s){return s.trim()}).filter(Boolean);save()});
+function renderChips(){
+  [['chiefs','#chiefChips'],['juniors','#fuChips']].forEach(function(x){
+    var l=S[x[0]]||[];
+    $(x[1]).innerHTML=l.length?l.map(function(n,i){return '<span class="chip">'+esc(n)+'<button type="button" data-k="'+x[0]+'" data-i="'+i+'" aria-label="Hapus '+esc(n)+'">×</button></span>'}).join(''):'<span class="hint">Belum ada nama.</span>';
+  });
+}
+function addName(key,inp){var v=inp.value.trim();if(!v)return;S[key]=S[key]||[];if(S[key].indexOf(v)<0)S[key].push(v);inp.value='';save();renderChips()}
+$('#chiefAdd').addEventListener('click',function(){addName('chiefs',$('#chiefNew'))});
+$('#fuAdd').addEventListener('click',function(){addName('juniors',$('#fuNew'))});
+$('#chiefNew').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addName('chiefs',e.target)}});
+$('#fuNew').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addName('juniors',e.target)}});
+['#chiefChips','#fuChips'].forEach(function(s){$(s).addEventListener('click',function(e){var b=e.target.closest('button[data-k]');if(!b)return;S[b.dataset.k].splice(+b.dataset.i,1);save();renderChips()})});
+$('#ovr').addEventListener('input',function(e){var k=e.target.dataset.o;if(!k)return;S.override=S.override||{};S.override[k]=e.target.value;save()});
+$('#roomTbl').addEventListener('input',function(e){
+  var tr=e.target.closest('tr[data-r]');if(!tr)return;var r=S.rooms[+tr.dataset.r],k=e.target.dataset.rk;
+  r[k]=k==='beds'?Math.max(1,Math.min(12,parseInt(e.target.value,10)||1)):e.target.value;save();
+});
+
+/* ---------- cetak, WA, cadangan ---------- */
+function printSheet(kind){
+  ANCH='p';var hh=kind==='list'?listHTML():(kind==='both'?denahHTML()+listHTML():denahHTML());ANCH='v';
+  if(kind==='denah')hh=hh.replace(/<a class="plink"[^>]*>/g,'<span>').replace(/<\/a>/g,'</span>');
+  $('#printHost').innerHTML=hh;
+  setTimeout(function(){try{window.print()}catch(e){toast('Tekan Ctrl+P untuk mencetak')}},80);
+}
+$('#prDenah').addEventListener('click',function(){printSheet('denah')});
+$('#prList').addEventListener('click',function(){printSheet('list')});
+$('#hPrDenah').addEventListener('click',function(){printSheet('denah')});
+$('#hPrList').addEventListener('click',function(){printSheet('list')});
+$('#hPrBoth').addEventListener('click',function(){printSheet('both')});
+var dlg=$('#dlg'),dMode='';
+function openDlg(mode,title,hint,text){
+  dMode=mode;$('#dT').textContent=title;$('#dH').textContent=hint;$('#dA').value=text;$('#dA').readOnly=(mode!=='restore');$('#dLoad').hidden=(mode!=='backup'&&mode!=='restore');
+  try{dlg.showModal()}catch(e){dlg.setAttribute('open','')}
+}
+$('#dClose').addEventListener('click',function(){dlg.close()});
+$('#dCopy').addEventListener('click',function(){
+  var ta=$('#dA');ta.focus();ta.select();var ok=false;
+  try{ok=document.execCommand('copy')}catch(e){}
+  if(!ok&&navigator.clipboard){navigator.clipboard.writeText(ta.value).then(function(){toast('Tersalin')},function(){toast('Pilih teks lalu salin manual')});return}
+  toast(ok?'Tersalin':'Pilih teks lalu salin manual');
+});
+$('#dLoad').addEventListener('click',function(){
+  try{
+    var o=JSON.parse($('#dA').value);
+    if(!o||!Array.isArray(o.patients)||!Array.isArray(o.doctors))throw 0;
+    S=o;selId=null;save();bindHeader();dlg.close();showTab(curTab);toast('Data dimuat');
+  }catch(e){toast('Teks cadangan tidak valid')}
+});
+$('#waBtn').addEventListener('click',function(){openDlg('wa','Teks WhatsApp','Salin lalu tempel ke WhatsApp.',waText())});
+$('#bkBtn').addEventListener('click',function(){openDlg('backup','Cadangkan / pulihkan data','Salin teks ini sebagai cadangan. Untuk memulihkan, tempel cadangan ke kotak ini lalu tekan “Muat dari teks ini”.',JSON.stringify(S));$('#dA').readOnly=false});
+$('#smpBtn').addEventListener('click',function(e){var b=e.target;if(!b.dataset.arm){b.dataset.arm='1';b.textContent='Klik lagi: ganti SEMUA data dengan contoh';setTimeout(function(){delete b.dataset.arm;b.textContent='Muat data contoh'},3500);return}delete b.dataset.arm;b.textContent='Muat data contoh';S=sample();S.lopt=S.lopt||{fs:'auto',pages:2,cols:3};selId=null;save();bindHeader();renderSettings();toast('Data contoh dimuat')});
+$('#clrBtn').addEventListener('click',function(e){
+  var b=e.target;
+  if(!b.dataset.arm){b.dataset.arm='1';b.textContent='Klik lagi untuk mengosongkan';setTimeout(function(){delete b.dataset.arm;b.textContent='Kosongkan semua pasien'},3000);return}
+  S.patients=[];S.operkan='';S.chief='';selId=null;save();bindHeader();delete b.dataset.arm;b.textContent='Kosongkan semua pasien';toast('Semua pasien dikosongkan');
+});
+$('#thBtn').addEventListener('click',function(){
+  var r=document.documentElement,cur=r.getAttribute('data-theme');
+  var dark=cur?cur==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;
+  r.setAttribute('data-theme',dark?'light':'dark');
+});
+
+/* ---------- impor ---------- */
+var CLEAN=/[\uD800-\uDFFF\uE000-\uF8FF\u2060\u200b\u200e\u200f]/g;
+var ID_SRC=/\b(4\d{2})\s*(?:Bed\s*(\d+))?\s*\/\s*(?:([A-Za-z]{2,4})\s*\/\s*)?([^\/]{2,70}?)\s*\/\s*(\d{1,2}-\d{1,2}-\d{2,4})\s*\/\s*(?:(\d{1,3})\s*(?:tahun|th)\s*\/\s*)?(?:RM\s*)?(\d{4,9})/.source;
+function isoFromDmy(s){var m=/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/.exec(String(s||'').trim());if(!m)return '';var y=m[3];if(y.length===2)y=(+y>30?'19':'20')+y;return y+'-'+pad(m[2])+'-'+pad(m[1])}
+function normRm(r){return String(r||'').replace(/\D/g,'').replace(/^0+/,'')}
+function findByRm(rm){var k=normRm(rm);if(!k)return null;return S.patients.filter(function(x){return normRm(x.rm)===k})[0]||null}
+function docByKode(k){k=String(k||'').toLowerCase();return S.doctors.filter(function(d){return String(d.kode||'').toLowerCase()===k})[0]}
+function guessDoctor(str){
+  var low=String(str||'').toLowerCase();
+  for(var i=0;i<S.doctors.length;i++){
+    var al=String(S.doctors[i].alias||'').split(',').map(function(x){return x.trim().toLowerCase()}).filter(Boolean);
+    for(var j=0;j<al.length;j++)if(low.indexOf(al[j])>=0)return S.doctors[i].id;
+  }
+  for(var k=0;k<S.doctors.length;k++){var c=S.doctors[k].kode;if(c&&new RegExp('\\b'+c+'\\b').test(str))return S.doctors[k].id}
+  return '';
+}
+function splitItems(text){
+  text=String(text||'').replace(/\s+/g,' ').replace(/\s\u2013\s/g,' - ').trim().replace(/^[-\u2022]\s+/,'');
+  if(!text)return [];
+  var out=[],last=0,re=/(\S)\s-\s(?=(\S))/g,m;
+  while((m=re.exec(text))){if(/\d/.test(m[1])&&/\d/.test(m[2]))continue;out.push(text.slice(last,m.index+1));last=m.index+m[0].length}
+  out.push(text.slice(last));
+  return out.map(function(s){return s.trim().replace(/^[-\u2022]\s*/,'')}).filter(Boolean);
+}
+function secParse(chunk){
+  var defs=[['diagnosis',/Diagnosis\s*:?/],['terapi',/Mohon\s+izin[^:]{0,40}?terapi\s+dengan\s*:?/i],['premed',/Premedikasi\s*:?/],['selesai',/\bSelesai\s*:?/],['pulang',/Obat\s+pulang\s*:?/i],['plan',/\bPlan\b\s*:?/]];
+  var pos=[];
+  defs.forEach(function(d){var m=d[1].exec(chunk);if(m)pos.push({k:d[0],i:m.index,e:m.index+m[0].length})});
+  pos.sort(function(a,b){return a.i-b.i});
+  var r={};
+  pos.forEach(function(p,n){var end=n+1<pos.length?pos[n+1].i:chunk.length;r[p.k]=splitItems(chunk.slice(p.e,end)).join('\n')});
+  return r;
+}
+function mergeP(a,b){
+  ['room','bed','doctorId','kodeLuar','tag','perawat','kjsTo','kjsLabel','gelar','nama','dob'].forEach(function(k){if(!a[k]&&b[k])a[k]=b[k]});
+  if(b.btkv)a.btkv=true;
+  ['diagnosis','terapi','premed','selesai','pulang','plan'].forEach(function(k){if((b[k]||'').length>(a[k]||'').length)a[k]=b[k]});
+  if(a.kategori==='kjs_lain'&&b.kategori!=='kjs_lain'&&b.doctorId)a.kategori=b.kategori;
+}
+function parseDoc(text){
+  var base=String(text||'').replace(CLEAN,'').replace(/\r/g,'');
+  var res={tgl:'',jam:'',zona:'',patients:[],operkan:'',chief:'',nurses:[]};
+  var dm=/(\d{1,2})\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+(\d{4}),?\s*(\d{1,2})[.:](\d{2})\s*(WITA|WIB|WIT)?/i.exec(base);
+  if(dm){var bi=BULAN.map(function(b){return b.toLowerCase()}).indexOf(dm[2].toLowerCase());res.tgl=dm[3]+'-'+pad(bi+1)+'-'+pad(dm[1]);res.jam=pad(dm[4])+':'+dm[5];res.zona=(dm[6]||'').toUpperCase()}
+  var om=/Operkan\s+ke\s+Tmn\s+Lain\s*:?([\s\S]*?)(?:={3,}|Ganti\s+Chief|$)/i.exec(base);
+  if(om){var o1=om[1].replace(/\s+/g,' ').trim();if(/[A-Za-z0-9]/.test(o1))res.operkan=o1.replace(/^[=.\s]+|[=.\s]+$/g,'')}
+  var cm0=/Ganti\s+Chief\s*:?([\s\S]*)$/i.exec(base);
+  if(cm0){var c1=cm0[1].replace(/\s+/g,' ').trim();if(/[A-Za-z0-9]/.test(c1))res.chief=c1.replace(/^[=.\s]+|[=.\s]+$/g,'')}
+  var nurseOf={},nr=/={5,}\s*\*([^*\n]{1,30})\*/g,nb=[],nm;
+  while((nm=nr.exec(base)))nb.push({name:nm[1].trim(),start:nr.lastIndex});
+  nb.forEach(function(b){
+    var er=/={5,}|Operkan\s+ke/ig;er.lastIndex=b.start;var em=er.exec(base);
+    var seg=base.slice(b.start,em?em.index:base.length).replace(/\*/g,'').replace(/\s+/g,' ');
+    var r2=new RegExp(ID_SRC,'gi'),x;while((x=r2.exec(seg)))nurseOf[normRm(x[7])]=b.name;
+  });
+  res.nurses=nb.map(function(b){return b.name});
+  var flat=base.replace(/\*\*\s*KJS/g,' @@KJS@@ ').replace(/\*/g,'').replace(/\s+/g,' ');
+  var dh=[],dr=/(?:dr\.?|Prof\.?)\s*([A-Za-z]{2,4})\s*:\s*\d+\s*[Pp]asien/g,d2;
+  while((d2=dr.exec(flat)))dh.push({i:d2.index,e:dr.lastIndex,k:d2[1]});
+  var ms=[],re=new RegExp(ID_SRC,'gi'),m;
+  while((m=re.exec(flat)))ms.push({i:m.index,e:re.lastIndex,g:m});
+  var CUT=/(?:[-\u2014\u2013_]{5,}|={5,}|@@KJS@@|(?:dr\.?|Prof\.?)\s*[A-Za-z]{2,4}\s*:\s*\d+\s*[Pp]asien|Tabe\s+terima\s+kasih|Operkan\s+ke|Ganti\s+Chief)/i;
+  var byRm={};
+  ms.forEach(function(x,n){
+    var g=x.g,nextI=n+1<ms.length?ms[n+1].i:flat.length;
+    var chunk=flat.slice(x.e,nextI);
+    var cm=CUT.exec(chunk);if(cm)chunk=chunk.slice(0,cm.index);
+    var tag='',btkv=false,tm=/^\s*-?\s*(KJS\s+[A-Za-z]+)/i.exec(chunk);
+    if(tm){if(/BTKV/i.test(tm[1]))btkv=true;else tag=tm[1].trim();chunk=chunk.slice(tm[0].length)}
+    var kode=g[3]||'',own=kode?docByKode(kode):null;
+    var sec=null;for(var q=0;q<dh.length;q++){if(dh[q].i<x.i)sec=dh[q];else break}
+    var secDoc=sec?docByKode(sec.k):null;
+    var kjs=!!(sec&&flat.slice(sec.e,x.i).indexOf('@@KJS@@')>=0);
+    var nmStr=g[4].trim(),gl='',gm=/^(Tn|Ny|An|By|Nn)(\.\s*|\s+)/i.exec(nmStr);
+    if(gm){gl=gm[1].charAt(0).toUpperCase()+gm[1].slice(1).toLowerCase()+(gm[2].indexOf('.')>=0?'.':'');nmStr=nmStr.slice(gm[0].length)}
+    var pd=secParse(chunk);
+    var p={room:g[1],bed:g[2]||'',gelar:gl,nama:nmStr.trim(),dob:isoFromDmy(g[5]),rm:g[7],btkv:btkv,tag:tag,doctorId:own?own.id:'',kodeLuar:own?'':kode,
+      kategori:own?(own.jenis==='pediatri'?'pediatri':(own.jenis==='lain'?'kjs_lain':'kardio')):'kjs_lain',
+      kjsTo:(kjs&&secDoc&&(!own||secDoc.id!==own.id))?secDoc.id:'',kjsLabel:'',perawat:nurseOf[normRm(g[7])]||'',
+      diagnosis:pd.diagnosis||'',terapi:pd.terapi||'',premed:pd.premed||'',selesai:pd.selesai||'',pulang:pd.pulang||'',plan:pd.plan||''};
+    var key=normRm(p.rm);
+    if(!byRm[key]){byRm[key]=p;res.patients.push(p)}else mergeP(byRm[key],p);
+  });
+  res.patients.forEach(function(p){if(!p.perawat)p.perawat=nurseOf[normRm(p.rm)]||''});
+  return res;
+}
+function upsert(p){
+  var ex=findByRm(p.rm),isNew=!ex;
+  var t=ex||blankP({gelar:p.gelar,nama:p.nama,dob:p.dob,rm:p.rm,kategori:p.kategori||'kardio'});
+  ['room','bed','doctorId','kodeLuar','perawat','kjsTo','kjsLabel','tag','diagnosis','terapi','premed','selesai','pulang','plan'].forEach(function(k){if(p[k])t[k]=p[k]});
+  if(p.btkv)t.btkv=true;
+  if(isNew){if(/(^|\n)\s*H-1\b/i.test(t.plan||''))t.status='h1';S.patients.push(t)}
+  return {p:t,isNew:isNew};
+}
+/* --- SOAP WhatsApp --- */
+var SOAP=null,soapT=null;
+function parseSoap(txt){
+  var raw=String(txt||'').replace(CLEAN,'').replace(/\r/g,'');
+  var lines=raw.split('\n');
+  var r={gelar:'',nama:'',dob:'',rm:'',dpjp:'',lokasi:'',doctorId:'',diagnosis:[],terapi:[],plan:[],baru:true};
+  for(var i=0;i<lines.length&&!r.rm;i++){
+    var c0=lines[i].replace(/[*_]/g,'').trim();
+    if(/RM\s*\d+/i.test(c0)&&c0.indexOf('/')>=0){
+      c0.split('/').forEach(function(part,idx){
+        part=part.trim();var rm=/^RM\s*(\d+)/i.exec(part);
+        if(rm){r.rm=rm[1]}
+        else if(/^\d{1,2}-\d{1,2}-\d{2,4}$/.test(part)){r.dob=isoFromDmy(part)}
+        else if(/^\d+\s*(tahun|th)/i.test(part)){}
+        else if(idx===0){var gm=/^(Tn|Ny|An|By|Nn)(\.\s*|\s+)/i.exec(part);if(gm){r.gelar=gm[1].charAt(0).toUpperCase()+gm[1].slice(1).toLowerCase()+(gm[2].indexOf('.')>=0?'.':'');part=part.slice(gm[0].length)}r.nama=part.trim()}
+      });
+    }
+  }
+  var plain=raw.replace(/[*_]/g,'');
+  var lm=/pasien baru di\s+(.+?)\s+atas nama/i.exec(plain.replace(/\s+/g,' '));if(lm)r.lokasi=lm[1];
+  var dp=/DPJP\s*Utama\s*:\s*([^\n]+)/i.exec(plain);if(dp){r.dpjp=dp[1].trim();r.doctorId=guessDoctor(r.dpjp)}
+  function add(s,t){t=t.replace(/^[-\u2022\u00b7]\s*/,'').replace(/^\d+[.)]\s+/,'').replace(/\s+/g,' ').trim();if(t)r[s].push(t)}
+  var sec=null,HD=/^(?:mohon izin kami\s+)?(assess(?:ment)?|assesment|diagnosa|diagnosis|terapi|therapy|plan(?:ning)?)\b\s*(?:dengan)?\s*:?\s*/i;
+  lines.forEach(function(l){
+    var c=l.replace(/[*_]/g,'').trim();if(!c)return;
+    var m=HD.exec(c);
+    if(m&&!/^[-\u2022]/.test(c)){
+      var k=m[1].toLowerCase();sec=/^(terapi|therapy)/.test(k)?'terapi':(/^plan/.test(k)?'plan':'diagnosis');
+      var rest=c.slice(m[0].length).trim();if(rest)add(sec,rest);return;
+    }
+    if(/^(selanjutnya|terima kasih|tabe)\b/i.test(c)){sec=null;return}
+    if(sec)add(sec,c);
+  });
+  r.diagnosis=r.diagnosis.join('\n');r.terapi=r.terapi.join('\n');r.plan=r.plan.join('\n');
+  return (r.rm||r.nama||r.diagnosis||r.terapi||r.plan)?r:null;
+}
+function renderSoap(){
+  var el=$('#soapOut');
+  if(!SOAP){el.innerHTML=$('#soapIn').value.trim()?'<p class="hint">Format tidak dikenali. Pastikan ada baris identitas (nama/umur/tanggal lahir/RM) dan bagian assess, terapi, plan.</p>':'';return}
+  var s=SOAP,ex=findByRm(s.rm);
+  var docs=opt('','Belum dipilih',!s.doctorId)+S.doctors.map(function(d){return opt(d.id,d.nama,d.id===s.doctorId)}).join('');
+  el.innerHTML=
+    (s.lokasi?'<p class="hint">Lokasi di SOAP: '+esc(s.lokasi)+'. Kamar dan bed diisi di formulir pasien setelah ditambahkan.</p>':'')+
+    (ex?'<p class="hint" style="color:var(--pri);font-weight:700">RM ini sudah ada ('+esc([ex.gelar,ex.nama].filter(Boolean).join(' '))+'). Diagnosis, terapi, dan plan akan diperbarui.</p>':'')+
+    '<div class="g">'+
+      '<label class="f">Gelar<input type="text" data-s="gelar" value="'+esc(s.gelar)+'"></label>'+
+      '<label class="f">Nama<input type="text" data-s="nama" value="'+esc(s.nama)+'"></label>'+
+      '<label class="f">Tanggal lahir<input type="date" data-s="dob" value="'+esc(s.dob)+'"></label>'+
+      '<label class="f">No. RM<input type="text" data-s="rm" value="'+esc(s.rm)+'"></label>'+
+      '<label class="f">DPJP'+(s.dpjp?' (SOAP: '+esc(s.dpjp)+')':'')+'<select data-s="doctorId">'+docs+'</select></label>'+
+      '<label class="f ck" style="align-self:end;padding-bottom:8px"><input type="checkbox" data-s="baru"'+(s.baru?' checked':'')+'> Tandai pasien baru (font biru)</label>'+
+    '</div>'+
+    '<div class="g w" style="margin-top:12px">'+
+      '<label class="f">Diagnosis (assessment)<textarea data-s="diagnosis" style="min-height:130px">'+esc(s.diagnosis)+'</textarea></label>'+
+      '<label class="f">Terapi<textarea data-s="terapi" style="min-height:130px">'+esc(s.terapi)+'</textarea></label>'+
+      '<label class="f">Plan<textarea data-s="plan" style="min-height:130px">'+esc(s.plan)+'</textarea></label>'+
+    '</div>'+
+    '<div class="bar" style="margin:12px 0 0"><button class="btn pri" id="soapApply">'+(ex?'Perbarui pasien':'Tambahkan ke list')+'</button></div>';
+}
+function applySoap(){
+  var s=SOAP;if(!s)return;
+  if(!s.nama&&!s.rm){toast('Isi nama atau RM dulu');return}
+  var r=upsert({gelar:s.gelar,nama:s.nama,dob:s.dob,rm:s.rm,doctorId:s.doctorId,diagnosis:s.diagnosis,terapi:s.terapi,plan:s.plan,kategori:'kardio'});
+  if(s.baru)r.p.status='baru';
+  selId=r.p.id;save();showTab('pasien');openEd();
+  toast(r.isNew?'Pasien ditambahkan. Pilih kamar dan bed.':'Data pasien diperbarui');
+}
+$('#soapIn').addEventListener('input',function(){clearTimeout(soapT);soapT=setTimeout(function(){SOAP=$('#soapIn').value.trim()?parseSoap($('#soapIn').value):null;renderSoap()},300)});
+$('#soapOut').addEventListener('input',function(e){var k=e.target.dataset.s;if(!k||!SOAP)return;SOAP[k]=e.target.type==='checkbox'?e.target.checked:e.target.value});
+$('#soapOut').addEventListener('click',function(e){if(e.target.id==='soapApply')applySoap()});
+/* --- berkas PDF --- */
+var IMP=null,pdfReady=null,PDFB='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+function loadScript(src){return new Promise(function(res,rej){var s=document.createElement('script');s.src=src;s.onload=res;s.onerror=function(){rej(new Error('gagal memuat '+src))};document.head.appendChild(s)})}
+function loadPdfJs(){
+  if(pdfReady)return pdfReady;
+  pdfReady=loadScript(PDFB+'pdf.min.js').then(function(){return loadScript(PDFB+'pdf.worker.min.js').catch(function(){})}).then(function(){
+    var w=window['pdfjs-dist/build/pdf.worker'];if(w&&!window.pdfjsWorker)window.pdfjsWorker=w;
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFB+'pdf.worker.min.js';
+  });
+  pdfReady.catch(function(){pdfReady=null});
+  return pdfReady;
+}
+async function pdfToText(file){
+  await loadPdfJs();
+  var buf=await file.arrayBuffer();
+  var doc=await window.pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
+  var out='';
+  for(var i=1;i<=doc.numPages;i++){
+    var pg=await doc.getPage(i),tc=await pg.getTextContent(),s='';
+    tc.items.forEach(function(it){s+=it.str+(it.hasEOL?'\n':' ')});
+    out+=s+'\n';
+  }
+  return out;
+}
+function renderImp(){
+  var el=$('#pdfOut');
+  if(!IMP){el.innerHTML='';return}
+  if(!IMP.patients.length){el.innerHTML='<p class="hint">Tidak ada data pasien yang terbaca. Baris identitas harus berbentuk seperti 417 Bed 4/KS/Ny. Nama/01-01-1970/56 tahun/RM 1234567.</p>';return}
+  var rows=IMP.patients.map(function(p,i){
+    var ex=findByRm(p.rm),d=docById(p.doctorId);
+    var n=['diagnosis','terapi','plan'].filter(function(k){return p[k]}).length;
+    return '<tr><td><input type="checkbox" data-i="'+i+'" checked></td><td>'+esc(p.room?(p.room+(p.bed?'/'+p.bed:'')):'-')+'</td><td>'+esc([p.gelar,p.nama].filter(Boolean).join(' '))+'<br><span class="hint">RM '+esc(p.rm)+'</span></td><td>'+esc(d?d.nama:(p.kodeLuar||'-'))+(p.kjsTo?' <span class="tg">KJS</span>':'')+'</td><td>'+esc(p.perawat||'-')+'</td><td>'+(n?n+' dari 3 bagian':'-')+'</td><td><span class="tg'+(ex?'':' g')+'">'+(ex?'Perbarui':'Baru')+'</span></td></tr>';
+  }).join('');
+  el.innerHTML='<p class="hint"><b>'+IMP.patients.length+'</b> pasien terbaca. Hilangkan centang pada baris yang tidak ingin dipakai.</p>'+
+    '<div class="scroll"><table class="tbl"><tr><th></th><th>Kamar</th><th>Pasien</th><th>DPJP</th><th>Perawat</th><th>Diagnosis, terapi, plan</th><th>Status</th></tr>'+rows+'</table></div>'+
+    '<div style="display:flex;flex-direction:column;gap:6px;margin:12px 0">'+
+    (IMP.tgl?'<label class="f ck"><input type="checkbox" id="impDate" checked> Perbarui tanggal dan jam ('+esc(IMP.tgl+' '+IMP.jam+' '+IMP.zona)+')</label>':'')+
+    ((IMP.operkan||IMP.chief)?'<label class="f ck"><input type="checkbox" id="impNote" checked> Perbarui catatan Operkan dan Ganti Chief</label>':'')+
+    '<label class="f ck"><input type="checkbox" id="impDel"> Hapus pasien yang tidak ada di berkas (sudah pulang)</label></div>'+
+    '<button class="btn pri" id="impApply">Terapkan ke list dan denah</button>';
+}
+function applyImp(){
+  if(!IMP)return;
+  var sel={};$$('#pdfOut input[data-i]').forEach(function(c){if(c.checked)sel[c.dataset.i]=1});
+  var keep={},nw=0,up=0;
+  IMP.patients.forEach(function(p,i){if(!sel[i])return;var r=upsert(p);keep[normRm(p.rm)]=1;if(r.isNew)nw++;else up++});
+  var dl=$('#impDel');
+  if(dl&&dl.checked)S.patients=S.patients.filter(function(x){return keep[normRm(x.rm)]});
+  (IMP.nurses||[]).forEach(function(n){if(S.nurses.indexOf(n)<0)S.nurses.push(n)});
+  var dd=$('#impDate');if(dd&&dd.checked&&IMP.tgl){S.tgl=IMP.tgl;S.jam=IMP.jam;if(IMP.zona)S.zona=IMP.zona}
+  var nn=$('#impNote');if(nn&&nn.checked){if(IMP.operkan)S.operkan=IMP.operkan;if(IMP.chief)S.chief=IMP.chief}
+  selId=S.patients.length?S.patients[0].id:null;
+  bindHeader();save();IMP=null;renderImp();showTab('denah');
+  toast(nw+' pasien baru, '+up+' diperbarui');
+}
+$('#pdfIn').addEventListener('change',function(e){
+  var inp=e.target,files=Array.prototype.slice.call(inp.files||[]);if(!files.length)return;
+  $('#pdfOut').innerHTML='<p class="hint">Membaca berkas...</p>';
+  (async function(){
+    var all='';
+    try{for(var i=0;i<files.length;i++){all+='\n'+await fileToText(files[i])}}
+    catch(err){$('#pdfOut').innerHTML='<p class="hint" style="color:var(--alert)">PDF tidak bisa dibaca di browser ini. Buka PDF, salin semua teks (Ctrl+A lalu Ctrl+C), tempel di kotak "Teks hasil baca atau tempel manual", lalu tekan Baca teks.</p>';return}
+    $('#pdfTxt').value=all;IMP=parseDoc(all);renderImp();
+  })();
+  inp.value='';
+});
+$('#pdfParse').addEventListener('click',function(){IMP=$('#pdfTxt').value.trim()?parseDoc($('#pdfTxt').value):null;renderImp()});
+$('#pdfOut').addEventListener('click',function(e){if(e.target.id==='impApply')applyImp()});
+
+document.addEventListener('click',function(e){
+  var a=e.target.closest('a.plink');if(!a)return;
+  e.preventDefault();
+  var pid=a.dataset.pid;
+  if(curTab!=='list')showTab('list');
+  setTimeout(function(){
+    var el=document.getElementById('a-v-'+pid);
+    if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.classList.add('flash');setTimeout(function(){el.classList.remove('flash')},2200)}
+    else toast('Data pasien ini tidak ada di list (dokternya tidak ditampilkan)');
+  },80);
+});
+
+/* --- update kamar dan perawat saja --- */
+async function docxToText(file){
+  if(!window.mammoth)await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+  var buf=await file.arrayBuffer();
+  var r=await window.mammoth.extractRawText({arrayBuffer:buf});
+  return r.value||'';
+}
+async function fileToText(file){
+  var n=(file.name||'').toLowerCase();
+  if(n.slice(-5)==='.docx')return docxToText(file);
+  if(n.slice(-4)==='.txt')return file.text();
+  return pdfToText(file);
+}
+var MV=null;
+function rbTxt(r,b){return r?(r+(b?'/'+b:'')):'-'}
+function parseMove(text){
+  if(/LAPORAN\s+DINAS|TIMBANG\s*-?\s*TERIMA/i.test(String(text||''))){var sh=parseSheet(text);if(sh.rows.length>=2)return {sheet:sh,patients:[]}}
+  var res=parseDoc(text);
+  var seen={};res.patients.forEach(function(p){seen[normRm(p.rm)]=1});
+  String(text||'').replace(CLEAN,'').split('\n').forEach(function(l){
+    var m=/\b(4\d{2})\s*(?:Bed\s*(\d+))?[^\n]*?RM\s*0*(\d{4,9})/i.exec(l);
+    if(m&&!seen[normRm(m[3])]){seen[normRm(m[3])]=1;res.patients.push({room:m[1],bed:m[2]||'',rm:m[3],nama:'',gelar:'',perawat:''})}
+  });
+  return res;
+}
+function mvState(){
+  return MV.patients.map(function(p){
+    var ex=findByRm(p.rm);
+    if(!ex)return {p:p,ex:null};
+    var roomCh=!!p.room&&(p.room!==ex.room||String(p.bed||'')!==String(ex.bed||''));
+    var nurCh=!!p.perawat&&p.perawat!==ex.perawat;
+    return {p:p,ex:ex,roomCh:roomCh,nurCh:nurCh};
+  });
+}
+function mvConflicts(rows){
+  var pos={},bad=[],seen={};
+  S.patients.forEach(function(x){pos[x.id]={room:x.room,bed:x.bed}});
+  rows.forEach(function(r){if(r.ex&&r.roomCh){pos[r.ex.id].room=r.p.room;pos[r.ex.id].bed=r.p.bed}});
+  S.patients.forEach(function(x){
+    var q=pos[x.id];if(!q.room)return;
+    var rm=roomOf(q.room),multi=rm&&rm.beds>1;
+    if(multi&&!q.bed)return;
+    var key=q.room+(multi?'/'+q.bed:'');
+    if(seen[key])bad.push(key);else seen[key]=1;
+  });
+  return bad;
+}
+function renderMove(){
+  var el=$('#mvOut');
+  if(!MV){el.innerHTML='';return}
+  if(MV.sheet){renderSheet();return}
+  if(!MV.patients.length){el.innerHTML='<p class="hint">Tidak ada pasien yang terbaca. Baris pasien harus memuat kamar (mis. 421 Bed 4) dan nomor RM.</p>';return}
+  var rows=mvState();
+  var ch=rows.filter(function(r){return r.ex&&(r.roomCh||r.nurCh)}).length;
+  var miss=rows.filter(function(r){return !r.ex}).length;
+  var tr=rows.map(function(r,i){
+    var p=r.p;
+    if(!r.ex)return '<tr style="opacity:.7"><td></td><td>'+esc([p.gelar,p.nama].filter(Boolean).join(' ')||('RM '+p.rm))+'<br><span class="hint">RM '+esc(p.rm)+'</span></td><td>'+esc(rbTxt(p.room,p.bed))+'</td><td>'+esc(p.perawat||'-')+'</td><td><span class="tg">Tidak ada di list</span></td></tr>';
+    var nm=[r.ex.gelar,r.ex.nama].filter(Boolean).join(' ');
+    var kam=r.roomCh?esc(rbTxt(r.ex.room,r.ex.bed))+' &rarr; <b>'+esc(rbTxt(p.room,p.bed))+'</b>':esc(rbTxt(r.ex.room,r.ex.bed));
+    var per=r.nurCh?esc(r.ex.perawat||'-')+' &rarr; <b>'+esc(p.perawat)+'</b>':esc(r.ex.perawat||'-');
+    var any=r.roomCh||r.nurCh;
+    var st=any?'<span class="tg g">'+(r.roomCh&&r.nurCh?'Pindah kamar dan perawat':(r.roomCh?'Pindah kamar':'Ganti perawat'))+'</span>':'<span class="tg">Tidak berubah</span>';
+    return '<tr><td>'+(any?'<input type="checkbox" data-i="'+i+'" checked>':'')+'</td><td>'+esc(nm)+'<br><span class="hint">RM '+esc(p.rm)+'</span></td><td>'+kam+'</td><td>'+per+'</td><td>'+st+'</td></tr>';
+  }).join('');
+  var bad=mvConflicts(rows);
+  el.innerHTML='<p class="hint"><b>'+ch+'</b> pasien berubah kamar atau perawat, '+(rows.length-ch-miss)+' tidak berubah'+(miss?', '+miss+' tidak ada di list (diabaikan)':'')+'.</p>'+
+    (bad.length?'<p class="hint" style="color:var(--alert);font-weight:700">Peringatan: lebih dari satu pasien akan berada di '+esc(bad.join(', '))+'. Periksa lagi sebelum menerapkan.</p>':'')+
+    '<div class="scroll"><table class="tbl"><tr><th></th><th>Pasien</th><th>Kamar</th><th>Perawat</th><th>Status</th></tr>'+tr+'</table></div>'+
+    (ch?'<button class="btn pri" id="mvApply" style="margin-top:12px">Terapkan kamar dan perawat</button>':'');
+}
+function applyMove(){
+  if(!MV)return;
+  if(MV.sheet){applySheet();return}
+  var rows=mvState(),sel={};
+  $$('#mvOut input[data-i]').forEach(function(c){if(c.checked)sel[c.dataset.i]=1});
+  var n=0;
+  rows.forEach(function(r,i){
+    if(!sel[i]||!r.ex)return;
+    if(r.roomCh){r.ex.room=r.p.room;r.ex.bed=r.p.bed||''}
+    if(r.nurCh){r.ex.perawat=r.p.perawat;if(S.nurses.indexOf(r.p.perawat)<0)S.nurses.push(r.p.perawat)}
+    n++;
+  });
+  save();MV=null;renderMove();showTab('denah');
+  toast(n+' pasien diperbarui (kamar dan perawat saja)');
+}
+$('#mvIn').addEventListener('change',function(e){
+  var inp=e.target,f=inp.files&&inp.files[0];if(!f)return;
+  $('#mvOut').innerHTML='<p class="hint">Membaca berkas...</p>';
+  (async function(){
+    var txt='';
+    try{txt=await fileToText(f)}
+    catch(err){$('#mvOut').innerHTML='<p class="hint" style="color:var(--alert)">Berkas tidak bisa dibaca di browser ini. Buka berkasnya, salin semua teks, tempel di kotak "Teks hasil baca atau tempel manual", lalu tekan Baca teks.</p>';return}
+    $('#mvTxt').value=txt;MV=parseMove(txt);renderMove();
+  })();
+  inp.value='';
+});
+$('#mvParse').addEventListener('click',function(){MV=$('#mvTxt').value.trim()?parseMove($('#mvTxt').value):null;renderMove()});
+$('#mvOut').addEventListener('click',function(e){if(e.target.id==='mvApply')applyMove()});
+
+/* --- ukuran list --- */
+function estPages(fs,cols){
+  var html=listHTML({fs:fs,cols:cols});
+  var m=document.createElement('div');m.className='measure-l';m.innerHTML=html;document.body.appendChild(m);
+  var h=m.firstChild.getBoundingClientRect().height;document.body.removeChild(m);
+  return Math.max(1,Math.ceil(h/(196*3.7795*0.97)));
+}
+function listLayout(){
+  var o=S.lopt||{fs:'auto',pages:2,cols:3},cols=o.cols||3,fs,pg=null;
+  if(o.fs&&o.fs!=='auto'){fs=parseFloat(o.fs)||6.5;return {fs:fs,cols:cols,pages:estPages(fs,cols)}}
+  var maxP=o.pages||2;fs=5.8;
+  for(var f=7.5;f>=5.79;f-=0.1){var r=Math.round(f*10)/10,p=estPages(r,cols);if(p<=maxP){fs=r;pg=p;break}}
+  if(pg===null)pg=estPages(fs,cols);
+  return {fs:fs,cols:cols,pages:pg};
+}
+function syncList(){
+  var o=S.lopt||(S.lopt={fs:'auto',pages:2,cols:3});
+  $('#lFs').value=o.fs;$('#lPg').value=o.pages;$('#lCols').value=o.cols;
+  $('#lPg').disabled=(o.fs!=='auto');
+}
+['lFs','lPg','lCols'].forEach(function(id){
+  $('#'+id).addEventListener('change',function(){
+    var o=S.lopt||(S.lopt={});
+    o.fs=$('#lFs').value;o.pages=+$('#lPg').value;o.cols=+$('#lCols').value;
+    $('#lPg').disabled=(o.fs!=='auto');
+    save();$('#pvList').innerHTML=listHTML();
+  });
+});
+
+/* --- lembar perawat (laporan dinas) --- */
+function nameTok(s){return String(s||'').toUpperCase().replace(/\b(TN|NY|AN|BY|NN|HJ|DR|IR|H)\b\.?/g,' ').replace(/[^A-Z ]/g,' ').split(/\s+/).filter(function(w){return w.length>2})}
+function nameSim(a,b){var A=nameTok(a),B=nameTok(b);if(!A.length||!B.length)return 0;var m=0;A.forEach(function(w){if(B.indexOf(w)>=0)m++});return m/Math.max(A.length,B.length)}
+function sameName(a,b){var A=nameTok(a),B=nameTok(b);if(A.length&&B.length&&A[0]===B[0])return true;return nameSim(a,b)>=0.5}
+function parseSheet(text){
+  var t=String(text||'').replace(CLEAN,'').replace(/\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/[*|]/g,' ').replace(/\s+/g,' ');
+  var rows=[],bedMax={},m;
+  var re=/\b(4\d{2})\s*(?:BED\s*(\d+))?\s+([A-Za-z][A-Za-z.,'\u2019 ]{2,70}?)\s+RM\s*[:;]\s*0*(\d{3,9})\s+TTL\s*[:;]?\s*([0-9-]*)/gi;
+  while((m=re.exec(t))){
+    var dm=/(\d{1,2})-(\d{1,2})-(\d{4})/.exec(m[5]);
+    var dob=(dm&&m[5].charAt(0)!=='-')?dm[3]+'-'+pad(dm[2])+'-'+pad(dm[1]):'';
+    rows.push({room:m[1],bed:m[2]||'',nama:m[3].trim(),rm:m[4],dob:dob,dobRaw:dob?'':m[5].trim()});
+    var b=parseInt(m[2],10);if(b&&(!bedMax[m[1]]||b>bedMax[m[1]]))bedMax[m[1]]=b;
+  }
+  var planned=[],pr=/(4\d{2}(?:\s*\/\s*\d+)?)\s+([A-Za-z][A-Za-z.' ]{2,40}?)\s+(\d{3,9})\s+(.{1,40}?)\s+PINDAH\s+MINGGU\s*(JIKA\s+SDH\s+KOSONG)?/gi,q;
+  while((q=pr.exec(t)))planned.push({to:q[1].replace(/\s+/g,''),name:q[2].trim(),rm:q[3],info:q[4].trim(),cond:!!q[5]});
+  var d2=/HARI\/TANGGAL\s*:\s*([A-Za-z]+\s*,\s*[\d-]+)/i.exec(t),sf=/SHIFT\s*:\s*([A-Za-z]+)/i.exec(t);
+  var meta=(d2?d2[1].replace(/\s+/g,' '):'')+(sf?' (shift '+sf[1].toLowerCase()+')':'');
+  return {rows:rows,bedMax:bedMax,planned:planned,meta:meta};
+}
+function matchSheet(r){
+  var ex=findByRm(r.rm);
+  if(ex)return {p:ex,how:'rm'};
+  var best=null,bs=0;
+  S.patients.forEach(function(p){
+    var s=nameSim([p.gelar,p.nama].join(' '),r.nama);
+    var dobOk=!!r.dob&&!!p.dob&&r.dob===p.dob;
+    var score=s+(dobOk?0.5:0);
+    if(score>bs&&(s>=0.5||(dobOk&&s>=0.3))){bs=score;best=p}
+  });
+  return best?{p:best,how:'nama'}:null;
+}
+function sheetRows(){
+  return MV.sheet.rows.map(function(r){
+    var m=matchSheet(r);
+    if(!m)return {r:r,p:null};
+    var p=m.p,rc=roomOf(p.room),single=!!rc&&rc.beds<=1;
+    var pb=String(p.bed||''),sb=String(r.bed||'');
+    var bedSame=pb===sb||(single&&(pb===''||pb==='1')&&(sb===''||sb==='1'));
+    var x={r:r,p:p,how:m.how};
+    x.roomCh=String(p.room||'')!==r.room||!bedSame;
+    x.rmCh=normRm(p.rm)!==normRm(r.rm);
+    x.dobCh=!!r.dob&&p.dob!==r.dob;
+    x.dobInc=!r.dob&&r.dobRaw.replace(/-/g,'')!==''&&!!p.dob;
+    x.nameDiff=!sameName([p.gelar,p.nama].join(' '),r.nama);
+    return x;
+  });
+}
+function fmtDobTxt(d){return d?fmtDob(d):'-'}
+function renderSheet(){
+  var el=$('#mvOut'),sh=MV.sheet,rows=sheetRows();
+  var matched=rows.filter(function(x){return x.p}),extra=rows.length-matched.length;
+  var used={};matched.forEach(function(x){used[x.p.id]=1});
+  var notIn=S.patients.filter(function(p){return !used[p.id]});
+  var issues=matched.filter(function(x){return x.roomCh||x.rmCh||x.dobCh||x.dobInc||x.nameDiff}).length;
+  var tr=rows.map(function(x,i){
+    if(!x.p)return '';
+    var p=x.p,r=x.r,tags=[];
+    if(x.roomCh)tags.push('<span class="tg o">Pindah kamar</span>');
+    if(x.rmCh)tags.push('<span class="tg r">RM beda</span>');
+    if(x.dobCh)tags.push('<span class="tg r">Tgl lahir beda</span>');
+    if(x.dobInc)tags.push('<span class="tg r">Tgl lahir di lembar tidak lengkap</span>');
+    if(x.nameDiff)tags.push('<span class="tg r">Nama beda: '+esc(r.nama)+'</span>');
+    if(x.how==='nama')tags.push('<span class="tg">Cocok lewat nama dan tgl lahir</span>');
+    if(!tags.length)tags.push('<span class="tg g">Sesuai</span>');
+    var can=x.roomCh||x.rmCh||x.dobCh;
+    return '<tr><td>'+(can?'<input type="checkbox" data-i="'+i+'"'+(x.nameDiff?'':' checked')+'>':'')+'</td>'+
+      '<td>'+esc([p.gelar,p.nama].filter(Boolean).join(' '))+'</td>'+
+      '<td>'+(x.roomCh?esc(rbTxt(p.room,p.bed))+' &rarr; <b>'+esc(rbTxt(r.room,r.bed))+'</b>':esc(rbTxt(p.room,p.bed)))+'</td>'+
+      '<td>'+(x.rmCh?esc(p.rm||'-')+' &rarr; <b>'+esc(r.rm)+'</b>':esc(p.rm||'-'))+'</td>'+
+      '<td>'+(x.dobCh?esc(fmtDobTxt(p.dob))+' &rarr; <b>'+esc(fmtDobTxt(r.dob))+'</b>':(x.dobInc?esc(fmtDobTxt(p.dob))+' (lembar: '+esc(r.dobRaw)+')':esc(fmtDobTxt(p.dob))))+'</td>'+
+      '<td>'+tags.join(' ')+'</td></tr>';
+  }).join('');
+  var bs=[];S.rooms.forEach(function(rm){var b=sh.bedMax[rm.no];if(b&&b>rm.beds)bs.push(rm.no+' ('+rm.beds+' &rarr; '+b+' bed)')});
+  var pl=sh.planned.map(function(q){
+    var ex=findByRm(q.rm);
+    return '<li>Ke <b>'+esc(q.to)+'</b>: '+esc(q.name)+' (RM '+esc(q.rm)+'), asal atau keterangan: '+esc(q.info)+(q.cond?' <span class="tg o">jika sudah kosong</span>':'')+(ex?' <span class="tg g">ada di list, sekarang '+esc(rbTxt(ex.room,ex.bed))+'</span>':'')+'</li>';
+  }).join('');
+  var canAny=matched.some(function(x){return x.roomCh||x.rmCh||x.dobCh});
+  el.innerHTML=
+    '<p class="hint">Lembar perawat'+(sh.meta?': <b>'+esc(sh.meta)+'</b>':'')+'. '+rows.length+' pasien terbaca, '+matched.length+' cocok dengan list'+(extra?', '+extra+' bukan pasien list (diabaikan)':'')+'. <b>'+issues+'</b> perlu diperiksa.</p>'+
+    '<div class="scroll"><table class="tbl"><tr><th></th><th>Pasien (list)</th><th>Kamar</th><th>RM</th><th>Tgl lahir</th><th>Catatan</th></tr>'+tr+'</table></div>'+
+    (bs.length?'<label class="f ck" style="margin-top:10px"><input type="checkbox" id="mvBeds" checked> Samakan jumlah bed ruangan dengan lembar: '+bs.join(', ')+'</label>':'')+
+    (notIn.length?'<p class="hint" style="margin-top:10px">Ada di list tetapi tidak ada di lembar (mungkin masuk setelah lembar dibuat): '+esc(notIn.map(function(p){return rbTxt(p.room,p.bed)+' '+p.nama}).join('; '))+'</p>':'')+
+    (pl?'<div style="margin-top:10px"><div class="lbl">Rencana pindah menurut lembar (periksa manual)</div><ul style="margin:0;padding-left:18px">'+pl+'</ul></div>':'')+
+    ((canAny||bs.length)?'<button class="btn pri" id="mvApply" style="margin-top:12px">Samakan dengan lembar perawat</button>':'');
+}
+function applySheet(){
+  var rows=sheetRows(),sel={};
+  $$('#mvOut input[data-i]').forEach(function(c){if(c.checked)sel[c.dataset.i]=1});
+  var n=0;
+  rows.forEach(function(x,i){
+    if(!sel[i]||!x.p)return;
+    var p=x.p,r=x.r,rc=roomOf(r.room),single=!!rc&&rc.beds<=1;
+    if(x.roomCh){p.room=r.room;p.bed=r.bed||(single?'':p.bed)}
+    if(x.rmCh&&r.rm)p.rm=r.rm;
+    if(x.dobCh&&r.dob)p.dob=r.dob;
+    n++;
+  });
+  var bd=$('#mvBeds');
+  if(bd&&bd.checked){var bm=MV.sheet.bedMax;S.rooms.forEach(function(rm){if(bm[rm.no]&&bm[rm.no]>rm.beds)rm.beds=bm[rm.no]})}
+  save();MV=null;renderMove();showTab('denah');
+  toast(n+' pasien disamakan dengan lembar perawat');
+}
+
+/* --- tampilan mobile --- */
+function isMobile(){return window.matchMedia('(max-width:760px)').matches}
+function openEd(){if(isMobile()){document.body.classList.add('m-editing');window.scrollTo(0,0)}}
+function leaveEd(){document.body.classList.remove('m-editing');renderSide();window.scrollTo(0,0)}
+$('#editor').addEventListener('click',function(e){if(e.target.id==='mBack'||e.target.id==='mBack2')leaveEd()});
+$('#fab').addEventListener('click',function(){$('#addP').click()});
+var ICONS={pasien:'👥',denah:'🗺️',list:'📋',impor:'⬆️',set:'⚙️'};
+$$('#tabs button').forEach(function(b){b.setAttribute('data-i',ICONS[b.dataset.t]||'')});
+function fitPv(){
+  $$('.pv .paper').forEach(function(p){
+    p.style.zoom='';
+    var box=p.parentNode.parentNode.clientWidth-4,w=p.offsetWidth;
+    if(isMobile()&&box>0&&w>box)p.style.zoom=(box/w).toFixed(3);
+  });
+}
+['pvDenah','pvList'].forEach(function(id){new MutationObserver(fitPv).observe(document.getElementById(id),{childList:true})});
+window.addEventListener('resize',fitPv);
+
+/* ---------- sinkronisasi dan akun ---------- */
+var SK='pjt4_sync_v1';
+var SYNC={db:null,user:null,booted:false,canWrite:true,cwKnown:false,owner:false,edit:false,me:'',uid:null,rec:false,sigs:{},metaSig:'',firstP:true,firstM:true,freshM:false,takeRemote:false,pushT:null,retryT:null,pushing:false,again:false,last:0,kind:'local',unsubs:[]};
+var SSTAT={local:['Mode lokal','sc-off'],ok:['Tersinkron','sc-ok'],pending:['Menyinkronkan…','sc-wait'],offline:['Offline · tersimpan di perangkat','sc-warn'],ro:['Hanya baca','sc-off'],error:['Gagal sinkron, mencoba lagi','sc-err']};
+function loadRec(){try{var r=JSON.parse(localStorage.getItem(SK)||'null');if(r&&r.sigs){SYNC.sigs=r.sigs;SYNC.metaSig=r.metaSig||'';SYNC.rec=true}}catch(e){}}
+function saveRec(){SYNC.rec=true;try{localStorage.setItem(SK,JSON.stringify({sigs:SYNC.sigs,metaSig:SYNC.metaSig}))}catch(e){}}
+function pSig(p){var o={};Object.keys(p).forEach(function(k){if(k!=='_t'&&k!=='_by')o[k]=p[k]});return JSON.stringify(o)}
+function metaOf(){var o={};Object.keys(S).forEach(function(k){if(k!=='patients'&&k!=='_t'&&k!=='_by'&&k!=='_fresh'&&k!=='lopt')o[k]=S[k]});return o}
+function mSig(){return JSON.stringify(metaOf())}
+function idxOf(id){for(var i=0;i<S.patients.length;i++)if(S.patients[i].id===id)return i;return -1}
+function roleName(){return SYNC.owner?'Pemilik':(SYNC.edit?'Editor':'Pembaca')}
+function setStat(k){
+  if(SYNC.db&&!navigator.onLine&&k!=='ro')k='offline';
+  SYNC.kind=k;var s=SSTAT[k]||SSTAT.local,el=document.getElementById('syncChip');
+  if(el){el.className='sc '+s[1];el.textContent=s[0]}
+  if(curTab==='set')renderSyncCard();
+}
+function renderRole(){var el=document.getElementById('roleChip');if(!el)return;if(!SYNC.user){el.style.display='none';return}el.style.display='';el.textContent=(SYNC.me?SYNC.me+' · ':'')+roleName()}
+function lockEditor(){$$('#editor input,#editor select,#editor textarea,#editor button').forEach(function(e){if(e.id!=='mBack'&&e.id!=='mBack2')e.disabled=true})}
+function applyRO(){
+  var ro=!SYNC.canWrite;document.body.classList.toggle('ro',ro);
+  ['unit','tgl','jam','zona','operkan','chief'].forEach(function(id){var e=document.getElementById(id);if(e)e.disabled=ro});
+  if(ro){if(curTab==='impor')showTab('pasien');else if(curTab==='pasien')renderEditor()}
+}
+function renderSyncCard(){
+  var el=document.getElementById('syncInfo');if(!el)return;
+  var s=SSTAT[SYNC.kind]||SSTAT.local;
+  var h='<p style="margin:0 0 6px"><b>Status:</b> '+esc(s[0])+(SYNC.last?' · terakhir sinkron '+esc(new Date(SYNC.last).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})):'')+'</p>';
+  if(SYNC.user)h+='<p style="margin:0 0 6px"><b>Masuk sebagai:</b> '+esc(SYNC.me||'-')+(SYNC.email&&SYNC.email!==SYNC.me?' ('+esc(SYNC.email)+')':'')+' · '+roleName()+'</p>';
+  if(!SYNC.db){
+    h+='<p class="hint">'+(cfgOk()?'Belum terhubung ke server. Data sementara hanya tersimpan di perangkat ini dan akan terkirim setelah terhubung.':'Server (Firebase) belum diatur di config.js, jadi data hanya tersimpan di perangkat ini. Ikuti PANDUAN untuk mengaktifkan sinkronisasi.')+'</p>';
+  }else{
+    h+='<p class="hint">Data disimpan di server dan diperbarui otomatis di semua perangkat yang masuk dengan akun yang punya akses. Saat tidak ada sinyal, perubahan tetap tersimpan di perangkat lalu terkirim otomatis begitu sinyal kembali.</p>';
+    if(!SYNC.owner)h+='<p class="hint">Hanya pemilik yang dapat menambah atau mencabut akses.</p>';
+  }
+  el.innerHTML=h;
+  var v=document.getElementById('verTxt');if(v)v.textContent='Versi '+APP_VERSION;
+  var o=document.getElementById('outBtn2');if(o)o.hidden=!SYNC.user;
+}
+function renderAcc(){
+  var el=document.getElementById('accBox');if(!el)return;
+  if(!SYNC.owner||!FB){el.innerHTML='';return}
+  var grp=function(k,title,note){
+    var l=ACC[k]||[];
+    return '<div><div class="lbl">'+title+'</div><p class="hint" style="margin:-2px 0 6px">'+note+'</p><div class="chips">'+(l.length?l.map(function(e,i){return '<span class="chip">'+esc(e)+'<button type="button" data-ak="'+k+'" data-ai="'+i+'" aria-label="Cabut akses '+esc(e)+'">×</button></span>'}).join(''):'<span class="hint">Belum ada.</span>')+'</div></div>';
+  };
+  el.innerHTML='<div class="card" style="background:var(--field);margin:12px 0 0"><h3>Kelola akses (khusus pemilik)</h3>'+
+    '<p class="hint" style="margin-top:-6px">Masukkan email Google orang yang boleh membuka website ini. Perubahan berlaku saat orang itu memuat ulang halaman.</p>'+
+    '<div class="addrow" style="flex-wrap:wrap"><input type="text" id="accEmail" placeholder="nama@gmail.com" inputmode="email" autocomplete="off" style="min-width:200px"><select id="accRole" style="width:auto"><option value="editors">Editor (boleh mengubah)</option><option value="viewers">Pembaca (hanya melihat)</option></select><button class="btn sm pri" id="accAdd">Beri akses</button></div>'+
+    '<div class="acc">'+grp('editors','Editor','Boleh menambah, mengubah, dan menghapus pasien.')+grp('viewers','Pembaca','Hanya bisa melihat dan mencetak.')+'</div>'+
+    '<p class="hint" style="margin:10px 0 0">Pemilik: '+esc(CFG.ownerEmail)+'</p></div>';
+}
+function saveAcc(msg){
+  FB.fs.doc('app/access').set({editors:ACC.editors,viewers:ACC.viewers}).then(function(){renderAcc();toast(msg)},function(e){toast('Gagal menyimpan akses: '+(e.code||e.message))});
+}
+document.addEventListener('click',function(e){
+  if(e.target.id==='accAdd'){
+    var inp=document.getElementById('accEmail'),em=String(inp.value||'').trim().toLowerCase(),k=document.getElementById('accRole').value;
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){toast('Email tidak valid');return}
+    if(em===String(CFG.ownerEmail||'').toLowerCase()){toast('Itu email pemilik');return}
+    ['editors','viewers'].forEach(function(x){ACC[x]=(ACC[x]||[]).filter(function(y){return y!==em})});
+    ACC[k].push(em);inp.value='';saveAcc('Akses diberikan ke '+em);return;
+  }
+  var b=e.target.closest('button[data-ak]');
+  if(b){var l=ACC[b.dataset.ak],em2=l[+b.dataset.ai];l.splice(+b.dataset.ai,1);saveAcc('Akses '+em2+' dicabut')}
+});
+async function fillBy(p){
+  var el=document.getElementById('byLine');if(!el||!SYNC.user||!p._by||!p._t)return;
+  try{
+    var id=p._by,ps=await SYNC.user.profiles([id]),nm=(ps&&ps[id]&&ps[id].name)||'';
+    if(id===SYNC.uid)nm='Anda';
+    var e2=document.getElementById('byLine');
+    if(e2&&selId===p.id)e2.textContent='Terakhir diubah oleh '+(nm||'pengguna lain')+', '+new Date(p._t).toLocaleString('id-ID',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+  }catch(e){}
+}
+function refreshView(){
+  var a=document.activeElement,typing=!!a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  if(!typing)bindHeader();
+  if(curTab==='pasien'){renderSide();if(!(typing&&a.closest('#editor')))renderEditor()}
+  else if(curTab==='denah')$('#pvDenah').innerHTML=denahHTML();
+  else if(curTab==='list')$('#pvList').innerHTML=listHTML();
+  else if(curTab==='set'&&!typing)renderSettings();
+  if(curTab==='set')renderSyncCard();
+}
+function isDirty(p){var sg=SYNC.sigs[p.id];if(sg===undefined)return !SYNC.takeRemote;return sg!==pSig(p)}
+function applyRemoteP(id,r){
+  var i=idxOf(id),p=i>=0?S.patients[i]:null;
+  if(r.deleted){
+    if(p&&!isDirty(p)){S.patients.splice(i,1);SYNC.sigs[id]='x';return true}
+    if(!p)SYNC.sigs[id]='x';
+    return false;
+  }
+  var n=Object.assign(blankP(),r);delete n.deleted;
+  if(!p){S.patients.push(n);SYNC.sigs[id]=pSig(n);return true}
+  if(isDirty(p))return false;
+  if(SYNC.sigs[id]!==undefined&&(r._t||0)<=(p._t||0))return false;
+  S.patients[i]=n;SYNC.sigs[id]=pSig(n);return true;
+}
+function afterRemote(){
+  S.patients.sort(function(a,b){return (a._c||0)-(b._c||0)});
+  if(selId&&idxOf(selId)<0)selId=null;
+  if(!selId&&S.patients.length)selId=S.patients[0].id;
+  persistLocal();saveRec();refreshView();
+  if(!S._fresh)schedPush();
+}
+function onPatients(snap){
+  var first=SYNC.firstP;SYNC.firstP=false;
+  if(first&&S._fresh){S.patients=[];selId=null}
+  var ch=first;
+  snap.docChanges().forEach(function(c){
+    if(c.type==='removed')return;
+    if(c.doc.metadata&&c.doc.metadata.hasPendingWrites)return;
+    var r=c.doc.data();if(!r)return;
+    if(applyRemoteP(c.doc.id,r))ch=true;
+  });
+  if(first&&!snap.empty)S._fresh=false;
+  if(ch)afterRemote();
+  SYNC.last=Date.now();
+  if(!SYNC.pushing&&!SYNC.pushT)setStat('ok');
+}
+function onMeta(snap){
+  var first=SYNC.firstM;SYNC.firstM=false;
+  if(snap.metadata&&snap.metadata.hasPendingWrites)return;
+  if(!snap.exists){if(first&&!S._fresh)schedPush();return}
+  var r=snap.data(),force=SYNC.freshM&&first,neverSynced=(SYNC.metaSig==='');
+  var dirty=neverSynced?!SYNC.takeRemote:(SYNC.metaSig!==mSig());
+  if(force||(neverSynced&&SYNC.takeRemote)||(!dirty&&(r._t||0)>(S._t||0))){
+    Object.keys(r).forEach(function(k){if(k!=='_t'&&k!=='_by')S[k]=r[k]});
+    S._t=r._t||0;SYNC.metaSig=mSig();
+    afterRemote();
+  }else if(dirty)schedPush();
+  SYNC.last=Date.now();
+}
+function onErr(e){
+  if(e&&(e.code==='revoked'||e.code==='permission-denied')){gate('Akses akun ini sudah dicabut atau belum diberikan. Hubungi pemilik.',false,true);return}
+  if(e&&e.code==='revoked'){SYNC.canWrite=false;SYNC.db=null;applyRO();setStat('ro')}
+  else setStat('error');
+}
+function schedPush(){
+  if(!SYNC.db||!SYNC.canWrite||S._fresh)return;
+  clearTimeout(SYNC.pushT);SYNC.pushT=setTimeout(push,900);setStat('pending');
+}
+async function push(){
+  SYNC.pushT=null;
+  if(!SYNC.db||!SYNC.canWrite||S._fresh)return;
+  if(SYNC.pushing){SYNC.again=true;return}
+  SYNC.pushing=true;
+  var db=SYNC.db,ok=true;
+  try{
+    var now=Date.now(),by=SYNC.uid||'',seen={},todo=[];
+    S.patients.forEach(function(p){seen[p.id]=1;if(SYNC.sigs[p.id]!==pSig(p))todo.push(p)});
+    var gone=Object.keys(SYNC.sigs).filter(function(id){return !seen[id]&&SYNC.sigs[id]!=='x'});
+    for(var i=0;i<todo.length;i++){
+      var p=todo[i],sg=pSig(p);p._t=now;p._by=by;
+      await db.doc('patients/'+p.id).set(JSON.parse(JSON.stringify(p)));
+      SYNC.sigs[p.id]=sg;
+    }
+    for(var j=0;j<gone.length;j++){
+      await db.doc('patients/'+gone[j]).set({id:gone[j],deleted:true,_t:now,_by:by});
+      SYNC.sigs[gone[j]]='x';
+    }
+    var ms=mSig();
+    if(ms!==SYNC.metaSig){
+      S._t=now;S._by=by;var m=metaOf();m._t=now;m._by=by;
+      await db.doc('app/meta').set(JSON.parse(JSON.stringify(m)));
+      SYNC.metaSig=ms;
+    }
+    saveRec();persistLocal();SYNC.last=Date.now();
+  }catch(e){
+    ok=false;
+    if(e&&(e.code==='invalid_argument'||e.code==='revoked'||e.code==='permission-denied')){SYNC.canWrite=false;SYNC.pushing=false;applyRO();renderRole();setStat('ro');return}
+    setStat('error');clearTimeout(SYNC.retryT);SYNC.retryT=setTimeout(schedPush,15000);
+  }
+  SYNC.pushing=false;
+  if(ok){setStat('ok');renderRole()}
+  if(SYNC.again){SYNC.again=false;schedPush()}
+}
+async function initSync(db,user,role){
+  loadRec();SYNC.takeRemote=!SYNC.rec;SYNC.freshM=!!S._fresh;
+  SYNC.user=user||null;
+  if(user){
+    try{SYNC.uid=await user.id()}catch(e){}
+    try{var me=await user.me();SYNC.me=(me&&me.name)||'';SYNC.email=(me&&me.email)||''}catch(e){}
+    SYNC.owner=role==='owner';SYNC.edit=role==='owner'||role==='editor';SYNC.canWrite=SYNC.edit;SYNC.cwKnown=true;
+    var ob=document.getElementById('outBtn');if(ob)ob.style.display='';
+  }
+  renderRole();applyRO();
+  if(!db){setStat('local');return}
+  SYNC.db=db;setStat('pending');
+  try{
+    SYNC.unsubs.push(db.collection('patients').onSnapshot(onPatients,onErr));
+    SYNC.unsubs.push(db.doc('app/meta').onSnapshot(onMeta,onErr));
+  }catch(e){setStat('error')}
+  if(curTab==='set'){renderSyncCard();renderAcc()}
+}
+
+/* ---------- server (Firebase), login, dan akses ---------- */
+var CFG=window.YUDSKY_CONFIG||null,FB=null,ACC={editors:[],viewers:[]},LASTU='pjt4_last_uid';
+var FBB='https://www.gstatic.com/firebasejs/10.14.1/';
+function cfgOk(){return !!(CFG&&CFG.firebase&&CFG.firebase.apiKey&&CFG.ownerEmail&&!/GANTI/i.test(CFG.firebase.apiKey+CFG.ownerEmail))}
+function gate(msg,login,out){
+  var g=document.getElementById('gate');g.hidden=false;
+  document.getElementById('gMsg').textContent=msg;
+  document.getElementById('gLogin').hidden=!login;document.getElementById('gOut').hidden=!out;
+}
+function hideGate(){document.getElementById('gate').hidden=true}
+function wipeLocal(){try{localStorage.removeItem(KEY);localStorage.removeItem(SK);localStorage.removeItem(LASTU)}catch(e){}}
+function wrapDb(fs){
+  return {
+    collection:function(n){var c=fs.collection(n);return {onSnapshot:function(cb,err){var srv=false;return c.onSnapshot(function(s){if(!s.metadata.fromCache)srv=true;else if(!srv&&s.empty)return;cb(s)},err)}}},
+    doc:function(p){var d=fs.doc(p);return {
+      set:function(o){return d.set(o)},
+      onSnapshot:function(cb,err){var srv=false;return d.onSnapshot(function(s){if(!s.metadata.fromCache)srv=true;else if(!srv)return;cb(s)},err)}
+    }}
+  };
+}
+function wrapUser(u,role){
+  var cache={};
+  return {
+    id:function(){return Promise.resolve(u.uid)},
+    me:function(){return Promise.resolve({name:u.displayName||u.email||'',email:u.email||''})},
+    isOwner:function(){return Promise.resolve(role==='owner')},
+    canEdit:function(){return Promise.resolve(role!=='viewer')},
+    can:function(){return Promise.resolve(role!=='viewer')},
+    profiles:async function(ids){
+      var o={};
+      for(var i=0;i<ids.length;i++){
+        var id=ids[i];
+        if(!cache[id]){try{var sn=await FB.fs.doc('users/'+id).get();var d=sn.exists?sn.data():{};cache[id]={name:d.name||d.email||''}}catch(e){cache[id]={name:''}}}
+        o[id]=cache[id];
+      }
+      return o;
+    }
+  };
+}
+function loadFirebase(){
+  return loadScript(FBB+'firebase-app-compat.js').then(function(){return Promise.all([loadScript(FBB+'firebase-auth-compat.js'),loadScript(FBB+'firebase-firestore-compat.js')])});
+}
+function signIn(){
+  var pv=new firebase.auth.GoogleAuthProvider();pv.setCustomParameters({prompt:'select_account'});
+  FB.auth.signInWithPopup(pv).catch(function(e){
+    var c=e&&e.code||'';
+    if(c==='auth/popup-closed-by-user'||c==='auth/cancelled-popup-request')return;
+    if(c==='auth/popup-blocked'||c==='auth/operation-not-supported-in-this-environment'){FB.auth.signInWithRedirect(pv);return}
+    gate(c==='auth/unauthorized-domain'?'Alamat website ini belum didaftarkan di Firebase (Authentication > Settings > Authorized domains).':'Gagal masuk: '+(e.message||c),true,false);
+  });
+}
+function signOut(){
+  var go=function(){wipeLocal();location.reload()};
+  if(FB)FB.auth.signOut().then(go,go);else go();
+}
+async function startApp(){
+  if(!cfgOk()){initSync(null,null,'');return}
+  gate('Menghubungkan ke server…',false,false);
+  try{await loadFirebase()}
+  catch(e){
+    if(localStorage.getItem(LASTU)){hideGate();initSync(null,null,'');toast('Tidak bisa terhubung ke server. Memakai data yang tersimpan di perangkat ini.');return}
+    gate('Tidak bisa terhubung ke server. Periksa koneksi internet lalu muat ulang halaman.',false,false);return;
+  }
+  try{firebase.initializeApp(CFG.firebase)}catch(e){gate('Pengaturan Firebase di config.js tidak valid: '+(e.message||e),false,false);return}
+  FB={auth:firebase.auth(),fs:firebase.firestore()};
+  FB.auth.getRedirectResult().catch(function(e){gate('Gagal masuk: '+(e.message||e.code),true,false)});
+  var started=false;
+  FB.auth.onAuthStateChanged(async function(u){
+    if(!u){if(started){location.reload();return}gate('Masuk dengan akun Google yang sudah diberi akses oleh pemilik.',true,false);return}
+    if(started)return;
+    var em=String(u.email||'').toLowerCase(),role='';
+    gate('Memeriksa akses '+em+'…',false,false);
+    if(em&&em===String(CFG.ownerEmail).toLowerCase()&&u.emailVerified)role='owner';
+    try{
+      var sn=await FB.fs.doc('app/access').get(),a=sn.exists?sn.data():{};
+      ACC={editors:(a.editors||[]).slice(),viewers:(a.viewers||[]).slice()};
+      if(!role)role=ACC.editors.indexOf(em)>=0?'editor':(ACC.viewers.indexOf(em)>=0?'viewer':'');
+    }catch(e){
+      if(e.code!=='permission-denied'&&!role){
+        if(e.code==='unavailable'&&localStorage.getItem(LASTU)===u.uid){hideGate();initSync(null,null,'');toast('Server tidak terjangkau. Memakai data di perangkat ini.');return}
+        gate('Gagal memeriksa akses ('+(e.code||e.message)+'). Muat ulang halaman.',false,true);return;
+      }
+    }
+    if(!role){gate('Akun '+em+' belum diberi akses. Minta pemilik menambahkan email ini, lalu muat ulang halaman.',false,true);return}
+    var last=null;try{last=localStorage.getItem(LASTU)}catch(e){}
+    if(last&&last!==u.uid){wipeLocal();try{localStorage.setItem(LASTU,u.uid)}catch(e){}location.reload();return}
+    try{localStorage.setItem(LASTU,u.uid)}catch(e){}
+    started=true;hideGate();
+    FB.fs.doc('users/'+u.uid).set({name:u.displayName||'',email:em}).catch(function(){});
+    initSync(wrapDb(FB.fs),wrapUser(u,role),role);
+  });
+}
+$('#gLogin').addEventListener('click',function(){if(FB)signIn()});
+$('#gOut').addEventListener('click',signOut);
+['outBtn','outBtn2'].forEach(function(id){$('#'+id).addEventListener('click',function(e){
+  var b=e.currentTarget;
+  if(!b.dataset.arm){b.dataset.arm='1';var t=b.textContent;b.textContent='Klik lagi untuk keluar';setTimeout(function(){if(b.isConnected){delete b.dataset.arm;b.textContent=t}},3000);return}
+  signOut();
+})});
+
+/* ---------- cek versi baru ---------- */
+var VRE=new RegExp('APP_'+'VERSION=\'([^\']+)\'');
+function checkUpdate(){
+  if(!/^https?:/.test(location.protocol))return;
+  fetch(location.pathname+'?v='+Date.now(),{cache:'no-store'}).then(function(r){return r.ok?r.text():''}).then(function(t){
+    var m=VRE.exec(t||'');if(m&&m[1]!==APP_VERSION)document.getElementById('upd').hidden=false;
+  }).catch(function(){});
+}
+$('#updBtn').addEventListener('click',function(){location.reload()});
+setTimeout(checkUpdate,4000);setInterval(checkUpdate,15*60000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)checkUpdate()});
+window.addEventListener('online',function(){if(SYNC.db){setStat('pending');schedPush()}});
+window.addEventListener('offline',function(){if(SYNC.db)setStat('offline')});
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&SYNC.db)schedPush()});
+$('#syncNow').addEventListener('click',function(){
+  if(!SYNC.db){toast('Belum terhubung ke server');return}
+  if(!SYNC.canWrite){toast('Akun ini hanya bisa membaca');return}
+  setStat('pending');push().then(function(){toast('Sinkronisasi selesai')});
+});
+
+/* ---------- mulai ---------- */
+S=load();if(!S){S=sample();S._fresh=true}
+S.override=S.override||{};S.chiefs=S.chiefs||[];S.juniors=S.juniors||[];S.lopt=S.lopt||{fs:'auto',pages:2,cols:3};
+S.doctors.forEach(function(d){if(d.alias===undefined)d.alias=({MZ:'Muzakkir',IM:'Idar'})[d.kode]||''});
+if(!S.chiefSeed){if(!S.chiefs.length)S.chiefs=['dr. Arya','dr. Wyne','dr. Ija','dr. Jhordi'];S.chiefSeed=1;save()}
+if(!S.v||S.v<2){S.patients.forEach(function(p){if(p.status===undefined)p.status=/(^|\n)\s*H-1\b/i.test(p.plan||'')?'h1':''});S.v=2;save()}
+S.patients.forEach(function(p,i){if(p._c===undefined)p._c=i+1});
+bindHeader();
+if(S.patients.length)selId=S.patients[0].id;
+showTab('pasien');
+SYNC.booted=true;startApp();
+})();
+</script>
+<!-- v-mobile -->
+</body>
+</html>

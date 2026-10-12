@@ -1,0 +1,57 @@
+rules_version = '2';
+// Aturan keamanan YUDSKY HUB.
+// Salin seluruh isi file ini ke Firebase Console > Firestore Database > Rules, lalu tekan Publish.
+// Ganti email pemilik di bawah jika berbeda (harus sama dengan ownerEmail di config.js).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function email() {
+      return request.auth.token.email.lower();
+    }
+    function isOwner() {
+      return signedIn() && email() == 'yudi.b27fjr@gmail.com';
+    }
+    function access() {
+      return get(/databases/$(database)/documents/app/access).data;
+    }
+    function hasAccessDoc() {
+      return exists(/databases/$(database)/documents/app/access);
+    }
+    function isEditor() {
+      return signedIn() && hasAccessDoc() && email() in access().get('editors', []);
+    }
+    function isViewer() {
+      return signedIn() && hasAccessDoc() && email() in access().get('viewers', []);
+    }
+    function canRead()  { return isOwner() || isEditor() || isViewer(); }
+    function canWrite() { return isOwner() || isEditor(); }
+
+    // Daftar akses: semua yang punya akses boleh membaca, hanya pemilik yang boleh mengubah.
+    match /app/access {
+      allow read: if canRead();
+      allow write: if isOwner();
+    }
+    // Pengaturan umum (dokter, ruangan, catatan, tanggal laporan).
+    match /app/meta {
+      allow read: if canRead();
+      allow write: if canWrite();
+    }
+    // Data pasien.
+    match /patients/{id} {
+      allow read: if canRead();
+      allow write: if canWrite();
+    }
+    // Nama pengguna untuk keterangan "terakhir diubah oleh".
+    match /users/{uid} {
+      allow read: if canRead();
+      allow write: if canRead() && request.auth.uid == uid;
+    }
+    // Selain yang di atas, semua ditolak.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
