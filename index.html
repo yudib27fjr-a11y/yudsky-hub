@@ -288,6 +288,17 @@ ul.dash li::before{content:"– "}
 #outBtn::before{display:none}
 #gate[hidden],.upd[hidden]{display:none}
 .acc{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:6px}
+.soapc{border-color:var(--pri)}
+.soapc h3{display:flex;justify-content:space-between;align-items:baseline;gap:4px 10px;flex-wrap:wrap}
+.soapc h3 small{font:600 12.5px var(--bf);color:var(--mute)}
+.days{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:8px}
+.days button{flex:none;border:1px solid var(--line);background:var(--field);border-radius:999px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;color:var(--ink)}
+.days button[aria-pressed="true"]{background:var(--pri);color:var(--on-pri);border-color:var(--pri)}
+textarea#soapTxt{min-height:240px;font:14px/1.5 ui-monospace,Menlo,Consolas,monospace}
+@media screen and (max-width:760px){textarea#soapTxt{font-size:16px;min-height:300px}}
+.vprog{font-size:12.5px;color:var(--mute);margin:2px 0 6px}
+span.tg{display:inline-block;flex:none}
+
 #printHost{display:none}
 @media print{
   html,body{background:#fff!important}
@@ -846,10 +857,12 @@ function renderSide(){
     if(!ps.length)return;tot+=ps.length;
     h+='<div class="grp"><span>'+esc(g.k)+'</span><span>'+ps.length+'</span></div>';
     ps.forEach(function(p){
-      h+='<button class="pi'+(p.id===selId?' on':'')+'" data-id="'+p.id+'"><span class="rm">'+esc(p.room?(p.room+(p.bed?'/'+p.bed:'')):'–')+'</span><span class="nm">'+esc([p.gelar,p.nama].filter(Boolean).join(' ')||'(tanpa nama)')+'</span>'+(p.status?'<span class="tg '+TGC[p.status]+'">'+TGL[p.status]+'</span>':'')+(p.btkv?'<span class="tg r">BTKV</span>':'')+(p.kjsTo?'<span class="tg">KJS</span>':'')+'</button>';
+      h+='<button class="pi'+(p.id===selId?' on':'')+'" data-id="'+p.id+'"><span class="rm">'+esc(p.room?(p.room+(p.bed?'/'+p.bed:'')):'–')+'</span><span class="nm">'+esc([p.gelar,p.nama].filter(Boolean).join(' ')||'(tanpa nama)')+'</span>'+(p.status?'<span class="tg '+TGC[p.status]+'">'+TGL[p.status]+'</span>':'')+(p.btkv?'<span class="tg r">BTKV</span>':'')+(p.kjsTo?'<span class="tg">KJS</span>':'')+(hasSoapToday(p)?'<span class="tg g" title="SOAP hari ini sudah diisi">SOAP</span>':'')+'</button>';
     });
   });
-  $('#plist').innerHTML=tot?h:'<div class="empty">Belum ada pasien.</div>';
+  var done=S.patients.filter(hasSoapToday).length;
+  var vp=S.patients.length?'<div class="vprog">SOAP hari ini: <b>'+done+'</b> dari '+S.patients.length+' pasien</div>':'';
+  $('#plist').innerHTML=tot?vp+h:'<div class="empty">Belum ada pasien.</div>';
 }
 $('#q').addEventListener('input',renderSide);
 $('#plist').addEventListener('click',function(e){var b=e.target.closest('.pi');if(b){selId=b.dataset.id;renderSide();renderEditor();openEd()}});
@@ -875,7 +888,7 @@ function renderEditor(){
   var a=p.dob?umur(p.dob):null;
   ed.innerHTML=
   '<div class="mbar"><button type="button" class="btn sm" id="mBack">&lsaquo; Daftar</button><b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc((p.room?rbTxt(p.room,p.bed)+' \u00b7 ':'')+([p.gelar,p.nama].filter(Boolean).join(' ')||'Pasien baru'))+'</b></div>'+
-  '<div class="card"><h3>Identitas</h3><div class="g">'+
+  soapCard(p)+'<div class="card"><h3>Identitas</h3><div class="g">'+
     '<label class="f">Kamar<select data-f="room">'+opt('','–',!p.room)+rooms+'</select></label>'+
     '<label class="f">Bed<select data-f="bed" id="bedSel">'+bedOpts(p)+'</select></label>'+
     '<label class="f">Gelar<select data-f="gelar">'+gel+'</select></label>'+
@@ -883,6 +896,7 @@ function renderEditor(){
     '<label class="f">Tanggal lahir<input type="date" data-f="dob" value="'+esc(p.dob)+'"></label>'+
     '<label class="f">Umur (otomatis)<input type="text" id="ageOut" value="'+(a!=null?a+' tahun':'')+'" readonly></label>'+
     '<label class="f">No. RM<input type="text" data-f="rm" value="'+esc(p.rm)+'" inputmode="numeric"></label>'+
+    '<label class="f">Tanggal masuk<input type="date" data-f="tglMasuk" value="'+esc(p.tglMasuk||'')+'"></label>'+
   '</div></div>'+
   '<div class="card"><h3>Penugasan</h3><div class="g">'+
     '<label class="f">DPJP<select data-f="doctorId">'+docs+'</select></label>'+
@@ -916,11 +930,12 @@ $('#editor').addEventListener('input',function(e){
   p[f]=(t.type==='checkbox')?t.checked:t.value;
   if(f==='room'){p.bed='';$('#bedSel').innerHTML=bedOpts(p)}
   if(f==='dob'){var a=umur(p.dob);$('#ageOut').value=a!=null?a+' tahun':''}
+  if(f==='tglMasuk'){var hd=$('#soapHd');if(hd)hd.textContent=soapHead(p,soapDay||todayKey())}
   save();renderSide();
 });
 $('#editor').addEventListener('click',function(e){
   var t=e.target;
-  if(t.id==='dupP'){var p=S.patients.filter(function(x){return x.id===selId})[0];var c=JSON.parse(JSON.stringify(p));c.id=uid();c._c=(p._c||0)+0.5;delete c._t;delete c._by;c.bed='';S.patients.splice(S.patients.indexOf(p)+1,0,c);selId=c.id;save();renderSide();renderEditor();toast('Pasien diduplikat')}
+  if(t.id==='dupP'){var p=S.patients.filter(function(x){return x.id===selId})[0];var c=JSON.parse(JSON.stringify(p));c.id=uid();c._c=(p._c||0)+0.5;delete c._t;delete c._by;delete c.soap;delete c.tglMasuk;c.bed='';S.patients.splice(S.patients.indexOf(p)+1,0,c);selId=c.id;save();renderSide();renderEditor();toast('Pasien diduplikat')}
   if(t.id==='delP'){
     if(!t.dataset.arm){t.dataset.arm='1';t.textContent='Klik lagi untuk menghapus';setTimeout(function(){if(t.isConnected){delete t.dataset.arm;t.textContent='Hapus pasien'}},3000);return}
     S.patients=S.patients.filter(function(x){return x.id!==selId});selId=null;save();renderSide();renderEditor();toast('Pasien dihapus');
@@ -934,6 +949,63 @@ $('#editor').addEventListener('click',function(e){
   $$('#seg button').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false')});
   save();renderSide();
 });
+/* ---------- SOAP harian ---------- */
+var soapDay=null,soapFor=null;
+function todayKey(){var d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+function keyOf(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+function soapOf(p,k){return (k&&(p.soap||{})[k])||''}
+function hasSoapToday(p){return !!soapOf(p,todayKey()).trim()}
+function soapDays(p){var t=todayKey(),o=p.soap||{};var ks=Object.keys(o).filter(function(k){return k!==t&&String(o[k]||'').trim()});ks.sort().reverse();return [t].concat(ks)}
+function hariRawat(p,k){var a=parseD(p.tglMasuk),b=parseD(k);if(!a||!b)return null;var n=Math.round((b-a)/864e5)+1;return n>=1&&n<1000?n:null}
+function dayLbl(k){if(k===todayKey())return 'Hari ini';var y=new Date();y.setDate(y.getDate()-1);if(k===keyOf(y))return 'Kemarin';var d=parseD(k);return d?pad(d.getDate())+'/'+pad(d.getMonth()+1):k}
+function prevSoap(p,k){var o=p.soap||{};var ks=Object.keys(o).filter(function(x){return x<k&&String(o[x]||'').trim()}).sort();return ks.length?ks[ks.length-1]:null}
+function soapHead(p,k){var n=hariRawat(p,k),d=parseD(k);return (d?HARI[d.getDay()]+', '+d.getDate()+' '+BULAN[d.getMonth()]+' '+d.getFullYear():k)+(n?' · perawatan hari ke-'+n:(p.tglMasuk?'':' · isi tanggal masuk untuk hari rawat'))}
+function soapCard(p){
+  if(soapFor!==p.id){soapFor=p.id;soapDay=null}
+  var k=soapDay||todayKey(),txt=soapOf(p,k),pv=prevSoap(p,k);
+  var chips=soapDays(p).map(function(x){return '<button type="button" data-day="'+x+'" aria-pressed="'+(x===k)+'">'+esc(dayLbl(x))+'</button>'}).join('');
+  var st='';
+  if(!txt.trim()&&SYNC.canWrite)st=(pv?'<button type="button" class="btn sm" id="soapPrev">Salin dari '+esc(dayLbl(pv).toLowerCase())+'</button>':'')+'<button type="button" class="btn sm" id="soapTpl">Pakai template</button>';
+  return '<div class="card soapc"><h3>SOAP harian <small id="soapHd">'+esc(soapHead(p,k))+'</small></h3>'+
+    '<div class="days" id="soapDays" aria-label="Pilih hari">'+chips+'</div>'+
+    '<textarea id="soapTxt" data-soap="'+k+'" spellcheck="false" aria-label="SOAP '+esc(dayLbl(k).toLowerCase())+'" placeholder="Tulis SOAP '+esc(dayLbl(k).toLowerCase())+' di sini. Tersimpan otomatis, termasuk saat offline.">'+esc(txt)+'</textarea>'+
+    '<div class="bar" style="margin:10px 0 0">'+st+'<span class="sp"></span><button type="button" class="btn pri" id="soapWa" data-ro-ok="1">Salin laporan WA</button></div></div>';
+}
+function soapTemplate(p){
+  var b=function(t){var a=lines(t);return a.length?a.map(function(x){return '- '+x}).join('\n'):'- '};
+  return ['*S:*','- ','*O:*','KU: ','TD:  mmHg  N:  x/mnt  P:  x/mnt  S:  °C  SpO2:  %','*A:*',b(p.diagnosis),'*Terapi:*',b(p.terapi),'*P:*',b(p.plan)].join('\n');
+}
+function waPatient(p,k){
+  var n=hariRawat(p,k),d=parseD(k),txt=soapOf(p,k).trim(),o=[];
+  o.push('Tabe dokter, mohon izin melaporkan pasien');
+  o.push('*'+identity(p)+'*');
+  o.push((d?HARI[d.getDay()]+', '+fmtDob(k):k)+(n?' (perawatan hari ke-'+n+')':''));
+  o.push('');
+  if(txt)o.push(txt);
+  else{var add=function(l,t){var a=lines(t);if(a.length){o.push('*'+l+'*');a.forEach(function(x){o.push('- '+x)})}};add('Diagnosis:',p.diagnosis);add('Mohon izin kami terapi dengan:',p.terapi);add('Premedikasi:',p.premed);add('Obat pulang:',p.pulang);add('Plan:',p.plan)}
+  o.push('');o.push('Tabe terima kasih dokter');
+  return o.join('\n');
+}
+function curP(){return S.patients.filter(function(x){return x.id===selId})[0]}
+function setSoap(p,k,v){var o=Object.assign({},p.soap||{});if(v)o[k]=v;else delete o[k];p.soap=o}
+$('#editor').addEventListener('input',function(e){
+  if(e.target.id!=='soapTxt')return;var p=curP();if(!p)return;
+  setSoap(p,e.target.dataset.soap,e.target.value);save();renderSide();
+});
+$('#editor').addEventListener('click',function(e){
+  var t=e.target,p=curP();if(!p)return;
+  var dy=t.closest('#soapDays button');
+  if(dy){soapDay=dy.dataset.day===todayKey()?null:dy.dataset.day;renderEditor();return}
+  var k=soapDay||todayKey();
+  if(t.id==='soapPrev'||t.id==='soapTpl'){
+    setSoap(p,k,t.id==='soapPrev'?soapOf(p,prevSoap(p,k)):soapTemplate(p));save();renderSide();renderEditor();
+    var ta=$('#soapTxt');if(ta){ta.focus();try{ta.setSelectionRange(0,0)}catch(x){}ta.scrollTop=0}return;
+  }
+  if(t.id==='soapWa')openDlg('wa','Laporan WhatsApp','Salin lalu tempel ke WhatsApp. '+(soapOf(p,k).trim()?'Isi diambil dari SOAP '+dayLbl(k).toLowerCase()+'.':'SOAP '+dayLbl(k).toLowerCase()+' masih kosong, jadi isinya diambil dari diagnosis, terapi, dan plan.'),waPatient(p,k));
+});
+/* hari berganti pukul 00.00: segarkan label "Hari ini" saat aplikasi dibuka lagi */
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&curTab==='pasien'&&document.activeElement&&document.activeElement.id!=='soapTxt'){renderSide();renderEditor()}});
+
 /* ---------- pengaturan ---------- */
 function renderSettings(){
   var h='<tr><th>Kode</th><th>Nama tampil</th><th>Kata kunci nama (untuk impor)</th><th>Jenis</th><th>Tampil di list</th><th>Kode di identitas</th><th></th></tr>';
@@ -1173,6 +1245,7 @@ function renderSoap(){
       '<label class="f">No. RM<input type="text" data-s="rm" value="'+esc(s.rm)+'"></label>'+
       '<label class="f">DPJP'+(s.dpjp?' (SOAP: '+esc(s.dpjp)+')':'')+'<select data-s="doctorId">'+docs+'</select></label>'+
       '<label class="f ck" style="align-self:end;padding-bottom:8px"><input type="checkbox" data-s="baru"'+(s.baru?' checked':'')+'> Tandai pasien baru (font biru)</label>'+
+      '<label class="f ck" style="align-self:end;padding-bottom:8px"><input type="checkbox" data-s="keep"'+(s.keep!==false?' checked':'')+'> Simpan teks ini sebagai SOAP hari ini</label>'+
     '</div>'+
     '<div class="g w" style="margin-top:12px">'+
       '<label class="f">Diagnosis (assessment)<textarea data-s="diagnosis" style="min-height:130px">'+esc(s.diagnosis)+'</textarea></label>'+
@@ -1186,6 +1259,7 @@ function applySoap(){
   if(!s.nama&&!s.rm){toast('Isi nama atau RM dulu');return}
   var r=upsert({gelar:s.gelar,nama:s.nama,dob:s.dob,rm:s.rm,doctorId:s.doctorId,diagnosis:s.diagnosis,terapi:s.terapi,plan:s.plan,kategori:'kardio'});
   if(s.baru)r.p.status='baru';
+  if(s.keep!==false){var raw=$('#soapIn').value.trim(),tk=todayKey(),cur=soapOf(r.p,tk).trim();if(raw&&cur.indexOf(raw)<0)setSoap(r.p,tk,cur?cur+'\n\n----------\n'+raw:raw)}
   selId=r.p.id;save();showTab('pasien');openEd();
   toast(r.isNew?'Pasien ditambahkan. Pilih kamar dan bed.':'Data pasien diperbarui');
 }
@@ -1543,7 +1617,7 @@ function setStat(k){
   if(curTab==='set')renderSyncCard();
 }
 function renderRole(){var el=document.getElementById('roleChip');if(!el)return;if(!SYNC.user){el.style.display='none';return}el.style.display='';el.textContent=(SYNC.me?SYNC.me+' · ':'')+roleName()}
-function lockEditor(){$$('#editor input,#editor select,#editor textarea,#editor button').forEach(function(e){if(e.id!=='mBack'&&e.id!=='mBack2')e.disabled=true})}
+function lockEditor(){$$('#editor input,#editor select,#editor textarea,#editor button').forEach(function(e){if(e.id!=='mBack'&&e.id!=='mBack2'&&!e.dataset.roOk&&!e.closest('#soapDays'))e.disabled=true})}
 function applyRO(){
   var ro=!SYNC.canWrite;document.body.classList.toggle('ro',ro);
   ['unit','tgl','jam','zona','operkan','chief'].forEach(function(id){var e=document.getElementById(id);if(e)e.disabled=ro});
