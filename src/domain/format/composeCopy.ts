@@ -1,0 +1,251 @@
+import { formatBody, type BulletStyle } from './formatters';
+import { copyableSections, mergeSections, parseSections } from '../sections/parseSections';
+import type { CopyGroupId } from './copyGroups';
+import { sliceGroups } from './sectionSlices';
+import { sectionSortIndex } from '../sections/aliases';
+import { stripTrailingClosing } from './copyGroups';
+import { formatLongDate, hariRawat } from '../clinicalDate';
+import type {
+  ClinicalDate,
+  OutputFormat,
+  Patient,
+  SectionAlias,
+  SectionId,
+} from '../types';
+
+/**
+ * SPEC 12.4 — composition.
+ *
+ * The copy engine reads the parsed view and assembles a NEW string. It never
+ * touches the stored body; `parseSections` returns slices, and everything here
+ * concatenates those slices.
+ *
+ * One rule earns its own paragraph: when the user copies *all* sections, the
+ * body passes through structurally untouched — only the inline formatter runs.
+ * Re-composing from parsed blocks would silently normalise the resident's own
+ * spacing, and "copy everything" must be byte-faithful apart from the format
+ * conversion they explicitly asked for.
+ */
+
+export interface CopyDay {
+  date: ClinicalDate;
+  body: string;
+}
+
+export interface ComposeOptions {
+  format: OutputFormat;
+  /** How bullets are written for WhatsApp; see formatters.ts. */
+  bullet?: BulletStyle;
+  /** Plain only: spell symbols in ASCII (`→` → `->`). See `SYMBOL_ASCII`. */
+  asciiSymbols?: boolean | undefined;
+  /**
+   * `'all'`, or the chosen "Salin bagian" groups.
+   *
+   * Groups rather than section ids: a subset is cut from the note by boundary
+   * now, so the ids inside a block never have to be enumerated — which is what
+   * made an unfamiliar heading a problem.
+   */
+  sections: CopyGroupId[] | 'all';
+  includeIdentity: boolean;
+  includeDateHeader: boolean;
+  /**
+   * With a section subset: leave out each chosen block's own heading line
+   * ("*Mohon izin kami assess dengan:*"). Off by default; ignored for 'all'.
+   */
+  dropHeaders?: boolean | undefined;
+  aliases: readonly SectionAlias[];
+  patient: Patient;
+  /**
+   * The user's own closing sentences, from settings.
+   *
+   * Used only to recognise and drop a closing at the end of a SECTION SUBSET.
+   * Passing the configured list rather than matching a pattern: every
+   * consultant is addressed differently — "dokter", "Prof", "dok" — and a
+   * regex loose enough to catch all of them would eventually eat a plan item.
+   */
+  closings?: readonly string[];
+}
+
+/** SPEC 12.4 — the identity line, built from what the patient record has. */
+export function identityLine(patient: Patient): string {
+  return [
+    patient.name,
+    patient.age !== undefined ? `${patient.age}th` : null,
+    patient.sex,
+    patient.mrn ? `RM ${patient.mrn}` : null,
+    [patient.ward, patient.bed].filter(Boolean).join(' ').trim() || null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+export function dayHeading(date: ClinicalDate, admittedAt: ClinicalDate): string {
+  return `${formatLongDate(date)} · Hari rawat ke-${hariRawat(date, admittedAt)}`;
+}
+
+/**
+ * Renders one day's body, honouring the section subset.
+ *
+ * Blank lines between blocks are normalised to exactly one when composing a
+ * subset (SPEC 12.4) — the gaps in the original separated sections that are no
+ * longer adjacent, so preserving them would produce ragged holes.
+ */
+function renderDayBody(body: string, options: ComposeOptions): string {
+  if (options.sections === 'all') return body.trim();
+
+  /**
+   * A subset is a contiguous slice of the ORIGINAL text.
+   *
+   * What stood here reassembled the note from parsed sections, sorted them into
+   * a canonical order and dropped whatever did not match a known id. That is
+   * how an unrecognised heading — `Pulsasi:`, `6P:`, `Laporan Arteriografi
+   * (02-09-2026)` — ended up in the wrong block or absent, and how the order of
+   * a note could change on its way into a message.
+   *
+   * Slicing between boundaries needs to recognise only the boundaries, so
+   * everything else is carried along inside whichever block contains it —
+   * exactly as a reader takes it.
+   */
+  return sliceGroups(body, options.aliases, options.sections, { dropHeaders: options.dropHeaders });
+}
+
+/**
+ * Join rendered sections.
+ *
+ * A blank line between HEADINGS is right — it is how the note separates `*O :*`
+ * from `*EKG …*`. Between FIELDS it is wrong: `Tensi`, `Nadi`, `Nafas` and
+ * `Suhu` are consecutive lines in the note, and the parser only makes them
+ * separate sections because each has a `label : value` shape. Putting a blank
+ * line between each turned four lines of vitals into eight.
+ *
+ * So the separator follows what the SECOND piece is: a heading opens a new
+ * block, a field continues the one above it.
+ */
+function joinSections(
+  rendered: readonly { text: string; ownsLine: boolean }[],
+): string {
+  return rendered.reduce((out, piece, index) => {
+    if (index === 0) return piece.text;
+    return `${out}${piece.ownsLine ? '\n\n' : '\n'}${piece.text}`;
+  }, '');
+}
+
+export function composeCopy(days: readonly CopyDay[], options: ComposeOptions): string {
+  const parts: string[] = [];
+
+  if (options.includeIdentity) {
+    const identity = identityLine(options.patient);
+    if (identity) parts.push(identity);
+  }
+
+  const multiDay = days.length > 1;
+
+  for (const day of days) {
+    /**
+     * A section subset never carries the closing sentence.
+     *
+     * The closing is loose text after the last heading, so the parser gives it
+     * to whichever section precedes it — Plan. Copying Plan therefore ended
+     * with a sign-off, pasted into the middle of a message that has not
+     * finished yet. The whole-note copy keeps it, because there it is the end
+     * of the message and belongs.
+     */
+    const rendered =
+      options.sections === 'all'
+        ? renderDayBody(day.body, options)
+        : stripTrailingClosing(renderDayBody(day.body, options), options.closings ?? []);
+    if (!rendered.trim() && !options.includeDateHeader) continue;
+
+    const chunk: string[] = [];
+    // A date header is forced when several days are in one message: without
+    // it, three days of SOAP arrive as one undifferentiated wall of text.
+    if (options.includeDateHeader || multiDay) {
+      chunk.push(dayHeading(day.date, options.patient.admittedAt));
+    }
+    if (rendered.trim()) chunk.push(rendered);
+    parts.push(chunk.join('\n'));
+  }
+
+  return formatBody(parts.join('\n\n').trim(), options.format, options.bullet, {
+    asciiSymbols: options.asciiSymbols,
+  });
+}
+
+/**
+ * SPEC F8 — documents run through the same copy engine as SOAP notes.
+ *
+ * The only difference is that a document has no patient, so there is no
+ * identity line and no date header — which is exactly why this is a thin
+ * wrapper rather than a second engine.
+ */
+export function composeDocument(
+  body: string,
+  sections: SectionId[] | 'all',
+  format: OutputFormat,
+  aliases: readonly SectionAlias[],
+  bullet?: BulletStyle,
+): string {
+  if (sections === 'all') return formatBody(body.trim(), format, bullet);
+
+  const wanted = new Set(sections);
+  const merged = mergeSections(parseSections(body, aliases))
+    .filter((section) => wanted.has(section.sectionId) && !section.empty)
+    .sort((a, b) => sectionSortIndex(a.sectionId, aliases) - sectionSortIndex(b.sectionId, aliases));
+
+  return formatBody(
+    joinSections(
+      merged.map((section) => {
+        const first = section.blocks[0];
+        const header = first?.headerLine?.replace(/[ \t]+$/, '');
+        const ownsLine = first?.ownsLine ?? true;
+        // Heading gets a newline, field keeps its spacing — see above.
+        if (!header) return { text: section.text, ownsLine };
+        return {
+          ownsLine,
+          text: ownsLine
+            ? `${header}\n${section.text.trimStart()}`.trimEnd()
+            : `${first?.headerLine ?? ''}${section.text}`.trimEnd(),
+        };
+      }),
+    ),
+    format,
+    bullet,
+  );
+}
+
+/** Copies a single section, used by the per-section gutter button (SPEC F6). */
+export function composeSection(
+  body: string,
+  sectionId: SectionId,
+  format: OutputFormat,
+  aliases: readonly SectionAlias[],
+  includeHeader = true,
+  bullet?: BulletStyle,
+): string {
+  const section = copyableSections(body, aliases).find(
+    (candidate) => candidate.sectionId === sectionId,
+  );
+  if (!section) return '';
+
+  const header = section.blocks[0]?.headerLine?.replace(/[ \t]+$/, '');
+  // A newline, not a space. `*Plan:* - Monitoring` is what a space produced,
+  // and every real note puts the first item on the line below its heading.
+  const text =
+    includeHeader && header ? `${header}\n${section.text.trimStart()}`.trimEnd() : section.text;
+  return formatBody(text, format, bullet);
+}
+
+/*
+ * `resolveRange` was deleted here.
+ *
+ * It turned a preset's range — today, this day, the last three, all of them —
+ * into a list of days. Every shape Salin actually sends describes ONE day, and
+ * the range chooser sat above the copy button offering four ways to send
+ * something other than the note on screen. The sheet now always composes the
+ * open note, so there is no range to resolve and no preset field to carry one.
+ *
+ * `composeCopy` still takes a list: a day header per day is what makes it
+ * readable if a multi-day export is ever wanted again, and the parameter costs
+ * nothing.
+ */
+

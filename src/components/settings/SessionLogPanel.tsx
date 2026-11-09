@@ -1,0 +1,80 @@
+import { useState } from 'react';
+
+import {
+  clearSessionLog,
+  describeLastSignOut,
+  readSessionLog,
+  type SessionEvent,
+} from '@/lib/sessionLog';
+
+const LABELS: Record<SessionEvent['kind'], string> = {
+  boot: 'Aplikasi dibuka',
+  'signed-in': 'Masuk',
+  'signed-out': 'Keluar',
+  'profile-error': 'Gagal memuat pengaturan',
+  'redirect-error': 'Gagal menyelesaikan login',
+  'signin-error': 'Gagal masuk dengan Google',
+  slow: 'Lambat',
+  resumed: 'Kembali ke tab',
+  'focus-lost': 'Kursor hilang',
+  error: 'Kesalahan',
+  'write-rejected': 'Simpan ditolak server',
+};
+
+/**
+ * The session log, read-only.
+ *
+ * It leads with the ONE reading that changes what to do next: whether the last
+ * unexpected sign-out happened while the browser was online. Offline is a
+ * dropped token refresh on ward wifi and a reload fixes it; online is the case
+ * worth reporting. Everything under that line is the raw record, for when the
+ * summary is not enough.
+ *
+ * No uid, no email, no token — see `sessionLog.ts`. This is meant to be
+ * screenshot-able without thinking about it.
+ */
+export function SessionLogPanel(): JSX.Element {
+  const [log, setLog] = useState(() => readSessionLog());
+  const headline = describeLastSignOut(log);
+  const slowCount = log.filter((entry) => entry.kind === 'slow').length;
+
+  if (log.length === 0) {
+    return <p className="text-xs text-fg-muted">Belum ada catatan sesi.</p>;
+  }
+
+  return (
+    <div className="space-y-2 text-xs">
+      {headline ? <p className="font-medium">{headline}</p> : null}
+      {slowCount > 0 ? (
+        <p className="text-fg-muted">
+          {slowCount} kali lambat tercatat. Saat "Memuat…" terasa lama, buka halaman ini dan kirim
+          tangkapan layarnya: baris "Lambat" menyebut apa yang ditunggu dan berapa lama.
+        </p>
+      ) : null}
+
+      <ul className="space-y-1">
+        {[...log].reverse().map((entry, index) => (
+          <li key={`${entry.at}-${index}`} className="flex flex-wrap gap-x-2 text-fg-muted">
+            <span className="font-mono text-xs">
+              {new Date(entry.at).toLocaleString('id-ID')}
+            </span>
+            <span>{LABELS[entry.kind] ?? entry.kind}</span>
+            {entry.online ? null : <span className="text-danger">offline</span>}
+            {entry.detail ? <span className="font-mono text-xs">{entry.detail}</span> : null}
+          </li>
+        ))}
+      </ul>
+
+      <button
+        type="button"
+        onClick={() => {
+          clearSessionLog();
+          setLog([]);
+        }}
+        className="min-h-tap rounded-lg border border-border px-3 font-medium text-fg-muted"
+      >
+        Hapus catatan
+      </button>
+    </div>
+  );
+}

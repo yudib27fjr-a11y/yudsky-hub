@@ -1,0 +1,36 @@
+import type { ChecklistProgress } from '@/domain/checklist';
+
+/**
+ * SPEC 9.3 — colour is never the only signal.
+ *
+ * N segments for N active items, so the card is readable in greyscale and with
+ * any form of colour blindness. N is whatever the user configured; nothing
+ * here assumes seven.
+ */
+export function ProgressStrip({
+  progress,
+  mono = false,
+}: {
+  progress: ChecklistProgress;
+  /** One colour, the card's own, instead of one per step. */
+  mono?: boolean;
+}): JSX.Element {
+  return (
+    <div
+      className="flex gap-[3px]"
+      role="img"
+      aria-label={`${progress.doneCount} dari ${progress.total} langkah selesai`}
+    >
+      {progress.segments.map((segment) => (
+        <span
+          key={segment.itemId}
+          data-color-token={mono ? undefined : segment.colorToken}
+          className={[
+            'h-1.5 flex-1 rounded-full',
+            segment.done ? 'bg-token-accent' : 'bg-[color-mix(in_srgb,var(--token-accent)_25%,transparent)]',
+          ].join(' ')}
+        />
+      ))}
+    </div>
+  );
+}

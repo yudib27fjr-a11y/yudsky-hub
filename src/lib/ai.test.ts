@@ -1,0 +1,138 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { aiEnabled, askClaude, askClaudeStructured, askClaudeTool, looksLikeApiKey, readAiFlags, readApiKey, writeAiFlags, writeApiKey } from './ai';
+
+const store = new Map<string, string>();
+
+beforeEach(() => {
+  store.clear();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => void store.set(key, value),
+    removeItem: (key: string) => void store.delete(key),
+  });
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('the key', () => {
+  it('round-trips and trims', () => {
+    writeApiKey('  sk-ant-abc  ');
+    expect(readApiKey()).toBe('sk-ant-abc');
+  });
+
+  it('is REMOVED by an empty value, not stored as a blank', () => {
+    writeApiKey('sk-ant-abc');
+    writeApiKey('');
+    expect(store.has('visite.ai.key')).toBe(false);
+  });
+
+  it('lives under its own key, never inside the profile or settings', () => {
+    // It must not reach anything that syncs: a credential that syncs is a
+    // credential on every device that ever signed in.
+    writeApiKey('sk-ant-abc');
+    expect([...store.keys()]).toEqual(['visite.ai.key']);
+  });
+});
+
+describe('the switches', () => {
+  it('are off when nothing has been saved', () => {
+    expect(readAiFlags()).toEqual({ lab: false, soap: false, check: false, summary: false, census: false, sensus: false });
+  });
+
+  it('treat anything that is not exactly true as off', () => {
+    // A half-written or hand-edited value must fail closed. The failure this
+    // guards is a feature turning itself on and sending a note somewhere.
+    store.set('visite.ai.flags', JSON.stringify({ lab: 'yes', soap: 1 }));
+    expect(readAiFlags()).toEqual({ lab: false, soap: false, check: false, summary: false, census: false, sensus: false });
+  });
+
+  it('are off when the stored value is not JSON at all', () => {
+    store.set('visite.ai.flags', 'nonsense{');
+    expect(readAiFlags()).toEqual({ lab: false, soap: false, check: false, summary: false, census: false, sensus: false });
+  });
+});
+
+describe('aiEnabled', () => {
+  it('needs BOTH a key and the switch', () => {
+    // Two conditions because they answer different questions: can this app
+    // call the API, and should it call it with my patient's note.
+    writeAiFlags({ lab: true, soap: true, check: true, summary: true, census: false, sensus: false });
+    expect(aiEnabled('lab')).toBe(false);
+
+    writeApiKey('sk-ant-abc');
+    expect(aiEnabled('lab')).toBe(true);
+
+    writeAiFlags({ lab: false, soap: true, check: false, summary: false, census: false, sensus: false });
+    expect(aiEnabled('lab')).toBe(false);
+    expect(aiEnabled('soap')).toBe(true);
+  });
+});
+
+describe('looksLikeApiKey', () => {
+  it('accepts the real prefix', () => {
+    expect(looksLikeApiKey('sk-ant-abc123')).toBe(true);
+  });
+
+  it('rejects anything else, including a plausible-looking password', () => {
+    // This is the exact failure it exists to catch: a password manager
+    // filling a saved credential into a field it mistook for a login.
+    expect(looksLikeApiKey('Hunter2!2026')).toBe(false);
+    expect(looksLikeApiKey('')).toBe(false);
+  });
+});
+
+describe('census switch', () => {
+  it('is off for a flag set saved before it existed', () => {
+    // Every other switch on says nothing about sending whole census PDFs.
+    localStorage.setItem('visite.ai.flags', JSON.stringify({ lab: true, soap: true, check: true, summary: true }));
+    writeApiKey('sk-ant-abc');
+    expect(aiEnabled('census')).toBe(false);
+  });
+});
+
+describe('a failed call says why', () => {
+  it('carries the API’s own error type and message', async () => {
+    writeApiKey('sk-ant-abc');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'model: unknown model' } }), {
+          status: 400,
+        }),
+      ),
+    );
+    await expect(
+      askClaudeTool({ model: 'x', system: '', tool: { name: 't', description: '', input_schema: {} }, pdfBase64: '', instruction: '', maxTokens: 10 }),
+    ).rejects.toThrow('Gagal memanggil AI (400) — invalid_request_error: model: unknown model.');
+  });
+});
+
+describe('the request body', () => {
+  it('never carries a sampling parameter, for any caller', async () => {
+    // A model may reject temperature outright (400, 2026-10-11). Whether a
+    // model accepts it is the model's business; Plano does not send it.
+    writeApiKey('sk-ant-abc');
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+        return new Response(
+          JSON.stringify({ content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', input: {} }] }),
+          { status: 200 },
+        );
+      }),
+    );
+    const tool = { name: 't', description: '', input_schema: {} };
+    await askClaude('hi');
+    await askClaudeTool({ model: 'm', system: '', tool, pdfBase64: '', instruction: '', maxTokens: 10 });
+    await askClaudeStructured({ system: '', tool, prompt: 'p', maxTokens: 10 });
+    expect(bodies).toHaveLength(3);
+    for (const body of bodies) {
+      expect(body).not.toHaveProperty('temperature');
+      expect(body).not.toHaveProperty('top_p');
+      expect(body).not.toHaveProperty('top_k');
+    }
+  });
+});

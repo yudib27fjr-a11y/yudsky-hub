@@ -1,0 +1,998 @@
+import {
+  deleteDoc,
+  deleteField,
+  FieldPath,
+  getDocFromCache,
+  getDocFromServer,
+  getDocs,
+  getDocsFromServer,
+  writeBatch,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  type DocumentData,
+  type DocumentReference,
+  type QuerySnapshot,
+  type Unsubscribe,
+} from 'firebase/firestore';
+import { nanoid } from 'nanoid';
+
+import { getDeviceId } from '../deviceId';
+import { clinicalStart } from '@/domain/identity';
+import { kjsRole } from '@/domain/board';
+import { labPlans } from '@/domain/labPlan';
+import { detectDpjps, primaryDpjp } from '@/domain/dpjp';
+import { isIgdEntry } from '@/domain/clinicalDate';
+import { patientMetaChanged } from '@/domain/patientMeta';
+import { parsePatientFacts } from '@/domain/parsePatient';
+import { konsulPreview } from '@/domain/konsulReply';
+import { parseSections } from '@/domain/sections/parseSections';
+import { regionsOf } from '@/domain/format/sectionSlices';
+import { namesDiagnosis } from '@/domain/sections/diagnosisHeading';
+import { DEFAULT_SECTION_ALIASES } from '@/domain/sections/aliases';
+import type { SectionAlias } from '@/domain/types';
+import type { LineBookmark } from '@/domain/bookmarks';
+import type { ReminderSetting } from '@/domain/reminders';
+import { transferCopy, transferCopyId } from '@/domain/transfer';
+import {
+  checklistCol,
+  checklistDoc,
+  entriesCol,
+  entryDoc,
+  patientDoc,
+  patientsCol,
+  revisionsCol,
+} from '../paths';
+import { db } from '../firebase';
+import { trackWrite } from '../syncStatus';
+import type {
+  ArchiveReason,
+  ClinicalDate,
+  Patient,
+  PatientStatus,
+  Sex,
+} from '@/domain/types';
+
+/**
+ * SPEC 5 — "UI never imports firebase/firestore directly."
+ * Everything crosses this boundary.
+ */
+
+export interface CreatePatientInput {
+  /**
+   * Optional. A patient created from the board's + button has no name yet —
+   * the board titles them from the first line of their note until someone
+   * fills this in. Requiring it here would put a form between the user and a
+   * blank page, which is the one thing this app must never do (SPEC 1.2).
+   */
+  name?: string;
+  admittedAt: ClinicalDate;
+  mrn?: string;
+  age?: number;
+  sex?: Sex;
+  ward?: string;
+  room?: string;
+  bed?: string;
+  dpjp?: string;
+  diagnoses?: string[];
+  labels?: string[];
+  /** Lands in the Titipan list rather than the main one. */
+  temporary?: boolean;
+}
+
+/** F10 — lowercase haystack for instant offline search. */
+export function buildSearchBlob(
+  patient: Pick<Patient, 'name' | 'diagnoses'> &
+    Partial<Pick<Patient, 'mrn' | 'bed' | 'ward' | 'dpjp'>>,
+): string {
+  return [patient.name, patient.mrn, patient.bed, patient.ward, patient.dpjp, ...patient.diagnoses]
+    .filter((part): part is string => Boolean(part))
+    .join(' ')
+    .toLowerCase();
+}
+
+/**
+ * Client-generated nanoid (SPEC 6.3): the document id exists before the write
+ * leaves the device, so creating a patient in airplane mode is instant, has a
+ * stable route, and cannot produce a duplicate on reconnect.
+ */
+export function createPatient(uid: string, input: CreatePatientInput): {
+  id: string;
+  written: Promise<void>;
+} {
+  const id = nanoid(12);
+  const diagnoses = input.diagnoses ?? [];
+  const labels = input.labels ?? [];
+
+  const record: DocumentData = {
+    id,
+    ownerId: uid,
+    memberIds: [uid],
+    name: input.name?.trim() ?? '',
+    notes: '',
+    diagnoses,
+    labels,
+    admittedAt: input.admittedAt,
+    status: 'active' satisfies PatientStatus,
+    pinned: false,
+    colorOverride: null,
+    searchBlob: buildSearchBlob({ ...input, name: input.name?.trim() ?? '', diagnoses }),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    updatedBy: getDeviceId(),
+    deletedAt: null,
+  };
+
+  // Only written when true. `temporary: false` on every patient would be a
+  // field that means nothing on the 95% and has to be filtered around forever.
+  if (input.temporary) record['temporary'] = true;
+
+  // Firestore rejects `undefined`; omit rather than write nulls that would
+  // then have to be distinguished from "explicitly cleared" later.
+  for (const key of ['mrn', 'age', 'sex', 'ward', 'bed', 'dpjp'] as const) {
+    const value = input[key];
+    if (value !== undefined && value !== '') record[key] = value;
+  }
+
+  return { id, written: trackWrite(setDoc(patientDoc(id), record)) };
+}
+
+/**
+ * How much of the note the board caches.
+ *
+ * Raised from 240 on 2026-09-12. 240 characters was sized for a fixed card
+ * showing four lines — the truncation was applied at WRITE time, where the
+ * card's size is unknowable, and the `…` was baked into the stored string. So
+ * a card the user had dragged twice as tall still ended at
+ * "- Hypertensive Heart Di…", because the missing text had never been saved.
+ *
+ * Cutting belongs at render time, where the box knows its own height. This
+ * limit exists now only to stop a pathological note from bloating the patient
+ * document, and is set well past any real assessment block.
+ */
+const PREVIEW_LIMIT = 1600;
+
+/**
+ * What the card shows: the assessment, falling back to the note's opening.
+ *
+ * It used to show whatever came first after the greeting — which is S, so every
+ * card read "nyeri dada tidak ada, sesak tidak ada". True, identical across
+ * half the ward, and no help at all in finding a patient.
+ *
+ * The assessment is what identifies them: `CAD 3VD`, `Severe MR pro MVR`,
+ * `CHF NYHA IV`. That is the line you scan a board for, so that is the line the
+ * card leads with.
+ *
+ * When there is no assessment yet — a fresh admission, a note still being
+ * written — it falls back to the old behaviour rather than showing an empty
+ * card, because "nothing written yet" is better said by showing the beginning
+ * of what was.
+ */
+function findAssessment(sections: ReturnType<typeof parseSections>): ReturnType<typeof parseSections>[number] | undefined {
+  return sections.find((section) => section.sectionId === 'a' || namesDiagnosis(section.label));
+}
+
+/** Where the note's diagnosis section starts, or null if it has none. Same rule as the card's preview. */
+export function assessmentStart(body: string): number | null {
+  return findAssessment(parseSections(body, DEFAULT_SECTION_ALIASES))?.start ?? null;
+}
+
+export function buildPreview(body: string, aliases?: readonly SectionAlias[]): string {
+  const resolved = aliases ?? DEFAULT_SECTION_ALIASES;
+  const sections = parseSections(body, resolved);
+
+  // The heading must NAME the diagnosis ("Plan Diagnostik" does not): the
+  // same rule Ringkas uses (`namesDiagnosis`).
+  const assessment = findAssessment(sections);
+
+  /*
+    A consult reply's assessment is its cardiology conclusion, a heading whose
+    LINE is the content (`carriesContent`). Its `text` is whatever follows the
+    line — usually nothing before the TS blocks — so reading `text` alone
+    found an empty assessment and fell back to the note's opening: S, O and
+    every investigation, which is what these cards showed.
+  */
+  /*
+    A's text runs to the next boundary heading (Terapi, Plan), not to the next
+    "Label :" line (20 Oct 2026). parseSections cuts at every "Diagnosa Utama :"
+    / "Problem :" sub-heading, so A's own text was empty and the card fell back
+    to the whole note. `regionsOf` is the same span Salin-per-section uses.
+  */
+  const region =
+    assessment?.sectionId === 'a' && assessment.headerLine
+      ? regionsOf(body, resolved).find((r) => r.group === 'a' && r.start === assessment.start)
+      : undefined;
+  const assessmentText = region
+    ? body.slice(region.start + assessment!.headerLine!.length, region.end).trim()
+    : (assessment?.text.trim() ?? '');
+  const source =
+    assessment?.carriesContent && assessment.headerLine
+      ? konsulPreview(body, assessment.headerLine, assessment.text)
+      : assessmentText
+        ? assessmentText
+        : body.slice(clinicalStart(sections)).trim();
+
+  return source.length > PREVIEW_LIMIT ? `${source.slice(0, PREVIEW_LIMIT)}…` : source;
+}
+
+/**
+ * Refreshes the board caches after a body write. Called from entries.repo so
+ * no call site can forget it and leave the board showing yesterday's text.
+ */
+/**
+ * Facts the note can tell us about the patient.
+ *
+ * ABSENCE IS NOT A CORRECTION. An earlier version cleared `dpjpId` whenever the
+ * body being written named nobody — which meant opening a fresh day and typing
+ * one character wiped the consultant, because a blank new day names nobody.
+ * The patient's DPJP is a fact about the patient, not about today's page.
+ *
+ * So a derived field is only ever WRITTEN when the note actually contains it.
+ * Clearing happens when the user clears the field in the identity form, which
+ * is the one place they can say they meant it.
+ *
+ * Identity fields go further and fill only what is BLANK: someone who typed a
+ * name into the form outranks a line in a note, and silently overwriting a
+ * corrected MRN with the uncorrected one from the note text would be the worst
+ * possible reading of "keep them in sync".
+ */
+function derivedPatientFields(body: string): DocumentData {
+  const fields: DocumentData = {};
+
+  const dpjp = primaryDpjp(body);
+  if (dpjp) fields['dpjpId'] = dpjp.id;
+  // Every consultant on the DPJP lines, for rules about a secondary one
+  // (the BTKV surgeon of a cardiology patient).
+  const all = detectDpjps(body).map((entry) => entry.id);
+  if (all.length > 0) fields['dpjpIds'] = all;
+
+  // Joint-care role. Derived HERE because this is the only place with the
+  // whole body — the board has the preview, which is the diagnosis block on
+  // almost every patient and never contains the DPJP lines this depends on.
+  const kjs = kjsRole(body);
+  if (kjs) fields['kjs'] = kjs;
+
+  return fields;
+}
+
+/**
+ * Fills blank patient fields from the note. Never overwrites a typed value.
+ *
+ * Separate from `touchEntryMeta` because it needs the CURRENT patient to know
+ * what is blank, and because it should run on a real edit rather than on every
+ * autosave flush.
+ */
+export function fillPatientFromNote(patient: Patient, body: string): Promise<void> | null {
+  const facts = parsePatientFacts(body);
+  const patch: PatientPatch = {};
+
+  if (!patient.name?.trim() && facts.name) patch.name = facts.name;
+  if (!patient.mrn?.trim() && facts.mrn) patch.mrn = facts.mrn;
+  if (patient.age === undefined && facts.age !== undefined) patch.age = facts.age;
+  if (!patient.sex && facts.sex) patch.sex = facts.sex;
+  if (!patient.ward?.trim() && facts.ward) patch.ward = facts.ward;
+  if (!patient.room?.trim() && facts.room) patch.room = facts.room;
+  if (!patient.bed?.trim() && facts.bed) patch.bed = facts.bed;
+
+  if (Object.keys(patch).length === 0) return null;
+
+  // The search blob is rebuilt from the merged result, so a name learned from
+  // the note becomes searchable in the same write that stores it.
+  // The search blob is rebuilt from the merged result, so a name learned from
+  // the note becomes searchable in the same write that stores it. Optional keys
+  // are only included when set — `exactOptionalPropertyTypes` treats "absent"
+  // and "present but undefined" as different, and so does Firestore.
+  const blobSource: Parameters<typeof buildSearchBlob>[0] = {
+    name: patch.name ?? patient.name ?? '',
+    diagnoses: patient.diagnoses,
+  };
+  const mrn = patch.mrn ?? patient.mrn;
+  const ward = patch.ward ?? patient.ward;
+  const bed = patch.bed ?? patient.bed;
+  if (mrn) blobSource.mrn = mrn;
+  if (ward) blobSource.ward = ward;
+  if (bed) blobSource.bed = bed;
+  if (patient.dpjp) blobSource.dpjp = patient.dpjp;
+
+  return updatePatient(patient.id, patch, blobSource);
+}
+
+/**
+ * Does a write to `date` move the card's preview?
+ *
+ * Only forward. The card answers "how is this patient TODAY"; opening
+ * yesterday to fix a typo used to make the card show yesterday's assessment
+ * (and `lastEntryDate` step back), until today's note was typed into again.
+ * That stale card is what "Perbarui kartu pasien" was being run to fix.
+ */
+/**
+ * When the preview moves to a LATER day, the one it leaves becomes the
+ * "previous" preview (2026-10-10, the card's "since yesterday" line). On the
+ * same day nothing moves: today's edits must keep comparing against
+ * yesterday, not against this morning's first draft.
+ */
+export function previousPreviewFields(
+  storedDate: ClinicalDate | undefined,
+  storedPreview: string | undefined,
+  date: ClinicalDate,
+): { prevPreview: string; prevPreviewDate: ClinicalDate } | Record<string, never> {
+  if (!storedDate || !storedPreview || storedDate >= date || isIgdEntry(storedDate)) return {};
+  return { prevPreview: storedPreview, prevPreviewDate: storedDate };
+}
+
+/** The checker's count on the latest note, for the board (see `Patient.checkCount`). */
+export function writeCheckCount(patientId: string, date: ClinicalDate, count: number): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), { checkCount: count, checkDate: date }),
+  );
+}
+
+export function previewMovesTo(stored: ClinicalDate | undefined, date: ClinicalDate): boolean {
+  if (isIgdEntry(date)) return false;
+  return !stored || date >= stored;
+}
+
+export async function touchEntryMeta(
+  patientId: string,
+  date: ClinicalDate,
+  body: string,
+): Promise<void> {
+  /**
+   * The admission note never becomes the card preview.
+   *
+   * The board answers "where is this patient today", and a card showing the
+   * IGD note answers "where were they when they arrived" — which on day six is
+   * actively misleading. Writing it still updates the derived fields, because
+   * the DPJP and identity in it are as true as anywhere else.
+   *
+   * The stored preview date is read from the LOCAL cache: instant, works
+   * offline, and the board is already subscribed to this document so it is
+   * there. When it is not, the write goes ahead as before.
+   */
+  let stored: ClinicalDate | undefined;
+  let storedPreview: string | undefined;
+  let cachedData: Record<string, unknown> | undefined;
+  try {
+    const cached = await getDocFromCache(patientDoc(patientId));
+    const data = cached.data() as Patient | undefined;
+    stored = data?.previewDate;
+    storedPreview = data?.preview;
+    cachedData = data as Record<string, unknown> | undefined;
+  } catch {
+    stored = undefined;
+  }
+  const previewFields: DocumentData = previewMovesTo(stored, date)
+    ? {
+        lastEntryDate: date,
+        preview: buildPreview(body),
+        previewDate: date,
+        labPlans: labPlans(body),
+        ...previousPreviewFields(stored, storedPreview, date),
+      }
+    : {};
+
+  const fields: DocumentData = { ...previewFields, ...derivedPatientFields(body) };
+  /*
+    Nothing the card shows has changed (typing in S, O or P): no write now, so
+    the board, the patient page and other devices are not each charged a read
+    for this autosave (2026-11-01). One `updatedAt` write follows once the
+    typing has stopped, for what keys on it (Visite's refresh, archive search).
+  */
+  if (!patientMetaChanged(cachedData, fields)) {
+    scheduleTrailingTouch(patientId);
+    return;
+  }
+  cancelTrailingTouch(patientId);
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      ...fields,
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/** How long after the last skipped autosave the single `updatedAt` write goes out. */
+export const TRAILING_TOUCH_MS = 60_000;
+const trailingTouches = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelTrailingTouch(patientId: string): void {
+  const timer = trailingTouches.get(patientId);
+  if (timer !== undefined) clearTimeout(timer);
+  trailingTouches.delete(patientId);
+}
+
+function scheduleTrailingTouch(patientId: string): void {
+  cancelTrailingTouch(patientId);
+  trailingTouches.set(
+    patientId,
+    setTimeout(() => {
+      trailingTouches.delete(patientId);
+      void trackWrite(updateDoc(patientDoc(patientId), { updatedAt: serverTimestamp(), updatedBy: getDeviceId() })).catch(
+        (error: unknown) => console.error('[patients] trailing touch', error),
+      );
+    }, TRAILING_TOUCH_MS),
+  );
+}
+
+/**
+ * Put `body` (the note of `date`) on the card, when it is not there already.
+ *
+ * Called when a patient's LATEST day is opened, so any card that drifted —
+ * a rule change, a write that raced, a day deleted — heals by being looked
+ * at, with no maintenance button. No write when the card is already right.
+ */
+/**
+ * The previous day's preview, read from that day's NOTE (2026-10-10).
+ *
+ * `previousPreviewFields` only captures a preview at the moment it is
+ * replaced, so a patient whose note for today was written before that
+ * existed had no "before" to compare with until the next day, and the
+ * "Sejak kemarin" line never appeared. The patient page has yesterday's entry
+ * open anyway; this fills the gap from it. Null when there is nothing newer
+ * to record, so it never writes twice.
+ */
+export function previousFromEntry(
+  patient: Pick<Patient, 'prevPreviewDate'>,
+  date: ClinicalDate,
+  previous: { date: ClinicalDate; body: string } | null | undefined,
+): { prevPreview: string; prevPreviewDate: ClinicalDate } | null {
+  if (!previous || !previous.body.trim() || isIgdEntry(previous.date) || previous.date >= date) return null;
+  if (patient.prevPreviewDate && patient.prevPreviewDate >= previous.date) return null;
+  const prevPreview = buildPreview(previous.body);
+  return prevPreview ? { prevPreview, prevPreviewDate: previous.date } : null;
+}
+
+export function healCardPreview(
+  patient: Patient,
+  date: ClinicalDate,
+  body: string,
+  previous?: { date: ClinicalDate; body: string } | null,
+): Promise<void> | null {
+  if (!body.trim() || isIgdEntry(date)) return null;
+  const preview = buildPreview(body);
+  const moved = !(patient.preview === preview && patient.previewDate === date);
+  const fromEntry = previousFromEntry(patient, date, previous);
+  // Also heals patients whose note was last saved before `labPlans` existed.
+  const plans = labPlans(body);
+  const plansMoved = JSON.stringify(plans) !== JSON.stringify(patient.labPlans ?? []);
+  if (!moved && !fromEntry && !plansMoved) return null;
+  return trackWrite(
+    updateDoc(patientDoc(patient.id), {
+      ...(plansMoved ? { labPlans: plans } : {}),
+      ...(moved
+        ? {
+            lastEntryDate: date,
+            preview,
+            previewDate: date,
+            ...previousPreviewFields(patient.previewDate, patient.preview, date),
+            updatedAt: serverTimestamp(),
+            updatedBy: getDeviceId(),
+          }
+        : {}),
+      // The note of the day before beats the stored preview it replaced:
+      // it is what that day actually said. Not an edit, so no updatedAt.
+      ...(fromEntry ?? {}),
+    }),
+  );
+}
+
+/**
+ * Rewrites the whole cache object rather than merging a single key: a merge
+ * would leave yesterday's ticks sitting under today's date the first time an
+ * item is ticked after midnight.
+ */
+export function cacheBoardChecklist(
+  patientId: string,
+  date: ClinicalDate,
+  done: Record<string, boolean>,
+): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      boardChecklist: { date, done },
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/**
+ * `undefined` is meaningful here, not merely absent: `updatePatient` reads it
+ * as "clear this field" and writes `deleteField()`. Under
+ * `exactOptionalPropertyTypes` that has to be spelled out, or callers cannot
+ * express a clear at all.
+ */
+export type PatientPatch = {
+  [K in PatientPatchKey]?: Patient[K] | undefined;
+};
+
+type PatientPatchKey = keyof Pick<
+  Patient,
+  | 'name'
+  | 'mrn'
+  | 'age'
+  | 'sex'
+  | 'ward'
+  | 'room'
+  | 'bed'
+  | 'dpjp'
+  | 'dpjpId'
+  | 'kjs'
+  | 'notes'
+  | 'diagnoses'
+  | 'labels'
+  | 'pinned'
+  | 'pemantauan'
+  | 'ekgHarian'
+  | 'ekgFor'
+  | 'temporary'
+  | 'chief'
+  | 'discharge'
+  | 'dischargePlannedFor'
+  | 'usulH1'
+  | 'operationFor'
+  | 'todos'
+  | 'colorOverride'
+  | 'admittedAt'
+  | 'lastEntryDate'
+>;
+
+/**
+ * Write one day's checklist ticks.
+ *
+ * A field PATH, not a `todoTicks` object in a patch. `updateDoc` replaces a
+ * top-level field wholesale, so sending the whole map would let a device that
+ * had not yet seen yesterday's write erase it. Addressing the single date
+ * leaves every other day untouched by the server.
+ *
+ * `FieldPath` rather than the dotted string form because a clinical date starts
+ * with a digit and contains hyphens, which the string form requires to be
+ * backtick-escaped — a rule that is easy to get right once and easy to forget
+ * the next time somebody edits this line.
+ */
+export function setTodoTicks(
+  patientId: string,
+  date: ClinicalDate,
+  ids: readonly string[],
+): Promise<void> {
+  return trackWrite(
+    updateDoc(
+      patientDoc(patientId),
+      new FieldPath('todoTicks', date),
+      [...ids],
+      'updatedAt',
+      serverTimestamp(),
+      'updatedBy',
+      getDeviceId(),
+    ),
+  );
+}
+
+export function updatePatient(
+  patientId: string,
+  patch: PatientPatch,
+  searchBlobSource?: Parameters<typeof buildSearchBlob>[0],
+): Promise<void> {
+  const payload: DocumentData = {
+    ...patch,
+    updatedAt: serverTimestamp(),
+    updatedBy: getDeviceId(),
+  };
+  if (searchBlobSource) payload['searchBlob'] = buildSearchBlob(searchBlobSource);
+
+  // An explicit `undefined` in a patch means "clear this field".
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) payload[key] = deleteField();
+  }
+
+  return trackWrite(updateDoc(patientDoc(patientId), payload));
+}
+
+/**
+ * Set one daily reminder on a patient: one leaf, `reminders.<kind>`, so two
+ * reminders set in quick succession (or from two devices) never overwrite
+ * each other. Setting the EKG kind also clears the legacy `ekgHarian` /
+ * `ekgFor`, which would otherwise keep the old badge alive underneath.
+ */
+export function setPatientReminder(
+  patientId: string,
+  kindId: string,
+  setting: ReminderSetting,
+): Promise<void> {
+  const legacy: unknown[] =
+    kindId === 'ekg' ? [new FieldPath('ekgHarian'), deleteField(), new FieldPath('ekgFor'), deleteField()] : [];
+  return trackWrite(
+    updateDoc(
+      patientDoc(patientId),
+      new FieldPath('reminders', kindId),
+      setting,
+      ...legacy,
+      new FieldPath('updatedAt'),
+      serverTimestamp(),
+      new FieldPath('updatedBy'),
+      getDeviceId(),
+    ),
+  );
+}
+
+/**
+ * Set or remove one line bookmark: one leaf, `bookmarks.<id>`.
+ *
+ * Never the whole map. Two devices bookmarking two lines within a second of
+ * each other would otherwise each write a map the other had not seen, and the
+ * later write would erase the earlier bookmark (pattern 5).
+ */
+export function setPatientBookmark(
+  patientId: string,
+  id: string,
+  bookmark: LineBookmark | null,
+): Promise<void> {
+  return trackWrite(
+    updateDoc(
+      patientDoc(patientId),
+      new FieldPath('bookmarks', id),
+      bookmark ?? deleteField(),
+      new FieldPath('updatedAt'),
+      serverTimestamp(),
+      new FieldPath('updatedBy'),
+      getDeviceId(),
+    ),
+  );
+}
+
+/** Today's reminder ticks, written whole (a small list for one day). */
+export function setReminderDone(
+  patientId: string,
+  done: { date: ClinicalDate; ids: string[] },
+): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      reminderDone: done,
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/**
+ * Edit the note on an already-archived patient.
+ *
+ * The reason and the timestamp stay fixed — they record what happened and when,
+ * and a record you can rewrite is not a record. The note is the one part that
+ * is commentary rather than fact, so it is the one part that can be corrected.
+ */
+export function updateArchiveNote(patientId: string, note: string): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      'archive.note': note.trim(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+export function archivePatient(
+  patientId: string,
+  reason: ArchiveReason,
+  note?: string,
+): Promise<void> {
+  const archive: DocumentData = { reason, at: serverTimestamp() };
+  if (note && note.trim()) archive['note'] = note.trim();
+
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      status: 'archived' satisfies PatientStatus,
+      archive,
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+export function reopenPatient(patientId: string): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      status: 'active' satisfies PatientStatus,
+      archive: deleteField(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/**
+ * Soft delete.
+ *
+ * Sets `deletedAt`, which every query already filters on, so the patient
+ * disappears from the board and the archive at once. The document itself
+ * stays: `firestore.rules` still denies hard `delete`, so a mistake here is
+ * recoverable by an admin rather than final. Restoring is a one-field write.
+ */
+export function deletePatient(patientId: string): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      deletedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/**
+ * SPEC 1.2 rule 5 — the blank page.
+ *
+ * Tapping + on the board creates the record immediately and navigates. No
+ * sheet, no required fields, nothing between the tap and a cursor in an empty
+ * note. Identity can be filled in later, or never: the board derives a title
+ * from the note itself.
+ *
+ * `admittedAt` defaults to today because hari rawat has to count from
+ * something; it is editable afterwards like every other field.
+ */
+export function createBlankPatient(
+  uid: string,
+  today: ClinicalDate,
+  /**
+   * Which list the patient lands in.
+   *
+   * Passed rather than assumed, because the caller knows which list the user
+   * was looking at when they pressed the button and this function does not.
+   * Defaulting to `false` keeps every existing call creating an ordinary
+   * patient, which is what they meant.
+   */
+  temporary = false,
+): { id: string; written: Promise<void> } {
+  return createPatient(uid, temporary ? { admittedAt: today, temporary: true } : { admittedAt: today });
+}
+
+/**
+ * There is NO delete in this repository — not even a soft one.
+ *
+ * Removing a patient from the board is archiving, and archiving keeps every
+ * entry, checklist day and revision. A delete path would exist only to satisfy
+ * a tidiness instinct, and the cost of a mis-tap is a ward round's worth of
+ * notes. `deletedAt` survives in the schema because every query filters on it
+ * and the security rules already deny `delete` outright.
+ */
+
+/**
+ * Handover (see `domain/transfer`). Sending only marks the patient; nothing
+ * moves until the recipient accepts, and the sender can cancel until then.
+ */
+export function sendPatient(
+  patientId: string,
+  to: { key: string; name: string },
+  from: { uid: string; name: string },
+): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      transferTo: to.key,
+      transferToName: to.name,
+      transferFrom: from,
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/** Cancel (sender) or decline (recipient): the patient stays where it is. */
+export function clearTransfer(patientId: string): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      transferTo: deleteField(),
+      transferToName: deleteField(),
+      transferFrom: deleteField(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/**
+ * Accept a handover by COPYING (2026-10-31, Avi: the sender keeps a copy,
+ * archived). The recipient gets a new patient of their own with every day's
+ * note and checklist; the sender's original stays theirs, archived as
+ * "Pindah", with its revision history. Needs a connection: everything is
+ * read from the server. Returns the copy's id.
+ *
+ * The copy always lands active in Pasien saya (`transferCopy`), whatever the
+ * sender had left the original as — the .30.4 "lost in transfer" bug.
+ * Revisions are not copied: they are the sender's undo trail, and stay with
+ * the sender's original. Edits the sender makes later, even offline, land
+ * there too instead of being refused.
+ */
+export async function acceptTransfer(
+  patientId: string,
+  uid: string,
+  myName: string,
+): Promise<string> {
+  // From the server: a copy built from a partial cache would silently drop days.
+  const original = await getDocFromServer(patientDoc(patientId));
+  if (!original.exists()) throw new Error('transfer: patient gone');
+  const [entries, checklists] = await Promise.all([
+    getDocsFromServer(entriesCol(patientId)),
+    getDocsFromServer(checklistCol(patientId)),
+  ]);
+
+  const copyId = transferCopyId(patientId, uid);
+  // The patient first: the rules for its notes read `memberIds` on it.
+  await trackWrite(
+    setDoc(patientDoc(copyId), {
+      ...transferCopy(original.data(), uid, copyId),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+  const writes = [
+    ...entries.docs.map((entry) => ({ ref: entryDoc(copyId, entry.id as ClinicalDate), data: entry.data() })),
+    ...checklists.docs.map((day) => ({ ref: checklistDoc(copyId, day.id as ClinicalDate), data: day.data() })),
+  ];
+  // Batches of 400, under Firestore's 500-write limit (as importData does).
+  for (let start = 0; start < writes.length; start += 400) {
+    const batch = writeBatch(db());
+    for (const write of writes.slice(start, start + 400)) batch.set(write.ref, write.data);
+    await trackWrite(batch.commit());
+  }
+
+  // Last, so a failed copy leaves the request open to try again.
+  await trackWrite(
+    updateDoc(patientDoc(patientId), {
+      status: 'archived' satisfies PatientStatus,
+      archive: { reason: 'pindah', at: serverTimestamp(), note: `Diserahkan ke ${myName}` },
+      transferTo: deleteField(),
+      transferToName: deleteField(),
+      transferFrom: deleteField(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+  return copyId;
+}
+
+/**
+ * Patients sent to this account, by uid or by email, not yet accepted or
+ * declined. Two queries because each must match the rule on its own.
+ */
+export function subscribeIncomingTransfers(
+  uid: string,
+  email: string | null,
+  callback: (patients: Patient[]) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  const keys = email ? [uid, email.toLowerCase()] : [uid];
+  const byKey = new Map<string, Patient[]>();
+  const stops = keys.map((key) =>
+    onSnapshot(
+      query(patientsCol(), where('transferTo', '==', key)),
+      (snapshot) => {
+        byKey.set(key, snapshot.docs.map((entry) => entry.data() as Patient));
+        callback([...byKey.values()].flat());
+      },
+      onError,
+    ),
+  );
+  return () => stops.forEach((stop) => stop());
+}
+
+export function subscribePatient(
+  patientId: string,
+  callback: (patient: Patient | null) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  return onSnapshot(
+    patientDoc(patientId),
+    (snapshot) => callback(snapshot.exists() ? (snapshot.data() as Patient) : null),
+    onError,
+  );
+}
+
+export interface PatientsSnapshot {
+  patients: Patient[];
+  /** True while the payload is served from cache with writes still queued. */
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+}
+
+function mapSnapshot(snapshot: QuerySnapshot): PatientsSnapshot {
+  return {
+    patients: snapshot.docs.map((entry) => entry.data() as Patient),
+    fromCache: snapshot.metadata.fromCache,
+    hasPendingWrites: snapshot.metadata.hasPendingWrites,
+  };
+}
+
+/**
+ * Board query (SPEC 8): memberIds array-contains uid, status, deletedAt,
+ * ordered pinned desc then updatedAt desc. Mirrored in firestore.indexes.json.
+ */
+export function subscribePatients(
+  uid: string,
+  status: PatientStatus,
+  callback: (snapshot: PatientsSnapshot) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  const q = query(
+    patientsCol(),
+    where('memberIds', 'array-contains', uid),
+    where('status', '==', status),
+    where('deletedAt', '==', null),
+    // Newest note first, like a notes app. The previous pinned+updatedAt
+    // ordering reshuffled the board every time anyone typed a character,
+    // so a card was never twice in the same place — unusable on a round.
+    orderBy('createdAt', 'desc'),
+  );
+
+  return onSnapshot(
+    q,
+    // Cache-first so the board paints with no signal, then re-renders on sync.
+    { includeMetadataChanges: true },
+    (snapshot) => callback(mapSnapshot(snapshot)),
+    onError,
+  );
+}
+
+
+/**
+ * Destroy a patient and everything under it, permanently.
+ *
+ * Firestore does NOT cascade. Deleting the patient document alone leaves its
+ * entries, their revisions and its checklists in place — still stored, still
+ * billed, and now unreadable, because the rules for those subcollections check
+ * membership by reading the PARENT document that no longer exists. Orphaned
+ * data you cannot see and cannot delete is the worst of both outcomes, so the
+ * order here is deepest-first and the patient goes last.
+ *
+ * Batched at 400 rather than Firestore's 500 limit, leaving room for the
+ * writes an open listener may add while this runs.
+ *
+ * Not resumable. A purge interrupted halfway leaves a patient whose notes are
+ * partly gone, which is why the caller confirms with a count first and why
+ * this is only ever reached from an explicit "empty trash".
+ */
+export async function purgePatient(patientId: string): Promise<void> {
+  const BATCH = 400;
+
+  const flush = async (refs: DocumentReference[]): Promise<void> => {
+    for (let i = 0; i < refs.length; i += BATCH) {
+      const batch = writeBatch(db());
+      for (const ref of refs.slice(i, i + BATCH)) batch.delete(ref);
+      await batch.commit();
+    }
+  };
+
+  const entries = await getDocs(entriesCol(patientId));
+
+  // Revisions first: they are the deepest, and each entry may have dozens.
+  for (const entry of entries.docs) {
+    const revisions = await getDocs(revisionsCol(patientId, entry.id));
+    await flush(revisions.docs.map((doc) => doc.ref));
+  }
+
+  await flush(entries.docs.map((doc) => doc.ref));
+
+  const checklists = await getDocs(checklistCol(patientId));
+  await flush(checklists.docs.map((doc) => doc.ref));
+
+  // The patient itself last. Until this line the rules still resolve, so an
+  // interrupted purge leaves something that can be retried.
+  await trackWrite(deleteDoc(patientDoc(patientId)));
+}
+
+/** Move patients to the trash, or back out of it. */
+export function setPatientStatus(
+  patientId: string,
+  status: PatientStatus,
+): Promise<void> {
+  return trackWrite(
+    updateDoc(patientDoc(patientId), {
+      status,
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}

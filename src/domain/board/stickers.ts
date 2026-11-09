@@ -1,0 +1,328 @@
+/**
+ * Emoji stickers on the canvas board.
+ *
+ * A mark put NEXT TO a patient card — a flag, a tick, a cross — to say
+ * something about that patient for the next hour. It is not a field on the
+ * patient: what it means lives in the head of whoever put it there, it is
+ * true until they move it, and nothing else in the app should read it.
+ *
+ * WHY PER DEVICE
+ *
+ * A sticker means something by WHERE it is, and where a card is on the canvas
+ * is already per device (`readLayouts`/`writeLayouts`). Syncing the stickers
+ * while the cards stay local would put a flag beside a different patient on
+ * the phone — worse than not syncing it at all. So stickers live beside the
+ * layout they point into, in localStorage, and move with it or not at all.
+ *
+ * Coordinates match the canvas layout's: `x` a fraction of the canvas width,
+ * `y` in pixels. A window resized to half the width keeps the sticker beside
+ * the same card, which is the entire point of it.
+ *
+ * WHY PER SCOPE
+ *
+ * The board has two scopes over the same canvas, Pasien saya and Titipan, and
+ * they show different cards at the same (x, y). A sticker stored once was
+ * drawn in both — a flag placed next to a patient in one scope appeared next
+ * to whatever card happened to sit there in the other, which is a mark on the
+ * wrong patient. Storage is keyed by scope, the same fix `readLayouts` would
+ * need if two scopes ever showed different card sets at the same position.
+ */
+
+export interface BoardSticker {
+  id: string;
+  emoji: string;
+  /** 0–1, fraction of the canvas width. Where it sits when it is free. */
+  x: number;
+  /** Pixels from the top of the canvas. */
+  y: number;
+  /**
+   * The card it is stuck ON, and where on that card, in pixels from the card's
+   * top-left corner.
+   *
+   * A sticker dropped on a card belongs to it: it is drawn INSIDE the card's
+   * own box, so it moves with the card — including while the card is being
+   * dragged — with no arithmetic kept in step. When the card is not on the
+   * board (filtered out, discharged, the other scope), the sticker is not
+   * drawn at all, because drawing it where the card used to be would be a
+   * mark on whichever patient is there now.
+   */
+  card?: { id: string; dx: number; dy: number };
+}
+
+/**
+ * The palette, grouped by what a ward round marks. Each has a LABEL, shown as
+ * the tooltip and read by a screen reader — "🚗" alone does not say "pulang",
+ * and the whole point of a marker is that its meaning is shared.
+ *
+ * Still a fixed set rather than any emoji: a picker of two hundred is a
+ * decision every time it opens.
+ */
+export const STICKER_GROUPS: ReadonlyArray<{
+  title: string;
+  stickers: ReadonlyArray<{ emoji: string; label: string }>;
+}> = [
+  {
+    /*
+      TEXT tags, not emoji. There is no emoji that says "PCI" to a colleague
+      glancing at the board, and a guessed one (a balloon, a lightning bolt)
+      is a meaning kept in one person's head, which is what a shared marker
+      must not be. The stored value is the text itself; `stickerTag` knows
+      how to draw it.
+    */
+    title: 'Tindakan kardiologi',
+    stickers: [
+      { emoji: 'PCI', label: 'PCI (Percutaneous Coronary Intervention)' },
+      { emoji: 'EP', label: 'EP study / Ablasi' },
+      { emoji: 'BTKV', label: 'Operasi BTKV' },
+      { emoji: 'PPM', label: 'PPM (Permanent Pacemaker)' },
+      { emoji: 'TPM', label: 'TPM (Temporary Pacemaker)' },
+      // No emoji means echocardiography (there is no ultrasound probe), so it
+      // is a tag like the procedures above (2026-10-05).
+      { emoji: 'ECHO', label: 'Echocardiography' },
+    ],
+  },
+  {
+    title: 'Status',
+    stickers: [
+      { emoji: '🚩', label: 'Tandai' },
+      { emoji: '✅', label: 'Selesai' },
+      { emoji: '❌', label: 'Batal' },
+      { emoji: '⭐', label: 'Penting' },
+      { emoji: '⚠️', label: 'Waspada' },
+      { emoji: '❗', label: 'Segera' },
+      { emoji: '❓', label: 'Perlu ditanyakan' },
+    ],
+  },
+  {
+    title: 'Menunggu',
+    stickers: [
+      { emoji: '🕒', label: 'Tunggu jam' },
+      { emoji: '⏳', label: 'Menunggu hasil' },
+      { emoji: '📞', label: 'Telepon' },
+      { emoji: '🔔', label: 'Ingatkan' },
+      { emoji: '📝', label: 'Catat' },
+    ],
+  },
+  {
+    title: 'Klinis',
+    stickers: [
+      { emoji: '🩸', label: 'Darah / transfusi' },
+      { emoji: '🧪', label: 'Lab' },
+      { emoji: '💉', label: 'Injeksi' },
+      { emoji: '💊', label: 'Obat' },
+      { emoji: '🩺', label: 'Periksa ulang' },
+      { emoji: '🫀', label: 'Jantung' },
+      { emoji: '🫁', label: 'Paru' },
+      // X-ray. An emoji here, unlike echo, because one exists and reads at a
+      // glance (Unicode 14: older Windows 10 fonts draw a box).
+      { emoji: '🩻', label: 'Rontgen / foto thorax' },
+      { emoji: '🧠', label: 'Neuro' },
+      { emoji: '🍽️', label: 'Makan / puasa' },
+    ],
+  },
+  {
+    title: 'Disposisi',
+    stickers: [
+      { emoji: '🚗', label: 'Pulang' },
+      { emoji: '🏠', label: 'Rawat jalan' },
+      { emoji: '🚑', label: 'Rujuk / transfer' },
+      { emoji: '🏥', label: 'Pindah ruangan' },
+      { emoji: '✂️', label: 'Tindakan / operasi' },
+      { emoji: '🛏️', label: 'Tirah baring' },
+    ],
+  },
+  {
+    title: 'Warna',
+    stickers: [
+      { emoji: '🔴', label: 'Merah' },
+      { emoji: '🟠', label: 'Oranye' },
+      { emoji: '🟡', label: 'Kuning' },
+      { emoji: '🟢', label: 'Hijau' },
+      { emoji: '🔵', label: 'Biru' },
+      { emoji: '🟣', label: 'Ungu' },
+    ],
+  },
+];
+
+/** Flat, for lookups. */
+export const STICKER_EMOJI: readonly string[] = STICKER_GROUPS.flatMap((group) =>
+  group.stickers.map((sticker) => sticker.emoji),
+);
+
+/**
+ * Text tags draw as a coloured pill instead of a glyph. Each has its own
+ * colour so they read apart at a glance; white text on all of them.
+ */
+const TAGS: Readonly<Record<string, string>> = {
+  PCI: '#c0262d',
+  EP: '#6d28d9',
+  BTKV: '#0f6e8c',
+  // Pacemakers: permanent darker than temporary, same family, so the two
+  // read as related but never as each other.
+  PPM: '#9a3412',
+  TPM: '#b45309',
+  // Echo: its own hue, apart from BTKV's teal so the two never blur together.
+  ECHO: '#047857',
+};
+
+/** The pill colour when the value is a text tag, else null (an emoji). */
+export function stickerTag(value: string): string | null {
+  return TAGS[value] ?? null;
+}
+
+export function stickerLabel(emoji: string): string {
+  for (const group of STICKER_GROUPS) {
+    const found = group.stickers.find((sticker) => sticker.emoji === emoji);
+    if (found) return found.label;
+  }
+  return emoji;
+}
+
+/**
+ * A small, stable tilt per sticker, -8° to 8°, from its id.
+ *
+ * Stickers are slapped on, not aligned; a row of perfectly upright ones reads
+ * as icons in a toolbar. Derived from the id, so a sticker keeps its angle
+ * across reloads instead of jittering each time the board draws.
+ */
+export function stickerTilt(id: string): number {
+  let sum = 0;
+  for (const char of id) sum = (sum * 31 + char.charCodeAt(0)) % 1000;
+  return (sum % 17) - 8;
+}
+
+const STICKER_KEY_PREFIX = 'visite.board.stickers';
+/** Where every scope stored its stickers before this release. Migrated once. */
+export const LEGACY_STICKER_KEY = STICKER_KEY_PREFIX;
+
+/** `scope` is the board's own scope id ('mine' | 'temporary'), not a free string. */
+export function stickerStorageKey(scope: string): string {
+  return `${STICKER_KEY_PREFIX}.${scope}`;
+}
+
+export function parseStickers(raw: string | null): BoardSticker[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      if (typeof entry !== 'object' || entry === null) return [];
+      const { id, emoji, x, y, card } = entry as Partial<BoardSticker>;
+      if (typeof id !== 'string' || typeof emoji !== 'string') return [];
+      if (typeof x !== 'number' || typeof y !== 'number') return [];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
+      const base = { id, emoji, x: clampX(x), y: Math.max(0, y) };
+      // An unreadable attachment falls back to FREE at its stored position,
+      // rather than dropping the sticker.
+      const attached =
+        card &&
+        typeof card.id === 'string' &&
+        Number.isFinite(card.dx) &&
+        Number.isFinite(card.dy)
+          ? { card: { id: card.id, dx: card.dx, dy: card.dy } }
+          : {};
+      return [{ ...base, ...attached }];
+    });
+  } catch {
+    // A corrupt entry costs the stickers, never the board.
+    return [];
+  }
+}
+
+/** Kept inside the canvas horizontally; a sticker dragged off it is gone. */
+export function clampX(x: number): number {
+  return Math.min(Math.max(x, 0), 0.97);
+}
+
+export function moveSticker(
+  stickers: readonly BoardSticker[],
+  id: string,
+  x: number,
+  y: number,
+): BoardSticker[] {
+  return stickers.map((sticker) =>
+    sticker.id === id ? { ...sticker, x: clampX(x), y: Math.max(0, y) } : sticker,
+  );
+}
+
+export function addSticker(
+  stickers: readonly BoardSticker[],
+  sticker: BoardSticker,
+): BoardSticker[] {
+  return [...stickers, { ...sticker, x: clampX(sticker.x), y: Math.max(0, sticker.y) }];
+}
+
+export function removeSticker(stickers: readonly BoardSticker[], id: string): BoardSticker[] {
+  return stickers.filter((sticker) => sticker.id !== id);
+}
+
+/**
+ * What to do when a scope's own storage is empty: read fresh (no stored key
+ * at all, or an empty array — genuinely nothing has been placed yet) or run
+ * the one-time migration from the pre-scope key (`'mine'` only, and only when
+ * that legacy key still has something in it).
+ *
+ * Pure, so the decision is tested without a DOM or localStorage.
+ */
+export function stickerMigrationPlan(
+  scope: string,
+  scopeStorageValue: string | null,
+  legacyStorageValue: string | null,
+): 'use-scope' | 'migrate-legacy' | 'fresh' {
+  if (scopeStorageValue !== null) return 'use-scope';
+  if (scope === 'mine' && legacyStorageValue !== null) return 'migrate-legacy';
+  return 'fresh';
+}
+
+/**
+ * Where a sticker ends up after a drop: on a card (with its offset on that
+ * card) or free on the canvas. Either way the free position is kept current,
+ * so a sticker whose card is later removed still has somewhere sane to be if
+ * it is ever freed.
+ */
+export function dropSticker(
+  stickers: readonly BoardSticker[],
+  id: string,
+  at: { x: number; y: number },
+  card: { id: string; dx: number; dy: number } | null,
+): BoardSticker[] {
+  return stickers.map((sticker) => {
+    if (sticker.id !== id) return sticker;
+    const { card: _previous, ...rest } = sticker;
+    const placed = { ...rest, x: clampX(at.x), y: Math.max(0, at.y) };
+    return card ? { ...placed, card } : placed;
+  });
+}
+
+/** Stickers drawn on the canvas itself: the ones not stuck on a card. */
+export function freeStickers(stickers: readonly BoardSticker[]): BoardSticker[] {
+  return stickers.filter((sticker) => !sticker.card);
+}
+
+/** Stickers stuck on one card. */
+export function stickersOnCard(stickers: readonly BoardSticker[], cardId: string): BoardSticker[] {
+  return stickers.filter((sticker) => sticker.card?.id === cardId);
+}
+
+/**
+ * Stickers stuck on cards that have LEFT this board: archived, discharged,
+ * deleted, or moved to the other scope (Avi, 2026-10-08).
+ *
+ * They were kept and simply not drawn, so a flag put on a patient came back
+ * the day the patient was re-admitted, or reappeared beside them after a
+ * move back from Titipan, carrying a meaning from another stay. A sticker is
+ * about this patient for the next hour; when the patient goes, so does it.
+ *
+ * `present` must be the whole scope, unfiltered, and from a CONFIRMED list
+ * (see the board): pruned against a filtered or half-loaded list, this would
+ * delete stickers of patients who are still there. Free stickers are never
+ * touched. Returns the same array when nothing goes, so a caller can skip
+ * the write.
+ */
+export function pruneDetachedStickers(
+  stickers: BoardSticker[],
+  present: ReadonlySet<string>,
+): BoardSticker[] {
+  const kept = stickers.filter((sticker) => !sticker.card || present.has(sticker.card.id));
+  return kept.length === stickers.length ? stickers : kept;
+}

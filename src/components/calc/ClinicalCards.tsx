@@ -1,0 +1,595 @@
+import { useMemo, useState, type ReactNode } from 'react';
+
+import {
+  BAND_LABELS,
+  URINE_OUTPUT_SOURCES,
+  calculateUrineOutput,
+} from '@/domain/calc/urineOutput';
+import { TRANSFUSION_SOURCES, calculateTransfusion } from '@/domain/calc/transfusion';
+import {
+  EFFECTIVE_EXAMPLE,
+  EFFECTIVE_SOURCES,
+  OSMOLALITY_SOURCES,
+  UREA_DIVISOR,
+  UREA_LABEL,
+  calculateOsmolality,
+  readEffective,
+  readTotal,
+  type OsmolalityReading,
+  type UreaKind,
+} from '@/domain/calc/sodium';
+import {
+  SODIUM_GLUCOSE_SOURCES,
+  correctSodium,
+  formatSodiumCorrection,
+} from '@/domain/calc/sodiumGlucose';
+import {
+  MOLAR_MASS,
+  UREUM_PER_BUN,
+  convertCreatinine,
+  convertGlucose,
+  convertUrea,
+  type UreaUnit,
+} from '@/domain/calc/units';
+import { readReferenceRanges } from '@/components/settings/ReferenceRanges';
+import { copyText } from '@/lib/clipboard';
+
+/**
+ * The bedside calculator cards, shared by the Kalkulator page and the floating
+ * calculator on the SOAP page (2026-10-05). One definition, so a formula
+ * corrected in one place is corrected in both.
+ */
+
+/** The shape every calculator shares. */
+export function CalcCard({
+  title,
+  formula,
+  children,
+  sources,
+}: {
+  title: string;
+  formula: ReactNode;
+  children: ReactNode;
+  sources: readonly string[];
+}): JSX.Element {
+  return (
+    <article className="flex flex-col rounded-xl border border-border bg-surface p-5">
+      <h3 className="text-base font-semibold tracking-tight">{title}</h3>
+      <p className="mt-1 font-mono text-xs leading-relaxed text-fg-muted">{formula}</p>
+      <div className="mt-4 flex-1">{children}</div>
+      <details className="mt-4 border-t border-border pt-1">
+        <summary className="min-h-tap cursor-pointer select-none py-2 text-xs font-medium text-fg-muted [@media(pointer:fine)]:min-h-9 [@media(pointer:fine)]:py-2.5">
+          Rujukan
+        </summary>
+        <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs leading-relaxed text-fg-faint">
+          {sources.map((source) => (
+            <li key={source}>{source}</li>
+          ))}
+        </ol>
+      </details>
+    </article>
+  );
+}
+
+export function ResultBlock({ children, line }: { children: ReactNode; line?: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="mt-4 rounded-lg bg-[var(--accent-soft)] p-4">
+      {children}
+      {line ? (
+        <div className="mt-3 flex items-start gap-3 border-t border-border pt-3">
+          <p className="min-w-0 flex-1 break-words font-mono text-xs leading-relaxed">{line}</p>
+          <button
+            type="button"
+            onClick={() => {
+              void copyText(line).then((ok) => {
+                setCopied(ok);
+                window.setTimeout(() => setCopied(false), 1500);
+              });
+            }}
+            className="min-h-tap shrink-0 rounded-lg px-2 text-xs font-semibold text-accent hover:bg-surface [@media(pointer:fine)]:min-h-8"
+          >
+            {copied ? 'Tersalin ✓' : 'Salin baris'}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function Empty({ children }: { children: ReactNode }): JSX.Element {
+  return <p className="mt-3 text-xs text-fg-faint">{children}</p>;
+}
+
+export function Big({ value, unit, caption }: { value: ReactNode; unit: string; caption?: ReactNode }): JSX.Element {
+  return (
+    <div>
+      <p className="text-2xl font-semibold tabular-nums tracking-tight">
+        {value} <span className="text-sm font-normal text-fg-muted">{unit}</span>
+      </p>
+      {caption ? <p className="text-xs text-fg-muted">{caption}</p> : null}
+    </div>
+  );
+}
+
+export function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  onChange: (next: T) => void;
+}): JSX.Element {
+  return (
+    <div role="group" aria-label={label} className="flex gap-0.5 rounded-lg bg-bg-subtle p-0.5 text-xs">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={[
+            'min-h-tap flex-1 rounded-md px-2 transition-colors [@media(pointer:fine)]:min-h-9',
+            value === option.value ? 'bg-surface font-semibold text-fg shadow-card' : 'text-fg-muted hover:text-fg',
+          ].join(' ')}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function NumberField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}): JSX.Element {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs text-fg-muted">{label}</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={value}
+        // Text with a decimal keypad: `type="number"` on a phone silently drops
+        // a value when a stray character is typed.
+        onChange={(event) => onChange(event.target.value.replace(/[^\d.,]/g, '').replace(',', '.'))}
+        className="min-h-tap w-full rounded-lg border border-border bg-surface px-2 text-center text-sm tabular-nums outline-none focus:border-accent"
+      />
+    </label>
+  );
+}
+
+const typed = (...values: string[]): boolean => values.every((value) => value.trim() !== '');
+
+export function UrineOutputCard(): JSX.Element {
+  const [volume, setVolume] = useState('');
+  const [hours, setHours] = useState('24');
+  const [weight, setWeight] = useState('');
+
+  const result = useMemo(
+    () =>
+      typed(volume, hours, weight)
+        ? calculateUrineOutput({ volumeMl: Number(volume), hours: Number(hours), weightKg: Number(weight) })
+        : null,
+    [volume, hours, weight],
+  );
+
+  return (
+    <CalcCard title="Urine output" formula="volume ÷ jam ÷ berat badan" sources={URINE_OUTPUT_SOURCES}>
+      <div className="grid grid-cols-3 gap-2">
+        <NumberField label="Volume (cc)" value={volume} onChange={setVolume} />
+        <NumberField label="Lama (jam)" value={hours} onChange={setHours} />
+        <NumberField label="Berat (kg)" value={weight} onChange={setWeight} />
+      </div>
+      {result ? (
+        <ResultBlock line={result.line}>
+          <Big
+            value={result.rate}
+            unit="cc/kgbb/jam"
+            caption={
+              <>
+                {BAND_LABELS[result.band]}
+                {Number(hours) !== 24 ? ` · setara ${result.perDayMl} cc/24 jam` : ''}
+              </>
+            }
+          />
+        </ResultBlock>
+      ) : (
+        <Empty>Isi ketiganya. Tanpa berat badan tidak ada laju yang bisa dihitung.</Empty>
+      )}
+    </CalcCard>
+  );
+}
+
+export function TransfusionCard(): JSX.Element {
+  const [weight, setWeight] = useState('');
+  const [hbNow, setHbNow] = useState('');
+  const [hbTarget, setHbTarget] = useState('');
+  const [bag, setBag] = useState('250');
+
+  const result = useMemo(
+    () =>
+      typed(weight, hbNow, hbTarget, bag)
+        ? calculateTransfusion({
+            weightKg: Number(weight),
+            hbNow: Number(hbNow),
+            hbTarget: Number(hbTarget),
+            bagMl: Number(bag),
+          })
+        : null,
+    [weight, hbNow, hbTarget, bag],
+  );
+
+  return (
+    <CalcCard title="Transfusi PRC" formula="(Hb target − Hb sekarang) × berat badan × 4" sources={TRANSFUSION_SOURCES}>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <NumberField label="Berat (kg)" value={weight} onChange={setWeight} />
+        <NumberField label="Hb sekarang (g/dL)" value={hbNow} onChange={setHbNow} />
+        <NumberField label="Hb target (g/dL)" value={hbTarget} onChange={setHbTarget} />
+        <NumberField label="Per kantong (cc)" value={bag} onChange={setBag} />
+      </div>
+      {result ? (
+        <ResultBlock line={result.line}>
+          <Big value={result.volumeMl} unit="cc PRC" caption={`± ${result.bags} kantong · periksa ulang Hb setelah transfusi`} />
+        </ResultBlock>
+      ) : (
+        <Empty>Isi berat badan dan kedua Hb; Hb target harus di atas Hb sekarang.</Empty>
+      )}
+    </CalcCard>
+  );
+}
+
+/**
+ * Calculated plasma osmolality, total and effective. See `domain/calc/sodium`
+ * for why the urea field asks Ureum or BUN and where each cut-off comes from.
+ */
+export function OsmolalityCard(): JSX.Element {
+  const [sodium, setSodium] = useState('');
+  const [glucose, setGlucose] = useState('');
+  const [urea, setUrea] = useState('');
+  const [ureaKind, setUreaKind] = useState<UreaKind>('ureum');
+  const range = readReferenceRanges().Osm;
+
+  const result = useMemo(
+    () =>
+      typed(sodium, glucose, urea)
+        ? calculateOsmolality({
+            sodium: Number(sodium),
+            glucose: Number(glucose),
+            urea: Number(urea),
+            ureaKind,
+          })
+        : null,
+    [sodium, glucose, urea, ureaKind],
+  );
+
+  return (
+    <CalcCard
+      title="Osmolalitas plasma (hitung)"
+      formula={`2(Na) + Glukosa/18 + ${UREA_LABEL[ureaKind]}/${UREA_DIVISOR[ureaKind]}`}
+      sources={OSMOLALITY_SOURCES}
+    >
+      <Segmented
+        label="Satuan urea"
+        value={ureaKind}
+        onChange={setUreaKind}
+        options={[
+          { value: 'ureum', label: 'Ureum ÷ 6' },
+          { value: 'bun', label: 'BUN ÷ 2.8' },
+        ]}
+      />
+      <div className="mt-2 grid grid-cols-3 gap-2">
+        <NumberField label="Na (mmol/L)" value={sodium} onChange={setSodium} />
+        <NumberField label="Glukosa (mg/dL)" value={glucose} onChange={setGlucose} />
+        <NumberField label={`${UREA_LABEL[ureaKind]} (mg/dL)`} value={urea} onChange={setUrea} />
+      </div>
+      {result ? (
+        <ResultBlock line={result.line}>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Big value={result.effective} unit="mOsm/kg" caption="Efektif (tonisitas) — untuk hiponatremia" />
+              <ReadingChip reading={readEffective(result.effective)} />
+            </div>
+            <div>
+              <Big value={result.total} unit="mOsm/kg" caption={`Total (+ urea ${result.ureaTerm})`} />
+              <ReadingChip reading={readTotal(result.total, range)} />
+            </div>
+          </div>
+        </ResultBlock>
+      ) : (
+        <Empty>Isi ketiganya. Ureum ≠ BUN: ureum = BUN × 2.14.</Empty>
+      )}
+      <EffectiveExplainer />
+    </CalcCard>
+  );
+}
+
+/**
+ * What "efektif" means, a tap away (Avi, 2026-10-07).
+ *
+ * The card showed two numbers and called one of them effective without saying
+ * what that means or when it is the one to read. The answer is short, has a
+ * clinical consequence (a uraemic hyponatraemia looks normal on the total),
+ * and is shown with the card's own arithmetic on a worked example, tested
+ * against the formula (`EFFECTIVE_EXAMPLE`).
+ */
+function EffectiveExplainer(): JSX.Element {
+  const { sodium, glucose, urea, total, effective } = EFFECTIVE_EXAMPLE;
+  return (
+    <details className="group mt-3 rounded-xl border border-border text-xs">
+      <summary className="flex min-h-tap cursor-pointer items-center gap-2 px-3 font-medium text-accent [@media(pointer:fine)]:min-h-9">
+        <span aria-hidden="true" className="transition-transform group-open:rotate-90">›</span>
+        Apa itu osmolalitas efektif?
+      </summary>
+      <div className="space-y-2 border-t border-border px-3 py-2.5 leading-relaxed text-fg-muted">
+        <p>
+          <strong className="text-fg">Osmolalitas efektif (tonisitas)</strong> hanya menghitung zat yang
+          <em> tidak </em>bebas melewati membran sel, sehingga menarik air keluar atau masuk sel:
+          natrium (beserta anionnya, karena itu ×2) dan glukosa (tanpa insulin, glukosa tidak masuk
+          sel dengan bebas). Rumusnya: <span className="font-mono text-fg">2·Na + glukosa/18</span>.
+        </p>
+        <p>
+          <strong className="text-fg">Urea tidak ikut</strong>: urea melewati membran sel dengan bebas,
+          jadi menaikkan osmolalitas <em>total</em> tanpa menggeser air antar kompartemen
+          (osmol tidak efektif). Hal yang sama berlaku untuk etanol.
+        </p>
+        <ul className="list-disc space-y-1 pl-4">
+          <li>
+            <strong className="text-fg">Hiponatremia</strong>: yang menentukan hipotonik atau tidak adalah
+            tonisitas. Pada uremia, osmolalitas total bisa tampak normal padahal pasien tetap hipotonik,
+            dengan risiko edema otak yang sama.
+          </li>
+          <li>
+            <strong className="text-fg">Hiperglikemia (HHS)</strong>: dehidrasi sel dan penurunan kesadaran
+            mengikuti osmolalitas efektif; kriteria HHS memakai efektif &gt; 300 mOsm/kg.
+          </li>
+        </ul>
+        <p className="rounded-lg bg-bg-subtle px-2.5 py-2 font-mono text-xs text-fg">
+          Contoh: Na {sodium}, glukosa {glucose}, ureum {urea}
+          <br />
+          Total = 2·{sodium} + {glucose}/18 + {urea}/6 = {total} (tampak normal)
+          <br />
+          Efektif = 2·{sodium} + {glucose}/18 = {effective} (hipotonik)
+        </p>
+        <ol className="list-decimal space-y-0.5 pl-4 text-[11px] text-fg-faint">
+          {EFFECTIVE_SOURCES.map((source) => (
+            <li key={source}>{source}</li>
+          ))}
+        </ol>
+      </div>
+    </details>
+  );
+}
+
+function ReadingChip({ reading }: { reading: OsmolalityReading }): JSX.Element {
+  const style =
+    reading.tone === 'normal'
+      ? { borderColor: 'var(--border-strong)' }
+      : reading.tone === 'low'
+        ? { borderColor: 'var(--accent)', background: 'var(--accent-soft)' }
+        : { borderColor: 'var(--warn-strong)', background: 'var(--warn-soft)' };
+  return (
+    <p className="mt-1 inline-block rounded-md border px-1.5 py-0.5 text-xs font-medium" style={style}>
+      {reading.label}
+    </p>
+  );
+}
+
+/**
+ * Corrected sodium in hyperglycaemia. A reading — what the sodium would be at
+ * a normal glucose — not a dose. Both published factors are shown, because
+ * they disagree and the gap grows with the glucose.
+ */
+export function SodiumGlucoseCard(): JSX.Element {
+  const [sodium, setSodium] = useState('');
+  const [glucose, setGlucose] = useState('');
+
+  const result = useMemo(
+    () => (typed(sodium, glucose) ? correctSodium(Number(sodium), Number(glucose)) : null),
+    [sodium, glucose],
+  );
+
+  return (
+    <CalcCard
+      title="Koreksi natrium pada hiperglikemia"
+      formula="Na + faktor × (glukosa − 100)/100"
+      sources={SODIUM_GLUCOSE_SOURCES}
+    >
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField label="Na terukur (mmol/L)" value={sodium} onChange={setSodium} />
+        <NumberField label="GDS (mg/dL)" value={glucose} onChange={setGlucose} />
+      </div>
+      {result ? (
+        <ResultBlock line={formatSodiumCorrection(Number(sodium), Number(glucose), result)}>
+          <div className="grid grid-cols-2 gap-3">
+            <Big value={result.katz} unit="mmol/L" caption="Katz (1.6)" />
+            <Big value={result.hillier} unit="mmol/L" caption="Hillier (2.4)" />
+          </div>
+          {result.factorsDiverge ? (
+            <p className="mt-2 text-xs text-fg-muted">
+              Berbeda {Math.round((result.hillier - result.katz) * 10) / 10} mmol/L pada GDS ini.
+              Hillier lebih sesuai pada glukosa &gt; 400 mg/dL.
+            </p>
+          ) : null}
+        </ResultBlock>
+      ) : (
+        <Empty>Bukan dosis koreksi. Glukosa ≤ 100 mg/dL tidak dikoreksi.</Empty>
+      )}
+    </CalcCard>
+  );
+}
+
+const UNIT_SOURCES: readonly string[] = [
+  `Faktor dari massa molar: urea ${MOLAR_MASS.urea}, nitrogen urea (BUN) ${MOLAR_MASS.ureaNitrogen}, kreatinin ${MOLAR_MASS.creatinine}, glukosa ${MOLAR_MASS.glucose} g/mol. mg/dL → mmol/L = ÷ (massa molar/10).`,
+  `Ureum = BUN × ${UREUM_PER_BUN.toFixed(3)} (60.06/28.014). Kreatinin 1 mg/dL = 88.4 µmol/L. Glukosa 1 mmol/L = 18.0 mg/dL.`,
+];
+
+type Analyte = 'urea' | 'creatinine' | 'glucose';
+
+/** Urea ↔ BUN ↔ mmol/L, creatinine and glucose. */
+export function UnitConverterCard(): JSX.Element {
+  const [analyte, setAnalyte] = useState<Analyte>('urea');
+  return (
+    <CalcCard
+      title="Konversi satuan"
+      formula="Ureum ↔ BUN ↔ mmol/L · kreatinin · glukosa"
+      sources={UNIT_SOURCES}
+    >
+      <div role="tablist" aria-label="Analit" className="flex gap-1 border-b border-border">
+        {(
+          [
+            ['urea', 'Ureum / BUN'],
+            ['creatinine', 'Kreatinin'],
+            ['glucose', 'Glukosa'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={analyte === value}
+            onClick={() => setAnalyte(value)}
+            className={[
+              '-mb-px min-h-tap border-b-2 px-3 text-sm',
+              analyte === value ? 'border-accent font-semibold text-fg' : 'border-transparent text-fg-muted',
+            ].join(' ')}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-3">
+        {analyte === 'urea' ? <UreaConverter /> : analyte === 'creatinine' ? <CreatinineConverter /> : <GlucoseConverter />}
+      </div>
+    </CalcCard>
+  );
+}
+
+function UreaConverter(): JSX.Element {
+  const [from, setFrom] = useState<UreaUnit>('ureum');
+  const [value, setValue] = useState('');
+  const result = typed(value) ? convertUrea(Number(value), from) : null;
+  const label = { ureum: 'Ureum (mg/dL)', bun: 'BUN (mg/dL)', mmol: 'Urea (mmol/L)' }[from];
+  return (
+    <>
+      <Segmented
+        label="Dari"
+        value={from}
+        onChange={setFrom}
+        options={[
+          { value: 'ureum', label: 'Ureum mg/dL' },
+          { value: 'bun', label: 'BUN mg/dL' },
+          { value: 'mmol', label: 'mmol/L' },
+        ]}
+      />
+      <div className="mt-2">
+        <NumberField label={label} value={value} onChange={setValue} />
+      </div>
+      {result ? (
+        <ResultBlock line={`Ureum ${result.ureum} mg/dL = BUN ${result.bun} mg/dL = urea ${result.mmol} mmol/L`}>
+          <div className="grid grid-cols-3 gap-2">
+            <Big value={result.ureum} unit="mg/dL" caption="Ureum" />
+            <Big value={result.bun} unit="mg/dL" caption="BUN" />
+            <Big value={result.mmol} unit="mmol/L" caption="Urea" />
+          </div>
+        </ResultBlock>
+      ) : null}
+    </>
+  );
+}
+
+function CreatinineConverter(): JSX.Element {
+  const [from, setFrom] = useState<'mgdl' | 'umol'>('mgdl');
+  const [value, setValue] = useState('');
+  const result = typed(value) ? convertCreatinine(Number(value), from) : null;
+  return (
+    <>
+      <Segmented
+        label="Dari"
+        value={from}
+        onChange={setFrom}
+        options={[
+          { value: 'mgdl', label: 'mg/dL' },
+          { value: 'umol', label: 'µmol/L' },
+        ]}
+      />
+      <div className="mt-2">
+        <NumberField label={from === 'mgdl' ? 'Kreatinin (mg/dL)' : 'Kreatinin (µmol/L)'} value={value} onChange={setValue} />
+      </div>
+      {result ? (
+        <ResultBlock line={`Kreatinin ${result.mgdl} mg/dL = ${result.umol} µmol/L`}>
+          <div className="grid grid-cols-2 gap-2">
+            <Big value={result.mgdl} unit="mg/dL" />
+            <Big value={result.umol} unit="µmol/L" />
+          </div>
+        </ResultBlock>
+      ) : null}
+    </>
+  );
+}
+
+function GlucoseConverter(): JSX.Element {
+  const [from, setFrom] = useState<'mgdl' | 'mmol'>('mgdl');
+  const [value, setValue] = useState('');
+  const result = typed(value) ? convertGlucose(Number(value), from) : null;
+  return (
+    <>
+      <Segmented
+        label="Dari"
+        value={from}
+        onChange={setFrom}
+        options={[
+          { value: 'mgdl', label: 'mg/dL' },
+          { value: 'mmol', label: 'mmol/L' },
+        ]}
+      />
+      <div className="mt-2">
+        <NumberField label={from === 'mgdl' ? 'Glukosa (mg/dL)' : 'Glukosa (mmol/L)'} value={value} onChange={setValue} />
+      </div>
+      {result ? (
+        <ResultBlock line={`Glukosa ${result.mgdl} mg/dL = ${result.mmol} mmol/L`}>
+          <div className="grid grid-cols-2 gap-2">
+            <Big value={result.mgdl} unit="mg/dL" />
+            <Big value={result.mmol} unit="mmol/L" />
+          </div>
+        </ResultBlock>
+      ) : null}
+    </>
+  );
+}
+
+export function LinkCard({
+  title,
+  subtitle,
+  href,
+  label,
+}: {
+  title: string;
+  subtitle: string;
+  href: string;
+  label: string;
+}): JSX.Element {
+  return (
+    <article className="rounded-2xl border border-border bg-surface p-4">
+      <h3 className="text-[15px] font-semibold">{title}</h3>
+      <p className="mt-0.5 text-xs text-fg-muted">{subtitle}</p>
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-3 flex min-h-tap items-center justify-center rounded-lg border border-border bg-bg-subtle px-3 text-sm font-medium text-accent"
+      >
+        {label} ↗
+      </a>
+    </article>
+  );
+}

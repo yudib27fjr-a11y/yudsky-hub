@@ -1,0 +1,228 @@
+import { describe, expect, it } from 'vitest';
+
+import { expandOpeningTokens, findOpeningLine, replaceClosing, replaceGreeting, replaceOpeningLine, replaceOpeningSentence, splitOpening, suggestGreetingIndex, toDokterForm, toProfForm } from './opening';
+
+const OPENING =
+  "Assalamu'alaikum dokter. Tabe dokter, mohon izin melaporkan follow up pasien di *PJT Lantai 5 Kamar 516 Bed 2*  atas nama :";
+
+const BODY = [OPENING, '', '*Tn. Abdullah / 59 tahun / RM 8000011*', '', '*S:*', '- nyeri dada tidak ada'].join('\n');
+
+describe('findOpeningLine', () => {
+  it('finds the first non-empty line', () => {
+    expect(findOpeningLine(BODY)?.text).toBe(OPENING);
+  });
+
+  it('skips leading blank lines', () => {
+    expect(findOpeningLine(`\n\n  \n${OPENING}`)?.text).toBe(OPENING);
+  });
+
+  it('returns null for an empty body', () => {
+    expect(findOpeningLine('   \n\n')).toBeNull();
+  });
+});
+
+describe('splitOpening', () => {
+  it('splits greeting from reporting sentence', () => {
+    const { greeting, rest } = splitOpening(OPENING);
+    expect(greeting).toBe("Assalamu'alaikum dokter.");
+    expect(rest.startsWith('Tabe dokter, mohon izin melaporkan follow up')).toBe(true);
+  });
+
+  it('treats a line with no terminator as all report, no greeting', () => {
+    expect(splitOpening('Mohon izin melaporkan pasien')).toEqual({
+      greeting: '',
+      rest: 'Mohon izin melaporkan pasien',
+    });
+  });
+});
+
+describe('replaceGreeting', () => {
+  it('swaps only the greeting', () => {
+    const next = replaceGreeting(BODY, 'Selamat pagi dokter.');
+    expect(next).toContain('Selamat pagi dokter. Tabe dokter, mohon izin melaporkan follow up');
+    expect(next).not.toContain("Assalamu'alaikum");
+  });
+
+  it('leaves every line below the opening byte-identical', () => {
+    const next = replaceGreeting(BODY, 'Selamat malam dokter.');
+    const tail = (text: string): string => text.slice(text.indexOf('\n'));
+    expect(tail(next)).toBe(tail(BODY));
+  });
+
+  it('prepends when the note is empty rather than losing the greeting', () => {
+    expect(replaceGreeting('', 'Selamat pagi dokter.')).toBe('Selamat pagi dokter.\n\n');
+  });
+});
+
+describe('replaceOpeningSentence', () => {
+  it('swaps the reporting sentence and keeps the greeting', () => {
+    const next = replaceOpeningSentence(
+      BODY,
+      'Tabe dokter, mohon izin melaporkan pasien baru rencana tindakan dari *POLI 1* di *PJT Lantai 5 Kamar 510 Bed 5* atas nama:',
+    );
+    expect(next.startsWith("Assalamu'alaikum dokter. Tabe dokter, mohon izin melaporkan pasien baru")).toBe(true);
+    expect(next).toContain('POLI 1');
+    expect(next).not.toContain('follow up pasien');
+  });
+
+  it('does not touch the identity line below it', () => {
+    const next = replaceOpeningSentence(BODY, 'Mohon izin melaporkan.');
+    expect(next).toContain('*Tn. Abdullah / 59 tahun / RM 8000011*');
+  });
+});
+
+describe('replaceOpeningLine', () => {
+  it('replaces the whole line', () => {
+    const next = replaceOpeningLine(BODY, 'Halo dokter.');
+    expect(next.split('\n')[0]).toBe('Halo dokter.');
+    expect(next).toContain('*S:*');
+  });
+
+  it('preserves blank runs and trailing spaces further down', () => {
+    const spaced = `${OPENING}\n\n\n*S:*   \n- x`;
+    const next = replaceOpeningLine(spaced, 'Halo.');
+    expect(next).toBe(`Halo.\n\n\n*S:*   \n- x`);
+  });
+});
+
+describe('suggestGreetingIndex', () => {
+  const greetings = [
+    "Assalamu'alaikum dokter.",
+    'Selamat pagi dokter.',
+    'Selamat siang dokter.',
+    'Selamat malam dokter.',
+  ];
+
+  it('suggests by time of day', () => {
+    expect(greetings[suggestGreetingIndex(greetings, 8)]).toBe('Selamat pagi dokter.');
+    expect(greetings[suggestGreetingIndex(greetings, 13)]).toBe('Selamat siang dokter.');
+    expect(greetings[suggestGreetingIndex(greetings, 21)]).toBe('Selamat malam dokter.');
+  });
+
+  it('falls back to the first entry when nothing matches', () => {
+    expect(suggestGreetingIndex(["Assalamu'alaikum dokter."], 8)).toBe(0);
+  });
+});
+
+describe('replaceClosing', () => {
+  const NOTE = ['*S:*', '- nyeri dada tidak ada', '', 'Tabe terimakasih dokter'].join('\n');
+
+  it('swaps a closing that is already there', () => {
+    const next = replaceClosing(NOTE, 'Selanjutnya mohon arahan Prof. Terima kasih Prof');
+    expect(next).toContain('Selanjutnya mohon arahan Prof. Terima kasih Prof');
+    expect(next).not.toContain('Tabe terimakasih dokter');
+  });
+
+  it('leaves every line above it byte-identical', () => {
+    const next = replaceClosing(NOTE, 'Selanjutnya mohon arahan dokter. Terima kasih dokter');
+    const head = (text: string): string => text.slice(0, text.lastIndexOf('\n'));
+    expect(head(next)).toBe(head(NOTE));
+  });
+
+  it('appends rather than overwriting when there is no closing', () => {
+    // The last line of a note without a closing is usually a plan item.
+    // Overwriting it would delete a finding.
+    const noClosing = '*Plan :*\n- Monitoring tanda vital';
+    const next = replaceClosing(noClosing, 'Terima kasih dokter');
+    expect(next).toContain('- Monitoring tanda vital');
+    expect(next.trimEnd().endsWith('Terima kasih dokter')).toBe(true);
+  });
+
+  it('recognises the Prof variants as closings', () => {
+    const withProf = '*Plan :*\n- x\n\nMohon arahanta Prof, terima kasih Prof';
+    const next = replaceClosing(withProf, 'Terima kasih dokter');
+    expect(next).not.toContain('arahanta Prof');
+    expect(next).toContain('- x');
+  });
+
+  it('handles an empty note', () => {
+    expect(replaceClosing('', 'Terima kasih dokter')).toBe('Terima kasih dokter');
+  });
+});
+
+describe('Prof and dokter forms', () => {
+  it('swaps every address in one pass', () => {
+    // Getting one of the three wrong in a message to a professor reads as
+    // carelessness, and doing it by hand means remembering all three.
+    const note = 'Selamat pagi dokter. Tabe dokter, melaporkan…\n\nTerima kasih dokter';
+    const prof = toProfForm(note);
+    expect(prof).toBe('Selamat pagi prof. Tabe prof, melaporkan…\n\nTerima kasih prof');
+  });
+
+  it('preserves case', () => {
+    expect(toProfForm('Dokter yang terhormat')).toBe('Prof yang terhormat');
+  });
+
+  it('leaves dr. and Dr. alone — those are titles, not address', () => {
+    const dpjp = '_DPJP Utama : Dr. dr. Az Hafid Nashar, Sp.JP(K)_';
+    expect(toProfForm(dpjp)).toBe(dpjp);
+  });
+
+  it('goes back again', () => {
+    const note = 'Selamat pagi prof. Terima kasih prof';
+    expect(toDokterForm(note)).toBe('Selamat pagi dokter. Terima kasih dokter');
+  });
+})
+
+describe('expandOpeningTokens', () => {
+  const at = new Date(2026, 7, 25, 13, 30); // Tuesday 25-08-2026, 13:30
+
+  it('fills the day name and the date from the note being written', () => {
+    const line = 'list pasien echocardiography full study dari *CVCU, (hari), (tanggal)*';
+    expect(expandOpeningTokens(line, at)).toBe(
+      'list pasien echocardiography full study dari *CVCU, Selasa, 25-08-2026*',
+    );
+  });
+
+  it('picks the greeting word from the clock', () => {
+    expect(expandOpeningTokens('selamat (waktu) dokter', new Date(2026, 7, 25, 8))).toContain(
+      'pagi',
+    );
+    expect(expandOpeningTokens('selamat (waktu) dokter', at)).toContain('siang');
+    expect(expandOpeningTokens('selamat (waktu) dokter', new Date(2026, 7, 25, 20))).toContain(
+      'malam',
+    );
+  });
+
+  it('agrees with suggestGreetingIndex, which matches on those same words', () => {
+    // If these two ever disagreed, the greeting built from a token would be
+    // invisible to the function whose whole job is to surface it.
+    const greetings = [
+      "Assalamu'alaikum dokter.",
+      expandOpeningTokens('Selamat (waktu) dokter.', at),
+    ];
+    expect(suggestGreetingIndex(greetings, at.getHours())).toBe(1);
+  });
+
+  it('leaves the placeholders a person has to fill in alone', () => {
+    // A blank you can see beats a guess you cannot.
+    const line = 'pasien di *(Ruang) Kamar (no) Bed (no)*';
+    expect(expandOpeningTokens(line, at)).toBe(line);
+  });
+
+  it('pads single-digit days and months', () => {
+    expect(expandOpeningTokens('(tanggal)', new Date(2026, 0, 5, 9))).toBe('05-01-2026');
+  });
+});
+
+describe('opening split by the reporting words (2026-09-29)', () => {
+  it('handles the comma form of the poli template', async () => {
+    const { replaceGreeting, replaceOpeningSentence, splitOpening } = await import('./opening');
+    const body =
+      'Assalamualaikum dokter, tabe dokter izin melaporkan pasien baru dari *Poli Jantung* di *PJT Kamar 1 Bed 2* atas nama :\n\nX';
+    expect(splitOpening(body.split('\n')[0]!).greeting).toBe('Assalamualaikum dokter.');
+    expect(replaceGreeting(body, 'Selamat pagi dokter.').split('\n')[0]).toBe(
+      'Selamat pagi dokter. Tabe dokter izin melaporkan pasien baru dari *Poli Jantung* di *PJT Kamar 1 Bed 2* atas nama :',
+    );
+    expect(replaceOpeningSentence(body, 'Tabe dokter, mohon izin melaporkan follow up pasien di *X* atas nama :').split('\n')[0]).toBe(
+      'Assalamualaikum dokter. Tabe dokter, mohon izin melaporkan follow up pasien di *X* atas nama :',
+    );
+  });
+
+  it('does not split a report at a "dr." inside a DPJP name', async () => {
+    const { splitOpening } = await import('./opening');
+    const line = 'Tabe prof, mohon izin melaporkan konsul pasien dari *TS BTKV dr. Contoh, Sp.B.* di *PJT* atas nama :';
+    expect(splitOpening(line)).toEqual({ greeting: '', rest: line });
+    expect(splitOpening(`Selamat malam prof. ${line}`).greeting).toBe('Selamat malam prof.');
+  });
+});

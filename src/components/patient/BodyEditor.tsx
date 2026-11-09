@@ -1,0 +1,1013 @@
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import type { MutableRefObject } from 'react';
+
+import {
+  BOLD,
+  ITALIC,
+  toggleBullet,
+  toggleNumbered,
+  toggleWrap,
+  type TextEdit,
+} from '@/domain/format/markdownLite';
+import type { ClinicalDate, SectionAlias } from '@/domain/types';
+import { mapOffset } from '@/domain/caret';
+import { logSessionEvent } from '@/lib/sessionLog';
+import { FormatToolbar } from './FormatToolbar';
+import { SectionBands } from './SectionBands';
+import { SNIPPETS, insertSnippet } from '@/domain/format/snippets';
+
+/**
+ * SPEC F4 — one free-form page per clinical day.
+ *
+ * A plain auto-growing <textarea>, deliberately. A WYSIWYG editor would own
+ * the document model, and the moment it does, the stored body stops being
+ * exactly what the user typed — which breaks the parser's read-only contract,
+ * the byte-faithful copy guarantee, and the three-way merge that operates on
+ * plain text. The editor is dumb so that everything downstream can be exact.
+ */
+/**
+ * Everything that decides where a line wraps. Shared verbatim with SectionBands.
+ */
+/**
+ * What the page outside the editor is allowed to do to it.
+ *
+ * One method, and it is the one nothing outside a textarea can do for itself:
+ * put the caret on a specific range of the stored text and bring it on screen.
+ * Anything expressible as a prop stays a prop — an imperative surface is a
+ * second way to drive the same component, and two ways to drive one thing is
+ * how they drift apart.
+ */
+export interface BodyEditorHandle {
+  /**
+   * Select `[start, end)` of the body, focus the editor and scroll it into
+   * view. Offsets are into the CURRENT value; the caller is responsible for
+   * having computed them against that string and not an older one.
+   */
+  selectRange: (start: number, end: number) => void;
+  /**
+   * Scroll `[start, end)` to just under the sticky header and flash it,
+   * WITHOUT focusing the editor. A bookmark is for reading the line: focusing
+   * would raise the phone keyboard over the very line it jumped to.
+   */
+  revealLine: (start: number, end: number) => void;
+  /** Back to the top of the page, caret at the start (end of a "Tampilkan" round). */
+  scrollToTop: () => void;
+}
+
+export const METRICS =
+  'whitespace-pre-wrap break-words px-4 py-3 text-note font-sans tracking-normal';
+
+export function BodyEditor({
+  value,
+  onChange,
+  onBlur,
+  aliases,
+  date,
+  ward,
+  tint = false,
+  readOnly,
+  placeholder,
+  snippets = true,
+  minHeightClass = 'min-h-[55vh]',
+  watermark,
+  handleRef,
+  history,
+  bookmarks,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onBlur: () => void;
+  aliases: readonly SectionAlias[];
+  /**
+   * The clinical day of the note being edited.
+   *
+   * Used only to date an inserted EKG heading. The note's day, never today's
+   * wall clock: a note written after midnight for the previous day has to
+   * carry that day's date, which is the rule the rest of the app follows.
+   */
+  date: ClinicalDate;
+  /** The patient's ward, for the floor in an inserted EKG heading. */
+  ward?: string | undefined;
+  /** Tint section headers; off unless the user turned it on. */
+  tint?: boolean;
+  readOnly: boolean;
+  /**
+   * Offer the clinical snippet menu.
+   *
+   * Off for a jaga note: an admission anamnesis block does not belong in a
+   * short out-of-hours review.
+   */
+  snippets?: boolean;
+  /** Opening height. A jaga note is short and does not need half the screen. */
+  minHeightClass?: string;
+  /**
+   * Faded identity drawn behind the text.
+   *
+   * There to be noticed in peripheral vision while typing — the failure it
+   * guards is writing into the wrong patient's note, which is invisible until
+   * it has been sent.
+   */
+  watermark?:
+    | {
+        name: string;
+        mrn: string;
+        date: string;
+        opacity?: number;
+        /** `mengambang` keeps one mark in view instead of tiling. */
+        mode?: 'ulang' | 'mengambang';
+      }
+    | undefined;
+  placeholder: string;
+  /**
+   * Imperative escape hatch, opt-in. Absent for every editor that has no
+   * reason to be driven from outside — the jaga note, the read-only views.
+   */
+  handleRef?: MutableRefObject<BodyEditorHandle | null> | undefined;
+  /**
+   * Line bookmarks (day SOAP only): where they sit, for the margin marks and
+   * the toolbar's pressed state, and the toggle for the caret's line.
+   */
+  bookmarks?:
+    | {
+        starts: readonly number[];
+        onToggle: (offset: number) => void;
+      }
+    | undefined;
+  /**
+   * Undo/redo for this note, from `useTextSync`. Also registers the textarea,
+   * so a restored step can put the caret back where the edit was.
+   */
+  history?:
+    | {
+        undo: () => void;
+        redo: () => void;
+        canUndo: boolean;
+        canRedo: boolean;
+        registerEditor: (node: HTMLTextAreaElement | null) => void;
+      }
+    | undefined;
+}): JSX.Element {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-grow: the page scrolls, the textarea never does. A nested scroll
+  // region on a phone is how you lose your place mid-round.
+  // Length at the last measurement, to tell growth from deletion.
+  const [focused, setFocused] = useState(false);
+  /** Phone toolbar visibility: focus, plus a short linger after blur. */
+  const [toolbarShown, setToolbarShown] = useState(false);
+  const toolbarLinger = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(toolbarLinger.current), []);
+  /** Measured note height, driving how many watermark tiles are drawn. */
+  const [contentHeight, setContentHeight] = useState(0);
+
+  const measureRef = useRef<HTMLDivElement | null>(null);
+
+  const resize = useCallback(() => {
+    const node = ref.current;
+    if (!node) return;
+
+    /**
+     * Autosize by measuring a COPY, never the box being typed in.
+     *
+     * The previous version collapsed the textarea to `height: 0`, read
+     * `scrollHeight`, and put the height back — on every keystroke. On a
+     * desktop that is invisible. On a phone it is the jump: the textarea is
+     * FOCUSED, and collapsing a focused element to nothing makes the browser
+     * scroll the caret back into view against the new layout. The scroll was
+     * then restored from here, so the view snapped away and came back, once
+     * per character.
+     *
+     * Restoring the scroll afterwards could never fix that, because the
+     * browser's correction and ours are two different scrolls fighting inside
+     * one frame. The fix is not to disturb the real element at all.
+     *
+     * The copy carries `METRICS`, the same class string the textarea and the
+     * tint layer share, so it wraps identically — the constant exists exactly
+     * so these layers cannot drift apart.
+     */
+    const mirror = measureRef.current;
+    let measured = 0;
+
+    if (mirror) {
+      // A trailing newline produces no line box on its own; the zero-width
+      // space gives it one, so an empty last line is still counted.
+      mirror.textContent = `${node.value}\u200b`;
+      measured = mirror.offsetHeight;
+      node.style.height = `${measured}px`;
+    }
+
+    /**
+     * The fallback, and why it stays.
+     *
+     * If the copy ever under-measures — a font that has not loaded in one
+     * layer, a style that drifts — the note would be CUT, which is the one
+     * failure this component must never have. So after setting the height,
+     * ask the real box whether its content still overflows; if it does, fall
+     * back to the old collapse-and-measure, which cannot under-report.
+     *
+     * The scroll capture belongs to that path only: it is the path that
+     * disturbs a focused element.
+     */
+    if (!mirror || node.scrollHeight > node.clientHeight + 1) {
+      const scroller = node.closest('main') ?? document.scrollingElement;
+      const scrollTop = scroller?.scrollTop ?? 0;
+      const previous = node.style.height;
+      node.style.height = '0px';
+      measured = node.scrollHeight;
+      const next = `${measured}px`;
+      node.style.height = previous === next ? previous : next;
+      if (scroller && scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
+    }
+
+    /**
+     * Published so the watermark can tile to the note's real height.
+     *
+     * Taken from the same measurement the autogrow already does, rather than a
+     * second one: counting newlines would have been the cheap way and it is
+     * the wrong way, because a wrapped line occupies two rows and contributes
+     * one newline.
+     */
+    setContentHeight((current) => (current === measured ? current : measured));
+  }, []);
+
+  /*
+    OWN EDITS VS OUTSIDE EDITS, and the caret.
+
+    Every change this component makes goes through `emit`, which remembers the
+    text it sent. When a new `value` arrives that is NOT that text, it came
+    from outside: the entry finishing loading, another device's edit being
+    adopted, a merge. React has just written it into the textarea, and the
+    browser put the caret at the END. With the note focused, the next
+    keystroke then lands at the bottom of the page.
+
+    The caret is carried through the change instead (`mapOffset`), from the
+    selection recorded before it. Own edits are left alone: typing already
+    has the right caret, and `applyEdit` and undo set theirs a frame later.
+  */
+  const ownEdit = useRef<string | null>(null);
+  /**
+   * DIAGNOSTIC (2026-10-28): "the cursor is lost while typing" has no known
+   * cause and cannot be reproduced on demand, so the moments that separate the
+   * candidates are written to the session log (Pengaturan). Only blurs within
+   * a few seconds of a keystroke are recorded: tapping away on purpose is not
+   * the bug. Element NAMES only (tag, role, in a dialog): never text or labels.
+   */
+  const lastKeyAt = useRef(0);
+  const noteLost = useCallback((what: string): void => {
+    const since = Date.now() - lastKeyAt.current;
+    if (since > 4000) return;
+    logSessionEvent(
+      'focus-lost',
+      `${what}; ${document.visibilityState}; ${String(Math.round(since / 100) / 10)}s after key`,
+    );
+    lastKeyAt.current = 0;
+  }, []);
+  useEffect(() => {
+    if (readOnly && document.activeElement === ref.current) noteLost('went read-only');
+  }, [readOnly, noteLost]);
+  const shown = useRef(value);
+  const selection = useRef({ start: 0, end: 0 });
+  /** Start of the caret's line, for the bookmark button's pressed state. */
+  const [caretLine, setCaretLine] = useState(-1);
+  const trackCaret = (node: HTMLTextAreaElement): void => {
+    const at = node.selectionStart;
+    setCaretLine(node.value.lastIndexOf('\n', at - 1) + 1);
+  };
+
+  const emit = useCallback(
+    (next: string) => {
+      ownEdit.current = next;
+      onChange(next);
+    },
+    [onChange],
+  );
+
+  useLayoutEffect(() => {
+    const before = shown.current;
+    shown.current = value;
+    if (before === value) return;
+    const own = ownEdit.current === value;
+    ownEdit.current = null;
+    if (own) return;
+    const node = ref.current;
+    if (!node || document.activeElement !== node) return;
+    const start = mapOffset(before, value, selection.current.start);
+    const end = Math.max(start, mapOffset(before, value, selection.current.end));
+    node.setSelectionRange(start, end);
+    selection.current = { start, end };
+  }, [value]);
+
+  // Layout effect, not effect: the measurement must land before the browser
+  // paints, or the collapse is visible as a flicker.
+  useLayoutEffect(resize, [value, resize]);
+
+  /**
+   * Re-measure when the box's WIDTH changes, not just its text.
+   *
+   * Height depends on where lines wrap, and wrapping depends on width — but
+   * the effect above only runs when `value` changes. So opening the side
+   * panel, resizing the window, rotating the phone, or a web font arriving
+   * after first paint all changed the wrapping while the height stayed at its
+   * old measurement. The note came out with its last lines cut off, and it
+   * only came back when something forced a remount, which is exactly why
+   * switching tabs "fixed" it.
+   *
+   * A `ResizeObserver` on the element itself is the direct statement of that:
+   * whenever this box's geometry changes, measure it again.
+   */
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+
+    let lastWidth = node.clientWidth;
+    const observer = new ResizeObserver(() => {
+      // Width only. Observing height would fire on the resize this performs
+      // and loop.
+      const width = node.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      resize();
+    });
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [resize]);
+
+  /**
+   * One more measurement once webfonts are in.
+   *
+   * A font that swaps in after first paint changes every line's height. The
+   * promise resolves immediately when fonts are already loaded, so this costs
+   * one no-op measurement in the common case.
+   */
+  useEffect(() => {
+    if (!('fonts' in document)) return;
+    let cancelled = false;
+    void document.fonts.ready.then(() => {
+      if (!cancelled) resize();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [resize]);
+
+  /**
+   * Bring the caret into view, without moving the page when it already is.
+   *
+   * The caret's position is measured against the scroll container rather than
+   * the textarea, because the textarea does not scroll — it is autosized and
+   * the page scrolls around it, so `scrollIntoView` on the element would jump
+   * to the top of the whole note.
+   *
+   * A mirror is not needed for this: the selection is at a known offset, and
+   * scrolling to roughly the right line is enough for "show me what changed".
+   * Being a line out is unimportant; being on the wrong screen is not.
+   */
+  const revealCaret = useCallback((node: HTMLTextAreaElement) => {
+    const scroller = node.closest('main');
+    if (!scroller) return;
+    const caretOffset = offsetTopOf(node, node.selectionStart);
+    if (caretOffset === null) return;
+    const style = window.getComputedStyle(node);
+
+    /**
+     * The caret's height is MEASURED, not counted.
+     *
+     * The first version multiplied a line height by the number of `\n`
+     * characters before the caret. That counts logical lines, and this text
+     * wraps — a single bullet describing a complaint occupies four visual
+     * lines and one newline, so on a real note the estimate landed far short
+     * and the scroll went somewhere above the change.
+     *
+     * The mirror already lays this text out with the textarea's exact metrics,
+     * so a hidden element inserted at the caret offset reports the true
+     * position. It is built, read and thrown away inside one frame, which
+     * costs a layout on undo only — not on typing.
+     */
+    const lineHeight = Number.parseFloat(style.lineHeight) || 28;
+    const caretTop =
+      node.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop +
+      caretOffset;
+
+    const viewTop = scroller.scrollTop;
+    const viewBottom = viewTop + scroller.clientHeight;
+
+    // Already on screen, with a line of margin: leave the page alone.
+    if (caretTop > viewTop + lineHeight && caretTop < viewBottom - lineHeight * 2) return;
+
+    // A third of the way down, not at the very top: an edit with no context
+    // above it is hard to recognise as the thing you just undid.
+    scroller.scrollTo({
+      top: Math.max(0, caretTop - scroller.clientHeight / 3),
+      behavior: 'smooth',
+    });
+  }, []);
+
+  /**
+   * Put the caret on a range of the body and bring it on screen.
+   *
+   * `revealCaret` rather than a bespoke scroll: it already measures the true
+   * wrapped position through the mirror, and it already leaves the page alone
+   * when the target is on screen. Reimplementing either would give this path
+   * its own opinion about where a line is, and the two would disagree on long
+   * notes — which is exactly the bug the measured version was written to fix.
+   *
+   * The range is SELECTED, not just scrolled to. The reason to jump to a day
+   * counter is to change the number, and a selected number is one keystroke
+   * from being replaced. Scrolling to it and leaving the caret elsewhere would
+   * have arrived at the destination and then asked the user to tap again.
+   *
+   * Read-only editors get the selection and the scroll but nothing to type
+   * into, which is correct: on a locked note this is still the fastest way to
+   * see where a counter is.
+   */
+  const selectRange = useCallback(
+    (start: number, end: number) => {
+      const node = ref.current;
+      if (!node) return;
+
+      // Clamped, never trusted. The offsets are computed elsewhere against a
+      // string this component cannot prove is the one it currently holds, and
+      // `setSelectionRange` past the end silently collapses to the end — a
+      // caret parked at the bottom of the note with no explanation.
+      const max = node.value.length;
+      const from = Math.max(0, Math.min(start, max));
+      const to = Math.max(from, Math.min(end, max));
+
+      node.focus({ preventScroll: true });
+      node.setSelectionRange(from, to);
+      revealCaret(node);
+    },
+    [revealCaret],
+  );
+
+  /** The band drawn over a line `revealLine` jumped to; fades, then goes. */
+  const [flash, setFlash] = useState<{ top: number; height: number; on: boolean } | null>(null);
+  const flashTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  useEffect(
+    () => () => {
+      for (const timer of flashTimers.current) clearTimeout(timer);
+    },
+    [],
+  );
+
+  const revealLine = useCallback((start: number, end: number) => {
+    const node = ref.current;
+    const scroller = node?.closest('main');
+    if (!node || !scroller) return;
+    const max = node.value.length;
+    const from = Math.max(0, Math.min(start, max));
+    const to = Math.max(from, Math.min(end, max));
+    const top = offsetTopOf(node, from);
+    // The last character's top, so a wrapped line is covered to its last row.
+    const last = offsetTopOf(node, Math.max(from, to - 1));
+    if (top === null || last === null) return;
+    const style = window.getComputedStyle(node);
+    const lineHeight = Number.parseFloat(style.lineHeight) || 28;
+    const lineTop = top;
+
+    // Same clearance rule as JumpBar: measured off the header, never encoded.
+    const header = document.getElementById('patient-sticky-header');
+    const clearance = header?.getBoundingClientRect().height ?? 0;
+    const target =
+      scroller.scrollTop +
+      node.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      lineTop -
+      clearance -
+      lineHeight / 2;
+    scroller.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+
+    for (const timer of flashTimers.current) clearTimeout(timer);
+    setFlash({ top: lineTop, height: last - top + lineHeight, on: true });
+    flashTimers.current = [
+      setTimeout(() => setFlash((current) => (current ? { ...current, on: false } : null)), 900),
+      setTimeout(() => setFlash(null), 2200),
+    ];
+  }, []);
+
+  const scrollToTop = useCallback(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.setSelectionRange(0, 0);
+    node.closest('main')?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  useImperativeHandle(handleRef, () => ({ selectRange, revealLine, scrollToTop }), [selectRange, revealLine, scrollToTop]);
+
+  const applyEdit = useCallback(
+    (edit: TextEdit) => {
+      emit(edit.text);
+      requestAnimationFrame(() => {
+        const node = ref.current;
+        if (!node) return;
+
+        /**
+         * The scroll position is captured and restored around this.
+         *
+         * `focus()` on a textarea whose caret is out of view makes the browser
+         * scroll to reveal it, and `setSelectionRange` does the same. For bold
+         * and italic the caret moves by a character and nothing is visible;
+         * inserting a snippet moves it by a paragraph, and the page jumped to
+         * the bottom of the note every time.
+         *
+         * Restoring afterwards keeps the note where the user left it. The
+         * caret is still correct — it is simply not chased.
+         */
+        const scroller = node.closest('main') ?? document.scrollingElement;
+        const scrollTop = scroller?.scrollTop ?? 0;
+
+        node.focus();
+        node.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+
+        if (scroller && scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
+      });
+    },
+    [emit],
+  );
+
+  const withSelection = useCallback(
+    (transform: (text: string, start: number, end: number) => TextEdit) => {
+      const node = ref.current;
+      if (!node) return;
+      applyEdit(transform(node.value, node.selectionStart, node.selectionEnd));
+    },
+    [applyEdit],
+  );
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === 'b') {
+      event.preventDefault();
+      withSelection((text, start, end) => toggleWrap(text, start, end, BOLD));
+    } else if (key === 'i') {
+      event.preventDefault();
+      withSelection((text, start, end) => toggleWrap(text, start, end, ITALIC));
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/*
+        The mirror and the textarea share one class string.
+        
+        Colour bleeding into the next section was not a parsing error — it was
+        the two layers wrapping at different points because their metrics had
+        drifted apart. Anything that affects where a line breaks has to be
+        identical, so the shared values live in one constant and both elements
+        use it. Changing padding in one place now changes it in both.
+      */}
+      <div className="relative min-w-0 flex-1">
+        {/*
+          Behind the text, never in it.
+          
+          `aria-hidden` and `pointer-events-none`: this is not content, and a
+          screen reader announcing the patient's name between every paragraph
+          would be worse than no watermark. It sits under the mirror so a tint
+          band never lands on top of it, and it is deliberately weak enough not
+          to compete with the note — the point is that it registers when you
+          glance up, not that it is readable.
+        */}
+        {watermark && watermark.mode === 'mengambang' ? (
+          /*
+            One mark, floating with the scroll.
+
+            `sticky` inside the overlay, and the overlay has NO `overflow`
+            here: an `overflow: hidden` ancestor turns a sticky child into an
+            ordinary one, which would have parked the mark at the top of a
+            long note and left the rest of the scroll unmarked — the very
+            failure tiling was introduced to fix.
+          */
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-0 select-none"
+          >
+            <div className="sticky top-1/3 flex flex-col items-center justify-center">
+                <span
+                  className="max-w-full truncate px-4 text-center text-3xl font-bold uppercase tracking-wide text-fg"
+                  style={{ opacity: watermark.opacity ?? 0.045 }}
+                >
+                  {watermark.name}
+                </span>
+                <span
+                  className="mt-1 text-xl font-semibold text-fg"
+                  style={{ opacity: watermark.opacity ?? 0.045 }}
+                >
+                  {watermark.mrn}
+                </span>
+                <span
+                  className="mt-1 text-base font-medium text-fg"
+                  style={{ opacity: watermark.opacity ?? 0.045 }}
+                >
+                  {watermark.date}
+                </span>
+            </div>
+          </div>
+        ) : null}
+        {watermark && watermark.mode !== 'mengambang' ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-0 overflow-hidden select-none"
+          >
+            {/*
+              Tiled down the note, not centred once in it.
+
+              `justify-center` put a single block at the geometric middle of the
+              container. On anything longer than a screen that means the mark is
+              off-screen for almost all of the scroll — which is precisely when
+              it matters, because the risk this guards against is writing into
+              the wrong patient's note after scrolling away from the header.
+              A watermark you have to scroll to find is not a watermark.
+
+              Repeated elements rather than a repeating background image: the
+              colour has to come from `text-fg` so it tracks the theme, and an
+              inline SVG data URI would have to bake a literal colour in — which
+              `check:a11y` rejects, correctly.
+            */}
+            {Array.from({ length: watermarkTiles(contentHeight) }, (_, index) => (
+              <div
+                key={index}
+                className="flex flex-col items-center justify-center"
+                style={{ height: `${WATERMARK_PITCH}px` }}
+              >
+                {/* Opacity is a setting, so it is inline rather than a class:
+                    Tailwind cannot emit an arbitrary value it does not see at
+                    build time, and rounding to the nearest shipped step would
+                    make the slider feel broken at the low end where it matters
+                    most. */}
+                <span
+                  className="max-w-full truncate px-4 text-center text-3xl font-bold uppercase tracking-wide text-fg"
+                  style={{ opacity: watermark.opacity ?? 0.045 }}
+                >
+                  {watermark.name}
+                </span>
+                <span
+                  className="mt-1 text-xl font-semibold text-fg"
+                  style={{ opacity: watermark.opacity ?? 0.045 }}
+                >
+                  {watermark.mrn}
+                </span>
+                <span
+                  className="mt-1 text-base font-medium text-fg"
+                  style={{ opacity: watermark.opacity ?? 0.045 }}
+                >
+                  {watermark.date}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {/*
+          Mounted unconditionally now, with `paint` deciding whether the tints
+          are drawn. It is also the jump bar's measurement layer — the section
+          anchors are spans inside it — and a layer that only existed when the
+          tint setting was on would have made section jumping work for some
+          users and silently not for others.
+        */}
+        <SectionBands body={value} aliases={aliases} paint={tint} />
+        {/*
+          Bookmark marks in the left margin: the note laid out again in
+          transparent text (same METRICS, so the same wrapping), with a bar at
+          the start of each bookmarked line. Positions come from layout, not
+          from counting newlines, for the reason recorded on `resize`.
+        */}
+        {bookmarks && bookmarks.starts.length > 0 ? (
+          <BookmarkMarks body={value} starts={bookmarks.starts} />
+        ) : null}
+        {flash ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-1 z-0 rounded-md bg-[var(--accent-soft)] transition-opacity duration-1000"
+            style={{ top: flash.top, height: flash.height, opacity: flash.on ? 1 : 0 }}
+          />
+        ) : null}
+        {/*
+          The measuring copy. Invisible, not `display:none`: a hidden element
+          has no layout and cannot report a height. `absolute` keeps it out of
+          the flow, `w-full` gives it the textarea's width, and `METRICS` gives
+          it the textarea's wrapping.
+        */}
+        <div
+          ref={measureRef}
+          aria-hidden="true"
+          className={`${METRICS} pointer-events-none invisible absolute left-0 top-0 w-full`}
+        />
+        <textarea
+          ref={(node) => {
+            ref.current = node;
+            history?.registerEditor(node);
+          }}
+          value={value}
+          onSelect={(event) => {
+            selection.current = {
+              start: event.currentTarget.selectionStart,
+              end: event.currentTarget.selectionEnd,
+            };
+            if (bookmarks) trackCaret(event.currentTarget);
+          }}
+          onChange={(event) => {
+            lastKeyAt.current = Date.now();
+            selection.current = {
+              start: event.target.selectionStart,
+              end: event.target.selectionEnd,
+            };
+            emit(event.target.value);
+
+            /**
+             * Scroll an undo or redo into view.
+             *
+             * Native textarea history moves the caret to the edit it reverted,
+             * but nothing scrolls there — so undoing a change made further up a
+             * long note silently altered text the user could not see, which is
+             * the one situation where you most need to check what happened.
+             *
+             * `inputType` is how the browser reports WHY the value changed, so
+             * this fires only for history and not for ordinary typing, where
+             * chasing the caret would fight the page.
+             */
+            const how = (event.nativeEvent as InputEvent).inputType;
+            if (how === 'historyUndo' || how === 'historyRedo') {
+              revealCaret(event.currentTarget);
+            }
+          }}
+          /**
+           * A dropped link is not an edit anyone meant to make.
+           *
+           * A textarea accepts drag-and-drop natively, so dragging a browser
+           * tab, a bookmark, or a selected address into the note inserts the
+           * URL wherever it lands — which is where the app's own address kept
+           * appearing mid-sentence. Nothing in the app writes it.
+           *
+           * Dropped plain TEXT is still accepted, because that is a real way to
+           * move a phrase between notes. Only URLs are refused.
+           */
+          onDrop={(event) => {
+            const uri = event.dataTransfer.getData('text/uri-list');
+            if (uri) {
+              event.preventDefault();
+              console.warn('[editor] refused a dropped link');
+            }
+          }}
+          onFocus={() => {
+            window.clearTimeout(toolbarLinger.current);
+            setFocused(true);
+            setToolbarShown(true);
+          }}
+          onBlur={(event) => {
+            setFocused(false);
+            // Lingers briefly: a touch browser that blurs before the tap's
+            // click would otherwise hide the button under the finger.
+            window.clearTimeout(toolbarLinger.current);
+            toolbarLinger.current = window.setTimeout(() => setToolbarShown(false), 300);
+            const to = event.relatedTarget as HTMLElement | null;
+            noteLost(
+              to
+                ? `to ${to.tagName.toLowerCase()}${to.getAttribute('role') ? `[${to.getAttribute('role') ?? ''}]` : ''}${to.closest('[role="dialog"]') ? ' in dialog' : ''}`
+                : document.hasFocus()
+                  ? 'to nothing'
+                  : 'window lost focus',
+            );
+            onBlur();
+          }}
+          onKeyDown={(event) => {
+            /*
+              The app's history, not the browser's.
+
+              A controlled textarea whose value is also set programmatically —
+              templates, Rapikan, carry-forward, AI, a merge from another
+              device — has a native stack that never saw those steps, so Ctrl+Z
+              either did nothing or jumped somewhere unrelated. The native
+              behaviour is refused and the app's stack answers instead.
+
+              The editor's own handler still runs afterwards, unless this took
+              the key.
+            */
+            if (history && (event.ctrlKey || event.metaKey)) {
+              const pressed = event.key.toLowerCase();
+              if (pressed === 'z' && !event.shiftKey) {
+                event.preventDefault();
+                history.undo();
+                return;
+              }
+              if ((pressed === 'z' && event.shiftKey) || pressed === 'y') {
+                event.preventDefault();
+                history.redo();
+                return;
+              }
+            }
+            onKeyDown(event);
+          }}
+          readOnly={readOnly}
+          placeholder={placeholder}
+          /**
+           * `spellCheck` is not set here: the document decides (main.tsx turns it
+           * off on touch devices, where the suggestion menu hijacks selection).
+           *
+           * No `lang` attribute on purpose.
+           *
+           * The document is `lang="id"`, which makes the browser check Indonesian
+           * only — so `patient`, `discharge` and every English abbreviation in a
+           * cardiology note gets underlined. Leaving `lang` unset here lets the
+           * browser use every dictionary the user has installed, which is the
+           * closest thing to a mixed Indonesian/English checker that exists.
+           *
+           * There is no medical dictionary anywhere: drug names and abbreviations
+           * will be flagged. See CHANGES for why shipping one would be worse.
+           */
+          /**
+           * Check, do not change.
+           *
+           * `autoCorrect` rewrites words as you type; `spellCheck` only
+           * underlines them and waits to be asked. On a note full of drug names
+           * the difference is the whole thing — an underline you can ignore, a
+           * silent substitution in a dose you cannot.
+           */
+          autoCapitalize="sentences"
+          autoCorrect="off"
+          autoComplete="off"
+          // `break-words` so a pasted lab line with no spaces wraps instead of
+          // widening the column and dragging a scrollbar across the page.
+          /**
+           * `overflow-hidden`, so the textarea never scrolls itself.
+           *
+           * This box is autosized to its content and the PAGE does the
+           * scrolling. Without this, any moment where the measured height lags
+           * the content — pressing Enter, pasting a block, the debounced
+           * resize not having run yet — gives the textarea its own scrollbar,
+           * one whose travel is only the few pixels of difference. It reads as
+           * a scrollbar that is stuck, and dragging it fights the autosize.
+           *
+           * The jaga editor has had this since it was written; this one did
+           * not, and the two boxes behaved differently for no reason anybody
+           * chose.
+           */
+          className={`${METRICS} ${minHeightClass} relative w-full resize-none overflow-hidden border-0 bg-transparent outline-none placeholder:text-fg-faint read-only:opacity-70`}
+          lang=""
+          rows={12}
+        />
+      </div>
+
+      {/*
+        Dimmed until the editor has focus.
+        
+        It sits over the note permanently, and four buttons that are used
+        occasionally should not compete with the text for attention. Focus is
+        the right trigger: the toolbar is only reachable while typing anyway.
+
+        On a phone it is HIDDEN until focus (2026-10-31). Dimmed, its
+        background went translucent too and the note showed through the
+        buttons, while it covered the last lines of the note being read.
+        Reading needs none of it; typing brings it back, solid.
+      */}
+      <div
+        className={[
+          'sticky bottom-0 px-4 pb-2 transition-opacity',
+          focused ? 'opacity-100' : 'opacity-40 hover:opacity-100',
+          toolbarShown ? '' : 'max-sm:hidden',
+        ].join(' ')}
+      >
+        <FormatToolbar
+          disabled={readOnly}
+          {...(history ? { history } : {})}
+          value={value}
+          onReplace={emit}
+          aliases={aliases}
+          onBold={() => withSelection((text, start, end) => toggleWrap(text, start, end, BOLD))}
+          onItalic={() =>
+            withSelection((text, start, end) => toggleWrap(text, start, end, ITALIC))
+          }
+          onBullet={() => withSelection(toggleBullet)}
+          onNumbered={() => withSelection(toggleNumbered)}
+          {...(bookmarks
+            ? {
+                bookmark: {
+                  pressed: bookmarks.starts.includes(caretLine),
+                  onToggle: () => {
+                    const node = ref.current;
+                    if (!node) return;
+                    bookmarks.onToggle(node.selectionStart);
+                  },
+                },
+              }
+            : {})}
+          snippetPreview={(snippetId) =>
+            SNIPPETS.find((entry) => entry.id === snippetId)?.build(date, ward) ?? ''
+          }
+          onInsertSnippet={
+            snippets
+              ? (snippetId) => {
+            const snippet = SNIPPETS.find((entry) => entry.id === snippetId);
+            if (!snippet) return;
+            // `date` is the note's clinical day, not today: a note written
+            // after midnight for the previous day carries that day's date.
+                  withSelection((text, start) =>
+                    insertSnippet(text, start, snippet.build(date, ward), snippet.caretAfter),
+                  );
+                }
+              : undefined
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Vertical spacing between repeats.
+ *
+ * Wide enough that the mark reads as background rather than as ruled lines
+ * through the text, close enough that a tile is on screen at any scroll
+ * position on a phone — a phone viewport is roughly 600px of editor, so a
+ * pitch above that could leave a screenful with no mark on it at all.
+ */
+const WATERMARK_PITCH = 420;
+
+/**
+ * Always at least one, and one more than strictly fits.
+ *
+ * The extra tile covers the partial band at the bottom; without it the last
+ * screenful of a note is the one place the watermark is missing, which is the
+ * bug this replaced in miniature. Overflow is clipped by the parent, so a tile
+ * too many costs nothing.
+ */
+function watermarkTiles(height: number): number {
+  return Math.max(1, Math.ceil(height / WATERMARK_PITCH) + 1);
+}
+
+/**
+ * Where `offset` sits, in px from the top of the textarea (its top padding
+ * included, so it is directly a `top` inside the wrapper), measured with a throwaway copy laid out with the
+ * textarea's own metrics. Built, read and removed inside one frame.
+ *
+ * Counting `\n` is the wrong measure: a bullet that wraps to four rows holds
+ * one newline (see `revealCaret`'s history).
+ */
+function offsetTopOf(node: HTMLTextAreaElement, offset: number): number | null {
+  const wrapper = node.parentElement;
+  if (!wrapper) return null;
+  const style = window.getComputedStyle(node);
+  const probe = document.createElement('div');
+  probe.style.cssText = [
+    'position:absolute',
+    'visibility:hidden',
+    'pointer-events:none',
+    'white-space:pre-wrap',
+    'overflow-wrap:anywhere',
+    'top:0',
+    'left:0',
+    `width:${node.clientWidth}px`,
+    `font:${style.font}`,
+    `line-height:${style.lineHeight}`,
+    `letter-spacing:${style.letterSpacing}`,
+    `padding:${style.padding}`,
+  ].join(';');
+  const before = document.createTextNode(node.value.slice(0, offset));
+  const marker = document.createElement('span');
+  probe.append(before, marker);
+  wrapper.appendChild(probe);
+  const top = marker.offsetTop;
+  probe.remove();
+  return top;
+}
+
+/** The margin bars for bookmarked lines; see the comment where it is used. */
+function BookmarkMarks({
+  body,
+  starts,
+}: {
+  body: string;
+  starts: readonly number[];
+}): JSX.Element {
+  const parts: JSX.Element[] = [];
+  const sorted = [...new Set(starts)].filter((at) => at <= body.length).sort((a, b) => a - b);
+  let from = 0;
+  for (const at of sorted) {
+    parts.push(<span key={`t${at}`}>{body.slice(from, at)}</span>);
+    parts.push(
+      <span key={`m${at}`} className="relative">
+        <span className="absolute -left-3 top-[0.4rem] h-4 w-1 rounded-full bg-accent" />
+      </span>,
+    );
+    from = at;
+  }
+  parts.push(<span key="end">{`${body.slice(from)}\u200b`}</span>);
+  return (
+    <div
+      aria-hidden="true"
+      className={`${METRICS} pointer-events-none absolute inset-0 select-none text-transparent`}
+    >
+      {parts}
+    </div>
+  );
+}

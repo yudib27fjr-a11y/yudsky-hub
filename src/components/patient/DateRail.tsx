@@ -1,0 +1,310 @@
+import { IconCalendar } from '@/components/common/Icons';
+import { useEffect, useRef, type ReactNode } from 'react';
+
+import { formatShortDate, relativeDayLabel } from '@/domain/clinicalDate';
+import { isVersion, noteLabel } from '@/domain/shiftNotes';
+import type { ClinicalDate, ShiftNote } from '@/domain/types';
+import { IGD_ENTRY } from '@/domain/clinicalDate';
+
+/**
+ * SPEC F4 — horizontal date rail, newest on the right, today auto-selected.
+ * Days that already have content are marked, so a resident scanning back for
+ * "the day we started ceftriaxone" can see where to look.
+ */
+export function DateRail({
+  dates,
+  onClear,
+  selected,
+  today,
+  datesWithContent,
+  onSelect,
+  shiftNotesByDate = {},
+  selectedShiftNoteId = null,
+  onSelectShiftNote,
+  onClearShiftNote,
+  orientation = 'horizontal',
+  trailing,
+}: {
+  dates: ClinicalDate[];
+  /** Clear a day's note. Omitted where there is no room for the control. */
+  onClear?: (date: ClinicalDate) => void;
+  selected: ClinicalDate;
+  today: ClinicalDate;
+  datesWithContent: ReadonlySet<ClinicalDate>;
+  onSelect: (date: ClinicalDate) => void;
+  /** Shift notes per day, from the entry-dates subscription. */
+  shiftNotesByDate?: Record<ClinicalDate, ShiftNote[]>;
+  /** The shift note currently being edited, or null for the day's own SOAP. */
+  selectedShiftNoteId?: string | null;
+  onSelectShiftNote?: (date: ClinicalDate, id: string) => void;
+  /**
+   * Remove a jaga note from the rail.
+   *
+   * Present alongside `onClear` for days, and for the same reason: the list
+   * you navigate by is also where you tidy up. Requiring the note to be opened
+   * before it can be removed makes deleting an empty one a three-step job.
+   */
+  onClearShiftNote?: (date: ClinicalDate, id: string) => void;
+  /** Horizontal strip on phone; a stacked list in the desktop sidebar. */
+  orientation?: 'horizontal' | 'vertical';
+  /**
+   * Extra chips after the days and before "Tanggal lain", on the strip only.
+   * The phone puts "+ Versi" and "+ SOAP jaga" here: they add to the list
+   * this strip already shows, and a row of their own cost 50 px above the note.
+   */
+  trailing?: ReactNode;
+}): JSX.Element {
+  const pickerRef = useRef<HTMLInputElement>(null);
+  const selectedRef = useRef<HTMLButtonElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Centre the selected day inside the STRIP only.
+   *
+   * `scrollIntoView` scrolls every scrollable ancestor to satisfy itself, so
+   * on the phone it also nudged the page, and the strip opened scrolled so far
+   * that "SOAP Awal" was cut in half at the left edge. Setting the strip's own
+   * `scrollLeft` touches nothing else. The vertical list needs no help.
+   */
+  useEffect(() => {
+    const strip = stripRef.current;
+    const target = selectedRef.current;
+    if (orientation !== 'horizontal' || !strip || !target) return;
+    const max = strip.scrollWidth - strip.clientWidth;
+    // Only as far as needed to show it whole, not centred: centring the
+    // newest day pushed the start of the strip off screen for no reason.
+    const margin = 24;
+    const right = target.offsetLeft + target.offsetWidth + margin - strip.clientWidth;
+    const left = target.offsetLeft - margin;
+    const current = strip.scrollLeft;
+    const want = right > current ? right : left < current ? left : current;
+    strip.scrollLeft = Math.max(0, Math.min(max, want));
+  }, [selected, orientation]);
+
+  return (
+    <div
+      ref={stripRef}
+      className={
+        orientation === 'vertical'
+          ? 'flex flex-col gap-1'
+          : // The faded edges say "there is more this way"; a chip cut by a
+            // hard edge read as a rendering bug.
+            'relative flex items-center gap-1.5 overflow-x-auto border-b border-border px-4 py-1.5 [mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+      }
+    >
+      {/*
+        The admission note sits above the dated entries, always.
+        
+        It is not a day, so it cannot be sorted among them — and it is the one
+        entry you look for by name rather than by date.
+      */}
+      <button
+        type="button"
+        onClick={() => onSelect(IGD_ENTRY)}
+        aria-current={selected === IGD_ENTRY}
+        className={[
+          'flex min-h-tap items-center gap-2 rounded-lg border px-3 text-left text-xs',
+          orientation === 'vertical' ? 'w-full' : 'shrink-0 whitespace-nowrap',
+          selected === IGD_ENTRY
+            ? 'border-accent bg-accent font-medium text-on-accent'
+            : 'border-border text-fg-muted',
+        ].join(' ')}
+      >
+        <span className="flex-1">SOAP Awal</span>
+        {datesWithContent.has(IGD_ENTRY) ? <ContentDot active={selected === IGD_ENTRY} /> : null}
+      </button>
+
+      {dates.map((date) => {
+        const active = date === selected;
+        const hasContent = datesWithContent.has(date);
+
+        const shiftNotes = shiftNotesByDate[date] ?? [];
+
+        return (
+          <div
+            key={date}
+            className={orientation === 'vertical' ? 'w-full' : 'contents'}
+          >
+          <div
+            className={[
+              'flex shrink-0 items-center',
+              orientation === 'vertical' ? 'w-full gap-1' : '',
+            ].join(' ')}
+          >
+          <button
+            ref={active ? selectedRef : undefined}
+            type="button"
+            onClick={() => onSelect(date)}
+            aria-current={active ? 'date' : undefined}
+            className={[
+              'flex min-h-tap shrink-0 rounded-lg px-3 py-1 text-xs',
+              orientation === 'vertical'
+                // `flex-1`, not `w-full`: the row shares its width with the
+                // clear button beside it, and `w-full` left that button no room
+                // at all — which is why it never appeared.
+                ? 'min-w-0 flex-1 flex-row items-center justify-between gap-2 text-left'
+                : 'flex-col items-center justify-center',
+              active ? 'bg-accent font-medium text-on-accent' : 'text-fg-muted',
+            ].join(' ')}
+          >
+            <span>{date === today ? 'Hari ini' : relativeDayLabel(date, today)}</span>
+            <span className={`flex items-center gap-1 ${active ? 'opacity-90' : 'opacity-60'}`}>
+              {formatShortDate(date)}
+              {hasContent ? <ContentDot active={active} /> : null}
+            </span>
+          </button>
+
+          {/*
+            Only where there is something to clear, and only in the sidebar.
+            A delete control on an empty day is a control that can only do
+            nothing, and on the horizontal phone rail there is no room for one
+            that is not a mis-tap waiting to happen.
+          */}
+          {onClear && hasContent && orientation === 'vertical' ? (
+            <button
+              type="button"
+              aria-label={`Hapus catatan ${formatShortDate(date)}`}
+              onClick={() => onClear(date)}
+              className="min-h-tap min-w-[28px] shrink-0 text-xs text-fg-faint hover:text-danger"
+            >
+              ×
+            </button>
+          ) : null}
+          </div>
+
+          {/*
+            Shift notes for this day, half height and indented.
+
+            Deliberately NOT the same size or shape as a day. A jaga note is
+            not a daily follow-up, and the two being visually interchangeable
+            in the one list you navigate by is how the wrong one gets sent to
+            the chief. Half the height, indented under its parent, and no date
+            of its own — only the clock time, because the date is the row above.
+
+            On the vertical rail these indent under their day. On the phone
+            strip there is no "under", so they follow the day chip inline as
+            narrower pills — reachable, and still visibly not a day.
+
+            Gating them to the vertical rail meant a jaga note written on the
+            phone could not be opened again ON the phone: it existed, it synced,
+            and the only way back to it was a laptop.
+          */}
+          {shiftNotes.length > 0 && onSelectShiftNote
+            ? shiftNotes.map((note) => {
+                const noteActive = active && selectedShiftNoteId === note.id;
+                return (
+                  <div
+                    key={note.id}
+                    className={
+                      orientation === 'vertical'
+                        ? 'flex w-full items-center gap-1'
+                        : 'flex shrink-0 items-center'
+                    }
+                  >
+                  <button
+                    type="button"
+                    onClick={() => onSelectShiftNote(date, note.id)}
+                    aria-current={noteActive}
+                    className={[
+                      'flex min-w-0 items-center gap-1.5 text-left text-xs',
+                      orientation === 'vertical'
+                        ? 'ml-4 mt-0.5 flex-1 rounded-md border px-2 py-1'
+                        : // On the strip: a short pill beside its day, not a
+                          // full-width row. Dashed so it reads as secondary to
+                          // the solid day chips it sits among.
+                          'ml-1 shrink-0 rounded-full border border-dashed px-2 py-1',
+                      noteActive
+                        ? 'border-accent bg-bg-subtle font-medium text-accent'
+                        : 'border-border text-fg-faint',
+                    ].join(' ')}
+                  >
+                    {isVersion(note) || note.title ? (
+                      <span className="max-w-[9rem] shrink-0 truncate">{noteLabel(note)}</span>
+                    ) : (
+                      <>
+                        <span className="shrink-0">Jaga</span>
+                        <span className="shrink-0 opacity-80">{note.time}</span>
+                      </>
+                    )}
+                    {orientation === 'vertical' ? (
+                      <span className="min-w-0 flex-1 truncate opacity-70">
+                        {note.body.trim() || '(kosong)'}
+                      </span>
+                    ) : null}
+                  </button>
+                  {/* Delete stays on the rail only: a strip pill has no room
+                      for it, and a mis-tap there would clear a note. */}
+                  {onClearShiftNote && orientation === 'vertical' ? (
+                    <button
+                      type="button"
+                      onClick={() => onClearShiftNote(date, note.id)}
+                      aria-label={`Hapus ${noteLabel(note)}`}
+                      title={isVersion(note) ? 'Hapus versi SOAP' : 'Hapus SOAP jaga'}
+                      className="min-h-tap min-w-tap shrink-0 text-fg-faint"
+                    >
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  ) : null}
+                  </div>
+                );
+              })
+            : null}
+          </div>
+        );
+      })}
+
+      {/*
+        Any date, not just the ones already in the rail.
+        The rail lists days that have a note plus today, which is right for
+        navigation but leaves no way to back-fill a day that was missed or to
+        pre-write one. A native date input is deliberate: it brings each
+        platform's own calendar, including the year jump needed for a long
+        admission, and needs no picker component of our own.
+      */}
+      {orientation === 'horizontal' ? trailing : null}
+
+      <div className="relative shrink-0">
+        <button
+          type="button"
+          onClick={() => {
+            // showPicker() is unsupported on older Safari; focus+click is the
+            // fallback that still opens the native calendar there.
+            const input = pickerRef.current;
+            if (!input) return;
+            if (typeof input.showPicker === 'function') input.showPicker();
+            else input.click();
+          }}
+          className="flex min-h-tap w-full items-center gap-1.5 whitespace-nowrap rounded-lg border border-dashed border-border-strong px-3 text-xs text-fg-muted"
+        >
+          <IconCalendar aria-hidden="true" width={16} height={16} />
+          Tanggal lain
+        </button>
+        <input
+          ref={pickerRef}
+          type="date"
+          value={selected}
+          aria-label="Pilih tanggal catatan"
+          onChange={(event) => {
+            if (event.target.value) onSelect(event.target.value as ClinicalDate);
+          }}
+          className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "This day has a written note." A dot, not a typed `·`: the character read as
+ * a stray separator after the date ("Rab, 7 Okt ·"), and nobody could tell what
+ * it was for. Labelled for screen readers, which never could.
+ */
+function ContentDot({ active }: { active: boolean }): JSX.Element {
+  return (
+    <span
+      role="img"
+      aria-label="ada catatan"
+      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-white' : 'bg-accent'}`}
+    />
+  );
+}

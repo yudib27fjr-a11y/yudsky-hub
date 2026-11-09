@@ -1,0 +1,172 @@
+/**
+ * Sticky notes on the patient board.
+ *
+ * A note that lives BESIDE the patient cards — "lab jam 14", "konfirmasi OK
+ * besok" — stuck where it is needed and moved when it is not. It is not a
+ * Catatan: those are documents with a page of their own. A sticky note is a
+ * few lines, edited where it sits, and never opened anywhere else.
+ *
+ * STORAGE
+ *
+ * On the user's profile, as a MAP keyed by note id, and every change is written
+ * to one field path (`boardNotes.<id>.text`). Not an array: Catatan are one
+ * array in one document, and two quick saves there lost the first — recurring
+ * pattern 5, which needed `pendingBodies` to fix. A map written a field at a
+ * time cannot lose one note's edit to another's, because the two writes never
+ * touch the same field.
+ *
+ * Position and size are NOT stored here. They belong to the canvas layout,
+ * exactly like a patient card's, so a sticky note is placed, dragged and
+ * resized by the same code, and a fix to one is a fix to both.
+ */
+
+export type StickyColor = 'kuning' | 'oranye' | 'merah' | 'hijau' | 'biru' | 'ungu';
+
+/**
+ * Colours are the shared card tokens, so they follow the theme and pass
+ * `check:contrast`. Yellow first: it is what a sticky note looks like, and
+ * the default should look like the thing it is.
+ */
+export const STICKY_COLORS: ReadonlyArray<{ id: StickyColor; label: string; step: number }> = [
+  { id: 'kuning', label: 'Kuning', step: 3 },
+  { id: 'oranye', label: 'Oranye', step: 2 },
+  { id: 'merah', label: 'Merah muda', step: 8 },
+  { id: 'hijau', label: 'Hijau', step: 4 },
+  { id: 'biru', label: 'Biru', step: 6 },
+  { id: 'ungu', label: 'Ungu', step: 7 },
+];
+
+export type StickyKind = 'catatan' | 'lab';
+
+export interface BoardNote {
+  text: string;
+  color: StickyColor;
+  /** Epoch ms, set by the creating device. Orders new notes; nothing else. */
+  createdAt: number;
+  /** Ids of attached images, in the order they were added. See `boardImages`. */
+  images?: string[];
+  /**
+   * Which board it was written on: `temporary` for Titipan, absent for Pasien
+   * saya (every note written before scopes existed was written there).
+   *
+   * Per scope for the same reason as stickers (`board/stickers.ts`): the two
+   * scopes show different cards at the same place, so a note shown in both
+   * sat beside a titipan patient in one and beside your own in the other.
+   */
+  scope?: 'temporary';
+  /**
+   * A summary sticky instead of a written one (2026-10-30). Absent: a plain
+   * note. `catatan` lists every patient on the board with their standing
+   * note (`Patient.notes`, the same field the SOAP page edits); `lab` lists
+   * the labs each patient's plan dates today (`Patient.labPlans`). `text` is
+   * unused for both: the content lives on the patients, never copied here.
+   */
+  kind?: StickyKind;
+  /**
+   * Soft delete, as everywhere else in this app: no client ever hard-deletes.
+   * A deleted note leaves the board and its text stays recoverable.
+   */
+  deletedAt?: number;
+}
+
+export type BoardNotes = Record<string, BoardNote>;
+
+/**
+ * Canvas ids are shared between patient cards and sticky notes, so a note's
+ * id is prefixed. The prefix is what the board reads to decide which of the
+ * two to render; a patient id can never start with it because patient ids
+ * are generated without a colon.
+ */
+export const STICKY_PREFIX = 'sticky:';
+
+export const stickyCanvasId = (noteId: string): string => `${STICKY_PREFIX}${noteId}`;
+
+export const noteIdFromCanvasId = (canvasId: string): string | null =>
+  canvasId.startsWith(STICKY_PREFIX) ? canvasId.slice(STICKY_PREFIX.length) : null;
+
+export function stickyTone(color: StickyColor): { bg: string; fg: string } {
+  const step = STICKY_COLORS.find((entry) => entry.id === color)?.step ?? 3;
+  return { bg: `var(--card-step-${step}-bg)`, fg: `var(--card-step-${step}-fg)` };
+}
+
+/**
+ * How a sticky note LOOKS (2026-11-03, Avi: "add all and let the user choose in
+ * settings"). One component, five looks, chosen in Pengaturan → Papan & harian.
+ *
+ * - `postit`   — the default: pale paper, a sticky strip, a curled corner.
+ * - `dipaku`   — neutral paper under a push-pin; the colour lives on the pin.
+ * - `bergaris` — ruled legal-pad paper with a margin line.
+ * - `tenang`   — flat paper, a hairline edge, a small peeled corner.
+ * - `klasik`   — what it was before: a card in the note's card colour, with tape.
+ *
+ * Stored as `settings.stickyStyle`; absent (older profiles) or unknown reads as
+ * the default, so a value this build does not know can never break the board.
+ */
+export type StickyStyle = 'postit' | 'dipaku' | 'bergaris' | 'tenang' | 'klasik';
+
+export const DEFAULT_STICKY_STYLE: StickyStyle = 'postit';
+
+export const STICKY_STYLES: ReadonlyArray<{ id: StickyStyle; label: string; hint: string }> = [
+  { id: 'postit', label: 'Post-it', hint: 'Kertas tempel klasik' },
+  { id: 'dipaku', label: 'Dipaku', hint: 'Kertas netral, warna ada di paku' },
+  { id: 'bergaris', label: 'Kertas bergaris', hint: 'Seperti buku saku dokter' },
+  { id: 'tenang', label: 'Kertas tenang', hint: 'Paling sederhana, tanpa miring' },
+  { id: 'klasik', label: 'Klasik', hint: 'Kartu berwarna seperti sebelumnya' },
+];
+
+export function stickyStyleOf(value: unknown): StickyStyle {
+  return STICKY_STYLES.some((entry) => entry.id === value) ? (value as StickyStyle) : DEFAULT_STICKY_STYLE;
+}
+
+/**
+ * The paper look's colours, as CSS variables set on the note (`--paper-bg`,
+ * `--paper-fg`, `--pin`). The ink is always dark, on every theme: the paper is
+ * dimmed in the dark themes rather than the ink being lightened, so the page
+ * never glares on a night shift. `bg`/`fg` pairs are held by `check:contrast`.
+ */
+export function stickyPaper(color: StickyColor, style: StickyStyle): Record<string, string> {
+  const own = STICKY_COLORS.some((entry) => entry.id === color) ? color : 'kuning';
+  // The push-pin note is neutral paper; the note's colour is the pin.
+  const paper = style === 'dipaku' ? 'neutral' : own;
+  return {
+    '--paper-bg': `var(--paper-${paper}-bg)`,
+    '--paper-fg': `var(--paper-${paper}-fg)`,
+    '--pin': `var(--pin-${own})`,
+  };
+}
+
+/**
+ * The notes on the board: not deleted, oldest first.
+ *
+ * Oldest first so a new note is placed AFTER the existing ones by the canvas's
+ * auto-placement, instead of pushing everything the user arranged down a slot.
+ *
+ * Defensive about shape: this map arrives from Firestore, where an older
+ * client or a half-applied write could leave an entry without a field, and a
+ * board that crashes on one bad note loses every patient card with it.
+ */
+export function activeBoardNotes(
+  notes: BoardNotes | undefined,
+  /** The board on screen; omitted, every note (exports, counts). */
+  scope?: 'mine' | 'temporary',
+): Array<{ id: string; note: BoardNote }> {
+  return Object.entries(notes ?? {})
+    .filter(([, note]) => note && typeof note === 'object' && note.deletedAt === undefined)
+    .filter(([, note]) =>
+      scope === undefined ? true : scope === 'temporary' ? note.scope === 'temporary' : note.scope !== 'temporary',
+    )
+    .map(([id, note]) => ({
+      id,
+      note: {
+        text: typeof note.text === 'string' ? note.text : '',
+        color: STICKY_COLORS.some((entry) => entry.id === note.color) ? note.color : 'kuning',
+        createdAt: typeof note.createdAt === 'number' ? note.createdAt : 0,
+        images: Array.isArray(note.images)
+          ? note.images.filter((image): image is string => typeof image === 'string')
+          : [],
+        ...(note.scope === 'temporary' ? { scope: 'temporary' as const } : {}),
+        ...(note.kind === 'catatan' || note.kind === 'lab' ? { kind: note.kind } : {}),
+      },
+    }))
+    .sort((a, b) => a.note.createdAt - b.note.createdAt || a.id.localeCompare(b.id));
+}

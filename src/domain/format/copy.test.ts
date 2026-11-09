@@ -1,0 +1,671 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  findMarkdownLeaks,
+  findNonAsciiChars,
+  findPlainTextLeaks,
+  formatBody,
+  toMarkdown,
+  toPlain,
+  toWhatsApp,
+} from './formatters';
+import {
+  composeCopy,
+  composeSection,
+  identityLine,
+  type CopyDay,
+} from './composeCopy';
+import { makePatient } from '../testFactories';
+import type { SectionId } from '../types';
+import { DEFAULT_SECTION_ALIASES } from '../sections/aliases';
+
+const PATIENT = makePatient({
+  name: 'Tn. Budi Santoso',
+  age: 52,
+  sex: 'L',
+  mrn: '123456',
+  ward: 'Melati',
+  bed: '3B',
+  admittedAt: '2026-08-03',
+});
+
+const BODY = [
+  'S: sesak **berkurang**, batuk _berdahak_',
+  'O:',
+  'TTV: TD 130/80, N 92',
+  'Penunjang: Hb 10.2',
+  'A:\nPneumonia komunitas',
+  'P:',
+  '- Lanjut O2 3 lpm',
+  '- Cek DPL besok',
+  'Th/ Ceftriaxone 2x1 g IV',
+].join('\n');
+
+const OPTIONS = {
+  aliases: DEFAULT_SECTION_ALIASES,
+  patient: PATIENT,
+  includeIdentity: false,
+  includeDateHeader: false,
+  sections: 'all' as const,
+};
+
+describe('toWhatsApp', () => {
+  it('converts bold to a single asterisk', () => {
+    expect(toWhatsApp('sesak **berkurang**')).toBe('sesak *berkurang*');
+  });
+
+  it('leaves italic underscores alone', () => {
+    expect(toWhatsApp('batuk _berdahak_')).toBe('batuk _berdahak_');
+  });
+
+  it('converts strikethrough to a single tilde', () => {
+    expect(toWhatsApp('~~stop O2~~')).toBe('~stop O2~');
+  });
+
+  it('leaves hyphen bullets exactly as written', () => {
+    // Real handovers are written and read with hyphens. An earlier version
+    // converted these to `•`, and that is what arrived in the chief's chat.
+    expect(toWhatsApp('- Lanjut O2\n- Cek DPL')).toBe('- Lanjut O2\n- Cek DPL');
+  });
+
+  it('preserves indentation on nested bullets', () => {
+    expect(toWhatsApp('  - Cek DPL')).toBe('  - Cek DPL');
+  });
+
+  it('leaves numbered lists as they are', () => {
+    expect(toWhatsApp('1. Lanjut O2')).toBe('1. Lanjut O2');
+  });
+
+  it('leaks no markdown from a realistic note', () => {
+    expect(findMarkdownLeaks(toWhatsApp(BODY))).toEqual([]);
+  });
+
+  it('does not italicise underscores inside identifiers', () => {
+    expect(toWhatsApp('hari_rawat dan TD_N_RR')).toBe('hari_rawat dan TD_N_RR');
+  });
+
+  it('leaves an unbalanced marker untouched rather than mangling it', () => {
+    expect(toWhatsApp('nilai ** penting')).toBe('nilai ** penting');
+    expect(toWhatsApp('dosis 2*1')).toBe('dosis 2*1');
+  });
+
+  it('does not span line breaks', () => {
+    expect(toWhatsApp('**awal\nakhir**')).toBe('**awal\nakhir**');
+  });
+});
+
+describe('toPlain', () => {
+  it('strips every inline marker', () => {
+    expect(toPlain('sesak **berkurang**, batuk _berdahak_, ~~stop~~')).toBe(
+      'sesak berkurang, batuk berdahak, stop',
+    );
+  });
+
+  it('keeps the line structure intact', () => {
+    expect(toPlain('- Lanjut O2\n- Cek DPL')).toBe('- Lanjut O2\n- Cek DPL');
+  });
+
+  it('leaves clinical shorthand containing asterisks alone', () => {
+    expect(toPlain('Ceftriaxone 2*1 g')).toBe('Ceftriaxone 2*1 g');
+  });
+});
+
+describe('toMarkdown', () => {
+  it('is identity — the stored model is already Markdown', () => {
+    expect(toMarkdown(BODY)).toBe(BODY);
+  });
+});
+
+describe('formatBody dispatch', () => {
+  it('routes each format to its own formatter', () => {
+    expect(formatBody('**x**', 'whatsapp')).toBe('*x*');
+    expect(formatBody('**x**', 'plain')).toBe('x');
+    expect(formatBody('**x**', 'markdown')).toBe('**x**');
+  });
+});
+
+describe('composeCopy — all sections', () => {
+  const days: CopyDay[] = [{ date: '2026-08-06', body: BODY }];
+
+  it('is byte-faithful in plain format apart from marker removal', () => {
+    const output = composeCopy(days, { ...OPTIONS, format: 'plain' });
+    expect(output).toBe(toPlain(BODY));
+  });
+
+  it('does not normalise the resident’s own blank lines', () => {
+    const spaced = 'S: sesak\n\n\n\nA: pneumonia';
+    const output = composeCopy([{ date: '2026-08-06', body: spaced }], {
+      ...OPTIONS,
+      format: 'plain',
+    });
+    expect(output).toBe(spaced);
+  });
+
+  it('adds the identity line when asked', () => {
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'plain',
+      includeIdentity: true,
+    });
+    expect(output.startsWith('Tn. Budi Santoso, 52th, L, RM 123456, Melati 3B')).toBe(true);
+  });
+
+  it('adds the date header with hari rawat when asked', () => {
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'plain',
+      includeDateHeader: true,
+    });
+    // The middot folds to a hyphen in plain text: SIMGOS renders anything
+    // outside its legacy encoding as `?`.
+    expect(output).toContain('Kamis, 6 Agustus 2026 - Hari rawat ke-4');
+  });
+});
+
+/**
+ * The header goes on its OWN LINE.
+ *
+ * These used to pin `A: Pneumonia komunitas` — header and body on one line —
+ * which was the bug, not the contract. `headerLine` is the header prefix with
+ * its line break stripped, and two of the three places that re-emit it joined
+ * with a space.
+ */
+describe('composeCopy — section subsets', () => {
+  const days: CopyDay[] = [{ date: '2026-08-06', body: BODY }];
+
+  it('includes only the requested sections', () => {
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'plain',
+      sections: ['a', 'plan'],
+    });
+    expect(output).toContain('A:\nPneumonia komunitas');
+    expect(output).toContain('P:');
+    expect(output).not.toContain('sesak');
+    expect(output).not.toContain('Hb 10.2');
+  });
+
+  it('emits sections in NOTE order, not in the order they were selected', () => {
+    /*
+     * Reversed from what this asserted before, deliberately.
+     *
+     * A subset is now a slice of the original rather than a reassembly, and
+     * the note's own order is the author's. Sorting it into a canonical
+     * sequence silently asserts the note was written wrong, in a message they
+     * are about to send — and it was that reassembly step that also dropped
+     * headings it could not name.
+     */
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'plain',
+      sections: ['terapi', 's'],
+    });
+    expect(output.indexOf('sesak')).toBeLessThan(output.indexOf('Ceftriaxone'));
+  });
+
+  it('normalises the gap between non-adjacent sections to one blank line', () => {
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'plain',
+      sections: ['s', 'a'],
+    });
+    expect(output).not.toMatch(/\n{3,}/);
+    expect(output.split('\n\n')).toHaveLength(2);
+  });
+
+  it('carries everything under a heading, including sub-headings', () => {
+    /*
+     * `TTV:` and `Penunjang:` are their own sections to the parser, and under
+     * the old reassembly they had to be named to be included. Now they are
+     * simply inside the O block, which is where the author put them — the
+     * whole point of slicing by boundary is that an unfamiliar sub-heading
+     * needs no rule at all.
+     */
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'plain',
+      sections: ['o', 'a'],
+    });
+    expect(output).toContain('O:');
+    expect(output).toContain('TTV: TD 130/80, N 92');
+    expect(output).toContain('A:\nPneumonia komunitas');
+    // Still nothing from S: a boundary ends the block above it.
+    expect(output).not.toContain('sesak');
+  });
+
+  it('never includes the opening in a subset', () => {
+    /*
+     * The greeting, reporting sentence, identity line and DPJP lines all sit
+     * before the first boundary, so they belong to no group. That falls out of
+     * the shape rather than needing a rule — an opening is whatever comes
+     * before the note starts.
+     */
+    const output = composeCopy([{ date: '2026-08-06', body: 'Tn. B, 52th\nA: pneumonia' }], {
+      ...OPTIONS,
+      format: 'plain',
+      sections: ['a'],
+    });
+    expect(output).toContain('pneumonia');
+    expect(output).not.toContain('Tn. B, 52th');
+  });
+
+  it('applies the WhatsApp formatter to a subset too', () => {
+    const output = composeCopy(days, {
+      ...OPTIONS,
+      format: 'whatsapp',
+      sections: ['s'],
+    });
+    // One line, because the fixture writes `S: sesak …` with the content on
+    // the header's own line. That is a field, not a heading, and the
+    // separator now follows which of the two it is.
+    expect(output).toBe('S: sesak *berkurang*, batuk _berdahak_');
+    expect(findMarkdownLeaks(output)).toEqual([]);
+  });
+});
+
+describe('composeCopy — multiple days', () => {
+  const days: CopyDay[] = [
+    { date: '2026-08-05', body: 'A: pneumonia' },
+    { date: '2026-08-06', body: 'A: pneumonia membaik' },
+  ];
+
+  it('forces a date header so days are distinguishable', () => {
+    const output = composeCopy(days, { ...OPTIONS, format: 'plain' });
+    expect(output).toContain('Rabu, 5 Agustus 2026');
+    expect(output).toContain('Kamis, 6 Agustus 2026');
+  });
+
+  it('keeps chronological order', () => {
+    const output = composeCopy(days, { ...OPTIONS, format: 'plain' });
+    expect(output.indexOf('5 Agustus')).toBeLessThan(output.indexOf('6 Agustus'));
+  });
+});
+
+describe('composeSection', () => {
+  it('copies one section with its header as typed', () => {
+    // The heading keeps its own line, as it has in the note.
+    expect(composeSection(BODY, 'penunjang' as SectionId, 'plain', DEFAULT_SECTION_ALIASES)).toBe(
+      'Penunjang:\nHb 10.2',
+    );
+  });
+
+  it('can omit the header', () => {
+    expect(
+      composeSection(BODY, 'penunjang' as SectionId, 'plain', DEFAULT_SECTION_ALIASES, false),
+    ).toBe('Hb 10.2');
+  });
+
+  it('returns an empty string for a section this note does not have', () => {
+    expect(composeSection(BODY, 'custom_konsul' as SectionId, 'plain', DEFAULT_SECTION_ALIASES)).toBe(
+      '',
+    );
+  });
+});
+
+describe('identityLine', () => {
+  it('omits fields the record does not have', () => {
+    expect(identityLine(makePatient({ name: 'Ny. Siti' }))).toBe('Ny. Siti');
+  });
+});
+
+describe('single-asterisk bold pasted from WhatsApp', () => {
+  const pasted = [
+    '*S:*',
+    '- nyeri dada tidak ada',
+    '',
+    '*EKG PJT Lantai 5 06-08-2026*',
+    'Sinus bradikardi, HR 45 bpm',
+    '',
+    '_DPJP Utama : DR. dr. Az Hafid Nashar, SpJP (K)_',
+  ].join('\n');
+
+  it('strips it for SIMGOS — the whole point of plain text', () => {
+    const plain = toPlain(pasted);
+    expect(plain).toContain('S:');
+    expect(plain).toContain('EKG PJT Lantai 5 06-08-2026');
+    expect(plain).toContain('DPJP Utama : DR. dr. Az Hafid Nashar, SpJP (K)');
+    expect(findPlainTextLeaks(plain)).toEqual([]);
+  });
+
+  it('leaves clinical shorthand with an asterisk alone', () => {
+    expect(toPlain('Ceftriaxone 2*1 g IV')).toBe('Ceftriaxone 2*1 g IV');
+    expect(toPlain('Metformin 500 mg 3*1')).toBe('Metformin 500 mg 3*1');
+  });
+
+  it('handles both spellings in the same note', () => {
+    expect(toPlain('*tebal satu* dan **tebal dua**')).toBe('tebal satu dan tebal dua');
+  });
+
+  it('promotes it to real bold for Markdown, not italic', () => {
+    expect(toMarkdown('*Penunjang*')).toBe('**Penunjang**');
+    expect(toMarkdown('**sudah tebal**')).toBe('**sudah tebal**');
+  });
+
+  it('leaves WhatsApp output untouched — it is already the target format', () => {
+    expect(toWhatsApp('*S:*')).toBe('*S:*');
+  });
+
+  it('does not treat a mid-line asterisk as bold', () => {
+    expect(toPlain('nilai * penting')).toBe('nilai * penting');
+  });
+
+  it('reads a leading `* ` as a bullet, not as bold', () => {
+    expect(toPlain('* awal saja')).toBe('- awal saja');
+    expect(toWhatsApp('* awal saja')).toBe('- awal saja');
+  });
+});
+
+describe('identity lines with trailing blanks', () => {
+  it('strips asterisks even when the span ends in a space', () => {
+    expect(toPlain('*Tn.  /  /  tahun / RM *')).toBe('Tn.  /  /  tahun / RM ');
+  });
+
+  it('strips a filled-in identity line', () => {
+    expect(toPlain('*Tn. Abdullah / 11-04-1967/ 59 tahun/ RM 8000011*')).toBe(
+      'Tn. Abdullah / 11-04-1967/ 59 tahun/ RM 8000011',
+    );
+  });
+
+  it('strips the ward line with its blank placeholders', () => {
+    const line = "Tabe dokter, melaporkan pasien di *Ruang  Kamar  Bed *  atas nama :";
+    expect(findPlainTextLeaks(toPlain(line))).toEqual([]);
+  });
+
+  it('still refuses a span that starts with a space', () => {
+    expect(toPlain('nilai * penting *')).toBe('nilai * penting *');
+  });
+
+  it('leaves multiplication shorthand alone', () => {
+    expect(toPlain('Metformin 500 mg 3*1 dan Ceftriaxone 2*1')).toBe(
+      'Metformin 500 mg 3*1 dan Ceftriaxone 2*1',
+    );
+  });
+});
+
+describe('asterisk bullets pasted from WhatsApp', () => {
+  const list = ['* Clopidogrel 75mg', '* Miniaspi 80mg', '- Atorvastatin 20mg'].join('\n');
+
+  it('normalises both bullet spellings to a hyphen', () => {
+    expect(toWhatsApp(list)).toBe(
+      ['- Clopidogrel 75mg', '- Miniaspi 80mg', '- Atorvastatin 20mg'].join('\n'),
+    );
+  });
+
+  it('normalises both to `- ` for plain text', () => {
+    expect(toPlain(list)).toBe(
+      ['- Clopidogrel 75mg', '- Miniaspi 80mg', '- Atorvastatin 20mg'].join('\n'),
+    );
+  });
+
+  it('preserves indentation', () => {
+    expect(toWhatsApp('  * Cek DPL')).toBe('  - Cek DPL');
+  });
+
+  it('does not mistake bold at the start of a line for a bullet', () => {
+    expect(toPlain('*Terapi:*')).toBe('Terapi:');
+  });
+});
+
+describe('SIMGOS cannot render non-ASCII — it shows `?`', () => {
+  it('folds the bullet the WhatsApp formatter emits', () => {
+    expect(toPlain('• Clopidogrel')).toBe('- Clopidogrel');
+  });
+
+  it('folds curly quotes from phone autocorrect', () => {
+    expect(toPlain('S\u2019 lateral 14 cm/s')).toBe("S' lateral 14 cm/s");
+    expect(toPlain('\u201Cnyeri\u201D')).toBe('"nyeri"');
+  });
+
+  it('folds dashes, ellipsis and non-breaking spaces', () => {
+    expect(toPlain('EF 55\u201360%')).toBe('EF 55-60%');
+    expect(toPlain('lanjut\u2026')).toBe('lanjut...');
+    expect(toPlain('TD\u00A0116/72')).toBe('TD 116/72');
+  });
+
+  it('folds degree and comparison symbols used in vitals', () => {
+    expect(toPlain('Suhu 36.7\u00B0C')).toBe('Suhu 36.7 derajat C');
+    expect(toPlain('eGFR \u2265 60')).toBe('eGFR >= 60');
+  });
+
+  it('leaves a realistic note fully ASCII', () => {
+    const note = [
+      '*O:*',
+      '• TD 116/72 mmHg',
+      'Suhu 36.7\u00B0C',
+      'S\u2019 lateral 14 cm/s',
+      'EF 55\u201360 %',
+    ].join('\n');
+    expect(findNonAsciiChars(toPlain(note))).toEqual([]);
+  });
+});
+
+describe('bare bullets are content, not noise', () => {
+  const withBare = ['Plan Diagnostik:', '-', '', 'Plan Monitoring:', '- Monitoring TTV'].join(
+    '\n',
+  );
+
+  it('keeps a bullet with nothing after it', () => {
+    // A bare `-` under a heading means "nothing here" in a real handover.
+    // Removing it changes what the note says.
+    expect(toWhatsApp(withBare)).toBe(withBare);
+  });
+
+  it('keeps it in plain text too', () => {
+    expect(toPlain(withBare)).toBe(withBare);
+  });
+});
+
+describe('WhatsApp rewrites `- ` into its own list — the guard stops it', () => {
+  const list = '- Clopidogrel 75mg\n- Miniaspi 80mg';
+
+  it('defaults to a plain hyphen when no style is given', () => {
+    expect(toWhatsApp(list)).toBe(list);
+  });
+
+  it('stops the line beginning with a hyphen at all', () => {
+    const output = toWhatsApp(list, 'guarded');
+    // A zero-width space before the hyphen and a non-breaking space after it.
+    // WhatsApp's list detection needs a line that STARTS with `- `; this one
+    // does neither, while looking identical on screen.
+    expect(output).toBe('\u200B-\u00A0Clopidogrel 75mg\n\u200B-\u00A0Miniaspi 80mg');
+    expect(output).not.toMatch(/^- /m);
+    expect(output).not.toMatch(/^\* /m);
+  });
+
+  it('normalises `* ` bullets through the guard too', () => {
+    expect(toWhatsApp('* Cek DPL', 'guarded')).toBe('\u200B-\u00A0Cek DPL');
+  });
+
+  it('can still write a literal bullet character', () => {
+    expect(toWhatsApp(list, 'bullet')).toBe('• Clopidogrel 75mg\n• Miniaspi 80mg');
+  });
+
+  it('folds the guard back to a normal space for SIMGOS', () => {
+    // The NBSP is exactly the character SIMGOS renders as `?`.
+    expect(toPlain(toWhatsApp(list, 'guarded'))).toBe(list);
+    expect(findNonAsciiChars(toPlain(toWhatsApp(list, 'guarded')))).toEqual([]);
+  });
+
+  it('leaves a bare bullet alone in every style', () => {
+    expect(toWhatsApp('-', 'guarded')).toBe('-');
+  });
+});
+
+describe('invisible characters pasted in from elsewhere', () => {
+  it('removes the word joiner WhatsApp leaves after a bullet', () => {
+    // Verbatim from a note that produced `?` in SIMGOS.
+    const pasted = '- \u2060Alprazolam 0.5 mg malam sebelum tindakan';
+    expect(toPlain(pasted)).toBe('- Alprazolam 0.5 mg malam sebelum tindakan');
+    expect(findNonAsciiChars(toPlain(pasted))).toEqual([]);
+  });
+
+  it('removes the rest of the invisible family, not just the one reported', () => {
+    // An explicit list is always one character behind the next source, so the
+    // whole Unicode format category goes.
+    const messy = [
+      'a\u200Bb',
+      'c\u200Cd',
+      'e\u2060f',
+      'g\uFEFFh',
+      'i\u00ADj',
+      'k\u2061l',
+    ].join('\n');
+    expect(findNonAsciiChars(toPlain(messy))).toEqual([]);
+    expect(toPlain(messy)).toBe(['ab', 'cd', 'ef', 'gh', 'ij', 'kl'].join('\n'));
+  });
+
+  it('removes rather than replaces, so line width is unchanged', () => {
+    // They occupy no width; a space would shift every line they appear in.
+    expect(toPlain('Ur/Cr\u2060 26/0.93')).toBe('Ur/Cr 26/0.93');
+  });
+
+  it('leaves ordinary text alone', () => {
+    expect(toPlain('- Alprazolam 0.5 mg')).toBe('- Alprazolam 0.5 mg');
+  });
+
+  /**
+   * The `?` before "Compos mentis", 2026-08-28.
+   *
+   * A non-ASCII SPACE, not a format character. `\p{Cf}` never matched it and
+   * only `toPlain` folded it, so the same note copied as WhatsApp carried it
+   * into SIMGOS and printed `?`. Unfindable by eye: it renders as a space.
+   */
+  describe('non-ASCII whitespace reaches SIMGOS as `?`', () => {
+    const SPACES = [
+      ['U+00A0 no-break space', '\u00A0'],
+      ['U+2007 figure space', '\u2007'],
+      ['U+2009 thin space', '\u2009'],
+      ['U+200A hair space', '\u200A'],
+      ['U+2002 en space', '\u2002'],
+      ['U+2003 em space', '\u2003'],
+      ['U+202F narrow no-break space', '\u202F'],
+      ['U+205F medium math space', '\u205F'],
+      ['U+3000 ideographic space', '\u3000'],
+    ] as const;
+
+    it.each(SPACES)('%s survives no format', (_label, space) => {
+      // Verbatim shape of the reported note.
+      const body = `*O:*\n${space}Compos mentis\nNadi : 73 x/menit`;
+      expect(findNonAsciiChars(toWhatsApp(body))).toEqual([]);
+      expect(findNonAsciiChars(toMarkdown(body))).toEqual([]);
+      expect(findNonAsciiChars(toPlain(body))).toEqual([]);
+    });
+
+    it.each(SPACES)('%s becomes a space, never nothing', (_label, space) => {
+      // Removing would join the words: `Nadi73`. The character is invisible
+      // but it is still a separator.
+      expect(toPlain(`Nadi${space}73`)).toBe('Nadi 73');
+      expect(toWhatsApp(`Nadi${space}73`)).toBe('Nadi 73');
+      expect(toMarkdown(`Nadi${space}73`)).toBe('Nadi 73');
+    });
+
+    it('folds the reported note end to end in every format', () => {
+      const reported = [
+        '*O:*',
+        '\u00A0Compos mentis',
+        'Tensi : 96/69 mmHg',
+        'Nadi : 74kali/menit, reguler',
+        'Nafas : 20 x/menit',
+        'Suhu : 36.6 \u00B0C',
+        'SpO2 : 98% on room air',
+      ].join('\n');
+
+      for (const output of [toWhatsApp(reported), toMarkdown(reported), toPlain(reported)]) {
+        expect(output).not.toMatch(/\u00A0/);
+      }
+      // `°` is still folded for SIMGOS only — it is visible, and WhatsApp
+      // renders it correctly.
+      expect(findNonAsciiChars(toPlain(reported))).toEqual([]);
+      expect(toPlain(reported)).toContain('Compos mentis');
+      expect(toPlain(reported)).toContain('36.6  derajat C');
+    });
+
+    it('still lets the guarded bullet keep its deliberate NBSP', () => {
+      // The guard is inserted AFTER the fold, on purpose. If this breaks, the
+      // fold has been moved to the wrong end of the pipeline.
+      expect(toWhatsApp('- Aspilet', 'guarded')).toBe('\u200B-\u00A0Aspilet');
+    });
+
+    it('turns invisible line separators into real newlines', () => {
+      // U+2028 is invisible AND non-ASCII: left alone it joins two lines and
+      // prints `?` between them.
+      expect(toWhatsApp('Compos mentis\u2028Tensi : 96/69')).toBe(
+        'Compos mentis\nTensi : 96/69',
+      );
+    });
+  });
+});
+
+describe('plain text is ASCII, guaranteed rather than curated', () => {
+  it('strips an invisible character at the start of a line', () => {
+    // Reported as `?` before "Compos mentis" in SIMGOS.
+    const pasted = '*O:*\n\u2060Compos mentis\nTekanan Darah : 118/64 mmHg';
+    const out = toPlain(pasted);
+    expect(out).toContain('\nCompos mentis');
+    expect(findNonAsciiChars(out)).toEqual([]);
+  });
+
+  it('keeps an accented name readable instead of deleting the letter', () => {
+    expect(toPlain('Tn. José Müller')).toBe('Tn. Jose Muller');
+  });
+
+  it('turns a line separator into a real newline', () => {
+    // Invisible, and would otherwise weld two lines together.
+    expect(toPlain('baris satu\u2028baris dua')).toBe('baris satu\nbaris dua');
+  });
+
+  it('leaves nothing non-ASCII for any of the characters seen so far', () => {
+    const everything = [
+      '\u2022 bullet',
+      'S\u2019 lateral',
+      '\u201Cnyeri\u201D',
+      'EF 55\u201360%',
+      'lanjut\u2026',
+      'TD\u00A0116/72',
+      'Suhu 36.7\u00B0C',
+      'eGFR \u2265 60',
+      'Kamis \u00B7 Hari rawat',
+      '- \u2060Alprazolam',
+      'x\u200By',
+      'a\uFEFFb',
+    ].join('\n');
+    expect(findNonAsciiChars(toPlain(everything))).toEqual([]);
+  });
+});
+
+describe('invisible characters are stripped from every format', () => {
+  const dirty = '\u2060Compos mentis\n- \u2060IVFD NaCl 0.9% 500 ml/24 jam/IV';
+
+  it('removes them from WhatsApp output, which is where the `?` came from', () => {
+    // toPlain has guaranteed ASCII for a while; this text was being copied as
+    // WhatsApp format, where the fold never ran.
+    const out = toWhatsApp(dirty);
+    expect(out).toContain('Compos mentis');
+    expect(out).not.toContain('\u2060');
+    expect(out.startsWith('Compos')).toBe(true);
+  });
+
+  it('removes them from Markdown too', () => {
+    expect(toMarkdown('\u2060Compos mentis')).toBe('Compos mentis');
+  });
+
+  it('leaves visible non-ASCII alone outside plain text', () => {
+    // WhatsApp renders these correctly; folding them there would be a loss.
+    expect(toWhatsApp('Suhu 36.5 °C')).toContain('°');
+  });
+
+  it('still lets the guarded bullet insert its own invisible characters', () => {
+    expect(toWhatsApp('- Aspilet', 'guarded')).toBe('\u200B-\u00A0Aspilet');
+  });
+});
+
+describe('copying a single section', () => {
+  it('puts the heading on its own line', () => {
+    // `*Plan:* - Monitoring` was what a space produced. Every real note has the
+    // first item on the line below its heading.
+    const body = ['*S:*', '- nyeri dada tidak ada', '', '*Plan:*', '- Monitoring TTV'].join('\n');
+    const out = composeSection(body, 'p', 'whatsapp', DEFAULT_SECTION_ALIASES);
+    expect(out).toContain('*Plan:*\n- Monitoring TTV');
+    expect(out).not.toContain('*Plan:* -');
+  });
+});

@@ -1,0 +1,643 @@
+/**
+ * Free-canvas positions for the board, and the coordinate system they live in.
+ *
+ * WHY x AND w ARE FRACTIONS AND y IS PIXELS
+ *
+ * A card remembered at `x: 640px` is in a different place on every screen — a
+ * layout arranged on the ward PC would be scattered on a laptop and off the
+ * edge on a tablet. Storing x as a FRACTION of the canvas width (0–1) makes a
+ * card "40% across", which is the thing the arrangement actually means, and it
+ * survives a window resize without anything having to re-run.
+ *
+ * The vertical axis is not like that. The canvas scrolls, so there is no
+ * height to be a fraction of, and the distance between two stacked cards is a
+ * real distance rather than a proportion — scaling it with the viewport would
+ * make a tidy column drift apart on a tall monitor. So y is pixels.
+ *
+ * WHY THIS IS NOT IN FIRESTORE
+ *
+ * Same reasoning already recorded for `customIds`: an arrangement is a view
+ * preference, not a fact about the patient, and keeping it out of the document
+ * means dragging a card writes nothing to the server and cannot conflict with
+ * another device mid-round. The cost is the same too — a layout built on one
+ * machine is not the layout on another. If that turns out to be the wrong side
+ * of the trade, only `readLayouts`/`writeLayouts` change.
+ */
+
+export interface CardLayout {
+  /** Left edge, as a fraction of canvas width. */
+  x: number;
+  /** Top edge, in pixels from the top of the canvas. */
+  y: number;
+  /** Width, as a fraction of canvas width. Clamped to MIN_CARD_PX at render. */
+  w: number;
+  /**
+   * Maximum height in pixels, or 0 for "as tall as the content".
+   *
+   * Stage 2. Stored now so the shape does not change under a layout somebody
+   * has already arranged — a migration of positions is a migration of work
+   * the user did by hand.
+   */
+  hMax: number;
+  /**
+   * The height cap was set BY HAND while the card's note was open.
+   *
+   * A card with an open note is shown at its full height, so the note can be
+   * read — that is the point of opening it. Dragging the height grip there is
+   * an explicit answer to "how tall should this be", and it overrides that.
+   *
+   * Stored, not held in memory. It was memory-only for one release, so the
+   * height was written to disk and then ignored on the next mount: the card
+   * reverted to full height the moment you switched tabs and came back. A
+   * decision the user made by hand is not session state.
+   */
+  hMaxWithNote?: true;
+  /**
+   * SHELVES (2026-10-16, Avi: a drawer for minimised SOAPs of patients who
+   * went home but whose papers are not finished). A shelf is an entry of its
+   * own, id `rak:…`, with a position like a card's; `title` names it and
+   * `closed` shuts the drawer to its header. A card ON a shelf carries the
+   * shelf's id in `shelf` and the time it was put there in `shelfAt` (its
+   * order in the drawer); its own x/y are kept but unused while shelved.
+   */
+  shelf?: string;
+  shelfAt?: number;
+  title?: string;
+  closed?: true;
+  /**
+   * The board view a shelf belongs to (2026-10-17, Avi: "different between
+   * Pasien saya and Titipan"): `mine` or `temporary`. Absent = `mine`, where
+   * the first shelves were made.
+   */
+  scope?: string;
+}
+
+export type CanvasLayouts = Record<string, CardLayout>;
+
+export const SHELF_PREFIX = 'rak:';
+export const isShelfId = (id: string): boolean => id.startsWith(SHELF_PREFIX);
+/** Renamed from 'Rak' (2026-10-17); a stored default 'Rak' reads as this. */
+export const DEFAULT_SHELF_TITLE = 'Shelf';
+export const DEFAULT_SCOPE = 'mine';
+/** A closed drawer, and the assumed height of an open one per card, before measuring. */
+export const SHELF_HEADER_PX = 44;
+export const SHELF_ROW_PX = 52;
+
+export function newShelfId(now = Date.now()): string {
+  return `${SHELF_PREFIX}${now.toString(36)}`;
+}
+
+/** The shelves of one board view, by position (reading order). */
+export function shelvesOf(layouts: CanvasLayouts, scope: string = DEFAULT_SCOPE): string[] {
+  return Object.keys(layouts)
+    .filter((id) => isShelfId(id) && (layouts[id]!.scope ?? DEFAULT_SCOPE) === scope)
+    .sort((a, b) => layouts[a]!.y - layouts[b]!.y || layouts[a]!.x - layouts[b]!.x);
+}
+
+/**
+ * Where each card is: on a shelf that exists (its id), or on the canvas
+ * (absent). A card whose shelf was removed is simply back on the canvas.
+ */
+export function shelfOf(layouts: CanvasLayouts, id: string): string | null {
+  const shelf = layouts[id]?.shelf;
+  return shelf && layouts[shelf] && isShelfId(shelf) ? shelf : null;
+}
+
+/** The cards on one shelf, in the order they were put there. */
+export function shelfContents(layouts: CanvasLayouts, shelfId: string, ids: readonly string[]): string[] {
+  return ids
+    .filter((id) => shelfOf(layouts, id) === shelfId)
+    .sort((a, b) => (layouts[a]!.shelfAt ?? 0) - (layouts[b]!.shelfAt ?? 0));
+}
+
+/** A new shelf of this board view, under everything on the canvas, as wide as one default card. */
+export function addShelf(columns: number, bottom: number, scope: string = DEFAULT_SCOPE, now = Date.now()): { id: string; layout: CardLayout } {
+  return {
+    id: newShelfId(now),
+    layout: {
+      x: 0,
+      y: Math.max(0, bottom + GAP_PX),
+      w: Math.max(DEFAULT_W, 1 / columns),
+      hMax: 0,
+      title: DEFAULT_SHELF_TITLE,
+      ...(scope === DEFAULT_SCOPE ? {} : { scope }),
+    },
+  };
+}
+
+/**
+ * Where a card dropped at `index` among a shelf's cards goes (2026-10-17,
+ * Avi: "unable to drag to reorder inside the shelf"): a `shelfAt` between
+ * its new neighbours. `order` is the shelf's cards in order, the dragged one
+ * left out; the result sorts it into place without touching the others.
+ */
+export function shelfAtFor(layouts: CanvasLayouts, order: readonly string[], index: number, now = Date.now()): number {
+  const at = (id: string | undefined): number | undefined => (id ? layouts[id]?.shelfAt ?? 0 : undefined);
+  const before = at(order[index - 1]);
+  const after = at(order[index]);
+  if (before === undefined && after === undefined) return now;
+  if (before === undefined) return after! - 1;
+  if (after === undefined) return Math.max(before + 1, now);
+  return (before + after) / 2;
+}
+
+export function shelve(layout: CardLayout, shelfId: string, now = Date.now()): CardLayout {
+  return { ...layout, shelf: shelfId, shelfAt: now };
+}
+
+/**
+ * Off the shelf: placed where it was dropped, or (Keluarkan) just under the
+ * shelf, so it appears where the eye already is.
+ */
+export function unshelve(layout: CardLayout, at?: { x: number; y: number }): CardLayout {
+  const { shelf: _shelf, shelfAt: _at, ...rest } = layout;
+  return at ? { ...rest, x: at.x, y: at.y } : rest;
+}
+
+/** Removing a shelf: its cards go back on the canvas under where it stood. */
+export function removeShelf(layouts: CanvasLayouts, shelfId: string, ids: readonly string[], shelfHeight: number): CanvasLayouts {
+  const shelf = layouts[shelfId];
+  if (!shelf) return layouts;
+  const next: CanvasLayouts = { ...layouts };
+  delete next[shelfId];
+  shelfContents(layouts, shelfId, ids).forEach((id, n) => {
+    next[id] = unshelve(layouts[id]!, { x: shelf.x, y: shelf.y + shelfHeight + GAP_PX + n * ROW_STEP });
+  });
+  return next;
+}
+
+const KEY = 'visite.boardCanvasLayout';
+
+const BY_LAYOUT_KEY = 'visite.board.canvasByLayout';
+
+/** What the given card layout's canvas looked like when it was last left, or null if never. */
+export function readArrangement(layout: string): CanvasLayouts | null {
+  try {
+    const all: unknown = JSON.parse(localStorage.getItem(BY_LAYOUT_KEY) ?? '{}');
+    const own = (all as Record<string, unknown> | null)?.[layout];
+    return own ? sanitizeLayouts(own) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeArrangement(layout: string, layouts: CanvasLayouts): void {
+  try {
+    const all: unknown = JSON.parse(localStorage.getItem(BY_LAYOUT_KEY) ?? '{}');
+    localStorage.setItem(BY_LAYOUT_KEY, JSON.stringify({ ...(all as object | null), [layout]: layouts }));
+  } catch (error) {
+    console.warn('[board] canvas arrangement not saved', error);
+  }
+}
+
+/**
+ * Put a layout's saved arrangement back (Standar and Kartu Ringkas each keep
+ * their own, 5 Nov 2026: cards differ in height, so one set of positions cannot
+ * suit both, and tidying on each switch threw hand placement away).
+ *
+ * Only where things SIT comes from `saved`. What a thing IS comes from `current`,
+ * because it may have changed in the other layout: which shelf a card is on, a
+ * shelf's name, a shelf since removed (not brought back). A card with no saved
+ * place loses its current one, which belongs to the other layout, so it is
+ * auto-placed in a free slot instead of landing on top of an arranged card.
+ */
+export function restoreArrangement(current: CanvasLayouts, saved: CanvasLayouts): CanvasLayouts {
+  const next: CanvasLayouts = {};
+  for (const [id, entry] of Object.entries(current)) {
+    const own = saved[id];
+    if (own) {
+      const { hMaxWithNote: _other, ...rest } = entry;
+      next[id] = {
+        ...rest,
+        x: own.x,
+        y: own.y,
+        w: own.w,
+        hMax: own.hMax,
+        ...(own.hMaxWithNote ? { hMaxWithNote: true as const } : {}),
+      };
+    } else if (isShelfId(id) || entry.shelf) {
+      next[id] = entry;
+    }
+  }
+  for (const [id, entry] of Object.entries(saved)) {
+    if (!current[id] && !isShelfId(id)) next[id] = unshelve(entry);
+  }
+  return next;
+}
+
+/** Below this a card is unreadable, whatever fraction says. */
+export const MIN_CARD_PX = 240;
+/**
+ * Shortest a height cap may be.
+ *
+ * Not an aesthetic floor — it is roughly the card header plus one line, which
+ * is the point below which a capped card no longer says which patient it is.
+ * A card you cannot identify is worse than no card, because it still occupies
+ * the position where you expect to find them.
+ */
+export const MIN_CARD_H = 120;
+/** Default footprint for a card nobody has placed yet. */
+export const DEFAULT_W = 0.24;
+/** Vertical step for auto-placement, and the assumed height of a placed card. */
+export const ROW_STEP = 260;
+export const GAP_PX = 12;
+
+export function readLayouts(): CanvasLayouts {
+  try {
+    const raw = localStorage.getItem(KEY);
+    return sanitizeLayouts(raw ? JSON.parse(raw) : null);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Validated field by field rather than cast. Layouts come from outside the
+ * app's own writes — an older build, another device through the account, a
+ * half-finished write — and a NaN in `x` positions a card nowhere and takes
+ * the whole board's layout with it.
+ */
+export function sanitizeLayouts(parsed: unknown): CanvasLayouts {
+  if (!parsed || typeof parsed !== 'object') return {};
+  const out: CanvasLayouts = {};
+  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const entry = value as Record<string, unknown>;
+    const x = Number(entry.x);
+    const y = Number(entry.y);
+    const w = Number(entry.w);
+    const hMax = Number(entry.hMax ?? 0);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w)) continue;
+    const cap = Number.isFinite(hMax) ? Math.max(0, hMax) : 0;
+    const shelfAt = Number(entry.shelfAt);
+    out[id] = {
+      x: clamp(x, 0, 0.98),
+      y: Math.max(0, y),
+      w: clamp(w, 0.08, 1),
+      hMax: cap,
+      // Only meaningful with a cap: a flag without one would make a card
+      // with no height set claim a height decision nobody made.
+      ...(cap > 0 && entry.hMaxWithNote === true ? { hMaxWithNote: true as const } : {}),
+      // Shelves (2026-10-16): a card's shelf, and a shelf's own name and state.
+      ...(typeof entry.shelf === 'string' && isShelfId(entry.shelf) && !isShelfId(id)
+        ? { shelf: entry.shelf, shelfAt: Number.isFinite(shelfAt) ? shelfAt : 0 }
+        : {}),
+      ...(isShelfId(id)
+        ? { title: typeof entry.title === 'string' && entry.title !== 'Rak' ? entry.title.slice(0, 40) : DEFAULT_SHELF_TITLE }
+        : {}),
+      ...(isShelfId(id) && entry.closed === true ? { closed: true as const } : {}),
+      ...(isShelfId(id) && typeof entry.scope === 'string' && entry.scope !== DEFAULT_SCOPE ? { scope: entry.scope.slice(0, 20) } : {}),
+    };
+  }
+  return out;
+}
+
+/**
+ * The canvas as last arranged on a wide screen, kept on the account so the
+ * phone can show the same board (2026-10-01).
+ *
+ * The phone has no room for a canvas (`min-width: 1024px`), so it does not
+ * arrange one: it draws this one, scaled to fit, read-only. `width` is the
+ * canvas width it was arranged at, because `x`/`w` are fractions of it and
+ * `y` is pixels — the phone needs both to reproduce the proportions.
+ *
+ * The device's own localStorage copy stays the working copy on a laptop;
+ * this is a mirror written after each change, and the seed for a laptop that
+ * has none yet. Two laptops arranging at once: the last one wins.
+ */
+export interface SharedCanvas {
+  layouts: CanvasLayouts;
+  /** Canvas width in px when it was arranged. */
+  width: number;
+  /** ms since epoch of the write. */
+  at: number;
+}
+
+export function parseSharedCanvas(value: unknown): SharedCanvas | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as Record<string, unknown>;
+  const width = Number(entry.width);
+  if (!Number.isFinite(width) || width < 320) return null;
+  const layouts = sanitizeLayouts(entry.layouts);
+  if (Object.keys(layouts).length === 0) return null;
+  return { layouts, width, at: Number(entry.at) || 0 };
+}
+
+export function writeLayouts(layouts: CanvasLayouts): void {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(layouts));
+  } catch (error) {
+    console.warn('[board] canvas layout not saved', error);
+  }
+}
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Give every card a position, placing the ones nobody has moved yet.
+ *
+ * An unplaced card is a NEW PATIENT — admitted since the last time the board
+ * was arranged — and the failure to avoid is it appearing underneath one that
+ * was placed by hand, where it is invisible and looks like it was never
+ * created. So auto-placement walks the default grid and skips any slot whose
+ * box overlaps something already positioned.
+ *
+ * Overlap between two cards the USER placed is left alone. That is what a free
+ * canvas is; pushing them apart would mean the board rearranging itself after
+ * a deliberate act, which is the behaviour "urutan sendiri" exists to escape.
+ *
+ * Auto-placement is NOT written to storage. A card that has never been dragged
+ * has no remembered position, so it re-flows as the board changes instead of
+ * freezing wherever it first happened to land.
+ */
+export function placeAll(
+  ids: readonly string[],
+  stored: CanvasLayouts,
+  columns: number,
+  /** Known heights (a shelf's), where the ROW_STEP assumption is wrong. */
+  heights: Readonly<Record<string, number>> = {},
+): CanvasLayouts {
+  const resolved: CanvasLayouts = {};
+  const taken: Array<{ x: number; y: number; w: number; h?: number }> = [];
+
+  for (const id of ids) {
+    const layout = stored[id];
+    if (layout) {
+      resolved[id] = layout;
+      taken.push({ x: layout.x, y: layout.y, w: layout.w, ...(heights[id] ? { h: heights[id] } : {}) });
+    }
+  }
+
+  const width = 1 / columns;
+  let slot = 0;
+
+  for (const id of ids) {
+    if (resolved[id]) continue;
+
+    // Walk slots until one is free. Bounded so a board whose placed cards
+    // happen to cover the first screens still terminates somewhere visible
+    // rather than looping.
+    let candidate: CardLayout | null = null;
+    for (let guard = 0; guard < ids.length * 4 + 40; guard += 1) {
+      const column = slot % columns;
+      const row = Math.floor(slot / columns);
+      const box = { x: column * width, y: row * ROW_STEP, w: width };
+      slot += 1;
+      if (!taken.some((other) => overlaps(box, other))) {
+        candidate = { x: box.x, y: box.y, w: width, hMax: 0 };
+        break;
+      }
+    }
+
+    const placed = candidate ?? { x: 0, y: (ids.length + 1) * ROW_STEP, w: width, hMax: 0 };
+    resolved[id] = placed;
+    taken.push({ x: placed.x, y: placed.y, w: placed.w });
+  }
+
+  return resolved;
+}
+
+/**
+ * Box overlap, with the vertical extent ASSUMED rather than measured.
+ *
+ * Real card heights are only known after render, and auto-placement has to
+ * decide before that. `ROW_STEP` is the assumption, and it errs tall: treating
+ * a card as taller than it is costs an empty slot, while treating it as
+ * shorter puts a new patient on top of an existing one — the failure this
+ * whole function exists to prevent.
+ */
+function overlaps(
+  a: { x: number; y: number; w: number },
+  b: { x: number; y: number; w: number; h?: number },
+): boolean {
+  const horizontal = a.x < b.x + b.w && b.x < a.x + a.w;
+  const vertical = a.y < b.y + Math.max(ROW_STEP, b.h ?? 0) && b.y < a.y + ROW_STEP;
+  return horizontal && vertical;
+}
+
+/** How many default-width columns fit a canvas this wide. */
+export function columnsFor(widthPx: number): number {
+  return clamp(Math.floor(widthPx / (MIN_CARD_PX + GAP_PX)), 1, 6);
+}
+
+export type GestureMode = 'move' | 'width' | 'height';
+
+/**
+ * What a pointer delta does to a card's layout.
+ *
+ * Pulled out of the component and made pure so it can be tested, because this
+ * is where the arithmetic that is easy to get quietly wrong lives: the clamp
+ * that keeps a card on the canvas, the minimum width, and the rule that turns
+ * an over-dragged height cap into no cap at all. None of those are visible in
+ * a screenshot — a card that ends up one pixel off-canvas looks fine until the
+ * day it is the card you needed.
+ */
+export function applyGesture(
+  mode: GestureMode,
+  origin: CardLayout,
+  input: {
+    dx: number;
+    dy: number;
+    canvasWidth: number;
+    natural: number;
+    /**
+     * The shortest and tallest heights this card can usefully be, MEASURED
+     * from the rendered card rather than guessed.
+     *
+     * `minH` is the card with its diagnosis list fully collapsed — name, bed,
+     * badges, progress strip and note, and nothing else. Below that the parts
+     * that identify the patient start overlapping each other, which is what a
+     * fixed 120 px floor produced.
+     *
+     * `maxH` is the card with every line of the note shown. Past it the drag
+     * buys nothing but empty space, so it stops.
+     *
+     * Both come from the card's own layout — the chrome it cannot give up, and
+     * the middle block's `scrollHeight`, which is the full content height and
+     * is NOT affected by the cap. That independence is what the removed uncap
+     * rule lacked.
+     */
+    minH?: number;
+    maxH?: number;
+  },
+): CardLayout {
+  const { dx, dy, canvasWidth, natural } = input;
+  const minH = Math.max(MIN_CARD_H, input.minH ?? MIN_CARD_H);
+  const maxH = Math.max(minH, input.maxH ?? Number.POSITIVE_INFINITY);
+
+  if (mode === 'move') {
+    return {
+      ...origin,
+      // Clamped by the card's own width, so it can never be dragged entirely
+      // off the right edge and lost.
+      x: clamp(origin.x + dx / canvasWidth, 0, Math.max(0, 1 - origin.w)),
+      y: Math.max(0, origin.y + dy),
+    };
+  }
+
+  if (mode === 'width') {
+    const minimum = MIN_CARD_PX / canvasWidth;
+    return {
+      ...origin,
+      w: clamp(origin.w + dx / canvasWidth, minimum, Math.max(minimum, 1 - origin.x)),
+    };
+  }
+
+  /*
+    THE HEIGHT FOLLOWS THE POINTER. There is no threshold and nothing snaps.
+
+    What was here before tried to be clever: drag past the end of the content
+    and the cap was REMOVED rather than set to a large number, on the reasoning
+    that `hMax: 900` on a 400-tall card behaves like no cap until the note
+    grows. The reasoning is sound and the implementation could not work,
+    because the number it compared against was unmeasurable.
+
+    `natural` came from the card's `scrollHeight`. But a capped card is
+    rendered with `fitHeight`, which makes it a flex column that COMPRESSES to
+    the height it is given — so it never overflows, and its `scrollHeight` is
+    always exactly the cap. `natural === origin.hMax`, every time. The test
+    `target >= natural - 8` therefore reduced to `dy >= -8`: any downward
+    movement uncapped the card and it jumped to full height, and eight pixels
+    back up re-capped it. That is the flicker in the recording — not a snap to
+    a grid, a binary flipping under the finger.
+
+    A rule whose input is determined by its own output cannot be fixed by
+    tuning the threshold. It is removed. The cap is now exactly where the
+    pointer left it, and "no cap" is an explicit act: double-click the grip.
+  */
+  return {
+    ...origin,
+    // `natural` is still the honest starting point when the card has no cap
+    // yet — there `fitHeight` is off, nothing is compressed, and
+    // `scrollHeight` really is the content height. So the first drag begins
+    // from where the card currently ends rather than from a guess.
+    // Clamped between the two measured ends. Not auto-uncapped at the top:
+    // dropping the cap would switch the card out of its fixed-height layout
+    // mid-gesture, which changes the very measurements this is clamped by —
+    // the shape of the bug that made it flicker. Uncapping stays a
+    // double-click, where nothing is moving.
+    hMax: clamp((origin.hMax || natural || minH) + dy, minH, maxH),
+  };
+}
+
+/**
+ * Reflow every card into a tidy grid, keeping the arrangement's reading order.
+ *
+ * WHY THIS IS A BUTTON AND NOT A RULE
+ *
+ * A free canvas cannot close its own gaps. Discharge a patient from the middle
+ * of an arranged board and the hole stays, because the alternative — cards
+ * sliding up on their own — is the board rearranging itself after a deliberate
+ * act, which is the exact behaviour `Urutan sendiri` exists to escape. So the
+ * hole is real, and the answer is a press, at a moment the user chose.
+ *
+ * WHY IT SORTS BY POSITION RATHER THAN BY BOARD ORDER
+ *
+ * Tidying by the underlying list order would throw the arrangement away and
+ * call it cleaning. Reading order — top to bottom, left to right within a band
+ * — is what the user built by hand; tidying should close the gaps in it, not
+ * replace it. The band tolerance exists because two cards side by side are
+ * never at exactly the same y, and sorting on raw y would interleave columns
+ * that the eye reads as one row.
+ *
+ * Widths and height caps are carried through untouched. They were set
+ * deliberately and are not what "tidy" means.
+ */
+export function tidy(
+  ids: readonly string[],
+  layouts: CanvasLayouts,
+  columns: number,
+  /**
+   * What each card measures now. A row is as tall as its tallest card, so a
+   * short card closes up and a long one no longer runs over the row below.
+   */
+  heights: Readonly<Record<string, number>> = {},
+): CanvasLayouts {
+  /*
+    Rows found from the cards, not from a fixed grid of ROW_STEP bands. On that
+    grid short cards packed closer than a band read as one row, so a second
+    press shuffled the order it was meant to keep.
+  */
+  const byY = [...ids]
+    .filter((id) => layouts[id])
+    .sort((left, right) => (layouts[left] as CardLayout).y - (layouts[right] as CardLayout).y);
+  const rows: string[][] = [];
+  let rowTop = 0;
+  let tolerance = 0;
+  for (const id of byY) {
+    const layout = layouts[id] as CardLayout;
+    const row = rows[rows.length - 1];
+    if (row && layout.y - rowTop <= tolerance) {
+      row.push(id);
+      continue;
+    }
+    rows.push([id]);
+    rowTop = layout.y;
+    tolerance = Math.min(ROW_STEP, heights[id] || layout.hMax || ROW_STEP) / 2;
+  }
+  const ordered = rows.flatMap((row) =>
+    row.sort((left, right) => (layouts[left] as CardLayout).x - (layouts[right] as CardLayout).x),
+  );
+
+  const next: CanvasLayouts = {};
+  const defaultWidth = 1 / columns;
+  let cursorX = 0;
+  let shelfY = 0;
+  let shelfHeight = 0;
+
+  for (const id of ordered) {
+    const layout = layouts[id] as CardLayout;
+    const width = clamp(layout.w || defaultWidth, 0.08, 1);
+
+    // Wrap before placing, not after: a card that would hang off the right
+    // edge starts the next shelf instead of being clipped there. The `> 0`
+    // guard stops a single card wider than the canvas from wrapping forever
+    // onto empty shelves.
+    if (cursorX > 0 && cursorX + width > 1.0001) {
+      shelfY += shelfHeight;
+      shelfHeight = 0;
+      cursorX = 0;
+    }
+
+    next[id] = { ...layout, x: cursorX, y: shelfY, w: width };
+    cursorX += width;
+    shelfHeight = Math.max(shelfHeight, (heights[id] || layout.hMax || ROW_STEP) + GAP_PX);
+  }
+
+  return next;
+}
+
+
+/**
+ * Merge a freshly resolved view over what is already stored.
+ *
+ * THE BUG THIS FIXES
+ *
+ * `commit` used to write the resolved layout as the WHOLE stored map. That was
+ * deliberate — it is what stopped the board rearranging itself on every resize
+ * — but "the whole board" is only ever the scope on screen. The store is a
+ * single map for every patient; the ids handed to `placeAll` are just the ones
+ * the current filter admits.
+ *
+ * So dragging a card in Titipan wrote back a map containing only the Titipan
+ * cards, and every position in Pasien saya was erased. Reported 14 September as
+ * the Aktif canvas breaking after reordering a titipan patient. It is the same
+ * failure as rebuilding a stored list from a filtered view — the one guarded
+ * against in `reorderWithinVisible` for the Catatan tabs, and not guarded
+ * against here.
+ *
+ * Merging keeps every id the current view cannot see. The resolved entries
+ * still win for the ids it can, which is what freezes the visible board.
+ */
+export function mergeLayouts(
+  previous: CanvasLayouts,
+  resolved: CanvasLayouts,
+  id?: string,
+  layout?: CardLayout,
+): CanvasLayouts {
+  const next: CanvasLayouts = { ...previous, ...resolved };
+  if (id && layout) next[id] = layout;
+  return next;
+}

@@ -1,0 +1,616 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  copyableSections,
+  mergeSections,
+  parseSections,
+  sectionAt,
+} from './parseSections';
+import { DEFAULT_SECTION_ALIASES, validateAliases } from './aliases';
+import type { SectionAlias } from '../types';
+
+/** THE invariant (SPEC 12.1). Asserted against every body in this file. */
+function assertLossless(body: string): ReturnType<typeof parseSections> {
+  const sections = parseSections(body);
+  expect(sections.map((section) => body.slice(section.start, section.end)).join('')).toBe(body);
+  // Blocks must also be contiguous and start at 0 — "lossless AND total".
+  let cursor = 0;
+  for (const section of sections) {
+    expect(section.start).toBe(cursor);
+    cursor = section.end;
+  }
+  expect(cursor).toBe(body.length);
+  return sections;
+}
+
+const REAL_NOTE = [
+  'Tn. B, 52th, Melati 3B',
+  '',
+  'S: sesak berkurang, batuk berdahak',
+  'O:',
+  'TTV: TD 130/80, N 92, RR 24, S 37.1',
+  'Penunjang: Hb 10.2, Leu 14.300',
+  'Rontgen: infiltrat paru kanan',
+  'A: Pneumonia komunitas',
+  'P:',
+  '- Lanjut O2 3 lpm',
+  '- Cek DPL ulang besok',
+  'Th/ Ceftriaxone 2x1 g IV',
+].join('\n');
+
+describe('losslessness — the parse is total and non-destructive', () => {
+  const bodies: Array<[string, string]> = [
+    ['empty', ''],
+    ['single space', ' '],
+    ['newline only', '\n'],
+    ['no headers at all', 'pasien membaik, rencana pulang besok'],
+    ['leading blank lines then a header', '\n\nS: sesak'],
+    ['header on the very first character', 'S: sesak'],
+    ['trailing newline', 'S: sesak\n'],
+    ['CRLF line endings', 'S: sesak\r\nO: compos mentis\r\n'],
+    ['duplicate headers', 'Penunjang: Hb 10\nA: anemia\nPenunjang: Ur/Cr 30/1.1'],
+    ['unknown header', 'Konsul: TS Jantung\nS: sesak'],
+    ['tabs and ragged spacing', 'S :\tsesak\n\n\nP  :  observasi'],
+    ['a realistic full note', REAL_NOTE],
+  ];
+
+  for (const [name, body] of bodies) {
+    it(`holds for ${name}`, () => {
+      assertLossless(body);
+    });
+  }
+
+  it('never mutates the body across a parse cycle (byte equality)', () => {
+    const before = REAL_NOTE;
+    const copy = String(before);
+    parseSections(before);
+    copyableSections(before);
+    mergeSections(parseSections(before));
+    expect(before).toBe(copy);
+    expect(before.length).toBe(copy.length);
+  });
+
+  it('reconstructs each block exactly from headerLine + text', () => {
+    for (const section of parseSections(REAL_NOTE)) {
+      const block = REAL_NOTE.slice(section.start, section.end);
+      expect(`${section.headerLine ?? ''}${section.text}`).toBe(block);
+    }
+  });
+
+  it('emits no section that reformats what the user typed', () => {
+    const messy = 's :   sesak   \n\n\nP.  observasi';
+    for (const section of parseSections(messy)) {
+      expect(messy).toContain(section.text);
+    }
+  });
+});
+
+describe('no headers', () => {
+  it('returns a single _intro section labelled Catatan', () => {
+    const sections = assertLossless('pasien membaik');
+    expect(sections).toHaveLength(1);
+    expect(sections[0]).toMatchObject({
+      sectionId: '_intro',
+      label: 'Catatan',
+      headerLine: null,
+      text: 'pasien membaik',
+    });
+  });
+
+  it('does the same for an empty body', () => {
+    const sections = assertLossless('');
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.sectionId).toBe('_intro');
+    expect(sections[0]?.text).toBe('');
+  });
+});
+
+describe('header detection', () => {
+  it('detects the shipped aliases, case-insensitively', () => {
+    const ids = parseSections('s: a\nO: b\nttv: c\nLAB: d\nA: e\np: f\nObat: g').map(
+      (section) => section.sectionId,
+    );
+    expect(ids).toEqual(['s', 'o', 'ttv', 'penunjang', 'a', 'p', 'terapi']);
+  });
+
+  it('accepts the delimiters the spec allows, except a full stop after one letter', () => {
+    expect(parseSections('S: a').map((s) => s.sectionId)).toEqual(['s']);
+    expect(parseSections('S) a').map((s) => s.sectionId)).toEqual(['s']);
+    expect(parseSections('S/ a').map((s) => s.sectionId)).toEqual(['s']);
+
+    /*
+     * SPEC 12.1 lists `.` as a delimiter and the corpus overrules it for
+     * single-letter tokens.
+     *
+     * A real note's vascular examination reads:
+     *
+     *     A. femoralis: +/-
+     *     A. poplitea: -/-
+     *
+     * With `.` accepted, each of those opened an assessment section — so the
+     * Ringkas PDF filed the pulse findings under Diagnosis and the board card
+     * summarised the patient as "femoralis: +/-". The app was reporting a leg
+     * pulse as the diagnosis.
+     *
+     * It generalises: `A.` is arteria, `V.` is vena, `N.` is nervus, and `S.`
+     * and `P.` open bacterial genus names in a culture result. One letter and a
+     * full stop is an abbreviation far more often than a heading.
+     */
+    expect(parseSections('S. aureus tumbuh pada kultur').map((s) => s.sectionId)).toEqual([
+      '_intro',
+    ]);
+    // Not a custom section either: the custom-header label charset excludes a
+    // full stop, so the line stays ordinary prose, which is what it is.
+    expect(parseSections('A. femoralis: +/-').map((s) => s.sectionId)).toEqual(['_intro']);
+  });
+
+  it('still accepts a full stop after a longer alias', () => {
+    // The evidence a token carries scales with its length; `Lab.` is not an
+    // abbreviation of anything else in a clinical note.
+    expect(parseSections('Lab. WBC 9.110')[0]?.sectionId).toBe('penunjang');
+  });
+
+  it('tolerates decoration: bullets, markdown bold, hashes, quotes', () => {
+    for (const decorated of ['- S: a', '# S: a', '> S: a', '  S: a']) {
+      expect(parseSections(decorated)[0]?.sectionId).toBe('s');
+    }
+  });
+
+  it('still detects a header the user bolded with the toolbar', () => {
+    // Both markdown-lite spellings a Bold press can produce.
+    for (const bolded of ['**S**: a', '**S:** a', '_Penunjang_: Hb 10']) {
+      expect(parseSections(bolded)[0]?.sectionId).not.toBe('_intro');
+    }
+    expect(parseSections('**Konsul**: TS Jantung')[0]?.sectionId).toBe('custom_konsul');
+  });
+
+  it('prefers the longest matching alias', () => {
+    const sections = parseSections('Pemeriksaan Penunjang: Hb 10');
+    expect(sections[0]?.sectionId).toBe('penunjang');
+    expect(sections[0]?.headerLine).toBe('Pemeriksaan Penunjang: ');
+    expect(sections[0]?.text).toBe('Hb 10');
+  });
+
+  it('treats "Th/" as self-delimiting — the way residents actually write it', () => {
+    const sections = parseSections('Th/ Ceftriaxone 2x1');
+    expect(sections[0]?.sectionId).toBe('terapi');
+    expect(sections[0]?.text).toBe('Ceftriaxone 2x1');
+  });
+
+  it('keeps same-line content after the delimiter inside the section', () => {
+    const sections = parseSections('Penunjang: Hb 10.2\nLeu 14.300');
+    expect(sections[0]?.text).toBe('Hb 10.2\nLeu 14.300');
+    expect(sections[0]?.headerLine).toBe('Penunjang: ');
+  });
+
+  it('puts text before the first header into _intro', () => {
+    const sections = assertLossless('Tn. B, 52th\n\nS: sesak');
+    expect(sections[0]?.sectionId).toBe('_intro');
+    expect(sections[0]?.text).toBe('Tn. B, 52th\n\n');
+    expect(sections[1]?.sectionId).toBe('s');
+  });
+});
+
+describe('false positives — a loose parser invents structure', () => {
+  const notHeaders: Array<[string, string]> = [
+    ['a bare time', 'Pukul 14:30 pasien sesak'],
+    ['a vitals line with a colon', '06:00 TD 120/80'],
+    ['a URL', 'https://sim.rs/pasien/123'],
+    ['a numbered list item', '1. Paracetamol 3x500mg'],
+    ['a long phrase before a colon', 'Konsul ke teman sejawat bedah digestif anak: setuju'],
+  ];
+
+  for (const [name, body] of notHeaders) {
+    it(`does not treat ${name} as a header`, () => {
+      const sections = assertLossless(body);
+      expect(sections).toHaveLength(1);
+      expect(sections[0]?.sectionId).toBe('_intro');
+    });
+  }
+
+  it('does not match an alias that only prefixes a longer word', () => {
+    const sections = assertLossless('Antibiotik sudah diberikan');
+    expect(sections[0]?.sectionId).toBe('_intro');
+  });
+});
+
+describe('unknown headers become custom sections, never discarded', () => {
+  it('slugs the id and keeps the user’s own casing as the label', () => {
+    const sections = assertLossless('Konsul: TS Jantung setuju\nS: sesak');
+    expect(sections[0]).toMatchObject({
+      sectionId: 'custom_konsul',
+      label: 'Konsul',
+      text: 'TS Jantung setuju\n',
+    });
+  });
+
+  it('handles multi-word custom headers up to three words', () => {
+    expect(parseSections('Rencana Pulang Besok: siapkan resep')[0]?.sectionId).toBe(
+      'custom_rencana_pulang_besok',
+    );
+  });
+
+  it('offers custom sections in the copy UI automatically', () => {
+    const labels = copyableSections('Konsul: TS Jantung\nS: sesak').map((s) => s.label);
+    expect(labels).toContain('Konsul');
+  });
+
+  it('never drops the text even when nothing is recognised', () => {
+    const body = 'Catatan bebas tanpa struktur apa pun';
+    expect(copyableSections(body).map((s) => s.text).join('')).toBe(body);
+  });
+});
+
+describe('duplicate headers', () => {
+  const body = 'Penunjang: Hb 10\nA: anemia\nPenunjang: Ur/Cr 30/1.1';
+
+  it('parses as separate contiguous blocks', () => {
+    const sections = assertLossless(body);
+    expect(sections.map((s) => s.sectionId)).toEqual(['penunjang', 'a', 'penunjang']);
+  });
+
+  it('merges into one sectionId in output order, retaining both ranges', () => {
+    const merged = mergeSections(parseSections(body));
+    const penunjang = merged.find((section) => section.sectionId === 'penunjang');
+    expect(merged).toHaveLength(2);
+    expect(penunjang?.blocks).toHaveLength(2);
+    expect(penunjang?.text).toBe('Hb 10\nUr/Cr 30/1.1');
+  });
+});
+
+describe('copyableSections', () => {
+  it('orders by the configured alias order, not by position in the note', () => {
+    const ids = copyableSections('P: observasi\nS: sesak\nA: pneumonia').map(
+      (section) => section.sectionId,
+    );
+    expect(ids).toEqual(['s', 'a', 'p']);
+  });
+
+  it('places custom sections after every configured one', () => {
+    const ids = copyableSections('Konsul: TS Jantung\nS: sesak').map((s) => s.sectionId);
+    expect(ids).toEqual(['s', 'custom_konsul']);
+  });
+
+  it('skips sections whose content is empty or whitespace', () => {
+    const ids = copyableSections('S: sesak\nO:\n\nA: pneumonia').map((s) => s.sectionId);
+    expect(ids).toEqual(['s', 'a']);
+  });
+});
+
+describe('alias configuration is live, not baked in', () => {
+  const body = 'Kesan: pneumonia';
+
+  it('re-parses the same body differently when aliases change', () => {
+    expect(parseSections(body)[0]?.sectionId).toBe('custom_kesan');
+
+    const custom: SectionAlias[] = [
+      ...DEFAULT_SECTION_ALIASES.map((alias) => ({ ...alias, aliases: [...alias.aliases] })),
+    ];
+    const assessment = custom.find((alias) => alias.sectionId === 'a');
+    assessment?.aliases.push('Kesan');
+
+    expect(parseSections(body, custom)[0]?.sectionId).toBe('a');
+    // The body itself is untouched — no migration is possible or needed.
+    expect(body).toBe('Kesan: pneumonia');
+  });
+
+  it('cannot be broken by an empty alias table', () => {
+    const sections = parseSections('S: sesak', []);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.sectionId).toBe('s');
+  });
+
+  it('does not shred the note when every alias is blank', () => {
+    const blank: SectionAlias[] = [
+      { sectionId: 's', label: 'Subjektif', order: 1, aliases: ['   '] },
+    ];
+    const sections = parseSections('sesak sejak 2 hari', blank);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.sectionId).toBe('_intro');
+  });
+});
+
+describe('sectionAt', () => {
+  it('finds the section containing a caret offset', () => {
+    const sections = parseSections(REAL_NOTE);
+    const offset = REAL_NOTE.indexOf('Pneumonia');
+    expect(sectionAt(sections, offset)?.sectionId).toBe('a');
+  });
+
+  it('returns null past the end', () => {
+    const sections = parseSections('S: sesak');
+    expect(sectionAt(sections, 999)).toBeNull();
+  });
+});
+
+describe('validateAliases', () => {
+  it('accepts the shipped table', () => {
+    expect(validateAliases(DEFAULT_SECTION_ALIASES).ok).toBe(true);
+  });
+
+  it('rejects a keyword claimed by two sections', () => {
+    const clashing: SectionAlias[] = [
+      { sectionId: 's', label: 'Subjektif', order: 1, aliases: ['Keluhan'] },
+      { sectionId: 'a', label: 'Assessment', order: 2, aliases: ['keluhan'] },
+    ];
+    const result = validateAliases(clashing);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toContain('dua bagian');
+  });
+
+  it('rejects a blank keyword', () => {
+    expect(
+      validateAliases([{ sectionId: 's', label: 'Subjektif', order: 1, aliases: ['  '] }]).ok,
+    ).toBe(false);
+  });
+});
+
+describe('WhatsApp-style wrapped headers', () => {
+  const aliases = DEFAULT_SECTION_ALIASES;
+
+  it('detects a single-asterisk wrapped label with digits and no colon', () => {
+    const body = '*EKG PJT Lantai 5 06-08-2026*\nSinus bradikardi, HR 45 bpm';
+    const sections = parseSections(body, aliases);
+    const ekg = sections.find((s) => s.label.startsWith('EKG'));
+    expect(ekg).toBeDefined();
+    expect(ekg?.text.trim()).toBe('Sinus bradikardi, HR 45 bpm');
+  });
+
+  it('keeps each dated investigation block as its own section', () => {
+    const body = [
+      '*EKG PJT Lantai 5 06-08-2026*',
+      'HR 45 bpm',
+      '',
+      '*EKG PJT Lantai 5 05-08-2026*',
+      'HR 45 bpm',
+      '',
+      '*Laboratorium PJT (04-08-2026)*',
+      'GDS : 222',
+    ].join('\n');
+
+    const sections = parseSections(body, aliases);
+    const ids = sections.map((s) => s.sectionId);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    // Three wrapped blocks. (`GDS : 222` is also a header — a colon label is
+    // one by the existing rule, and copying just the glucose is reasonable.)
+    const wrapped = sections.filter((s) => /^(EKG|Laboratorium)/.test(s.label));
+    expect(wrapped).toHaveLength(3);
+  });
+
+  it('accepts double-asterisk wrapping too', () => {
+    const sections = parseSections('**Foto Thorax 28-07-2026**\nCor normal', aliases);
+    expect(sections.some((s) => s.label === 'Foto Thorax 28-07-2026')).toBe(true);
+  });
+
+  it('maps a wrapped KNOWN label onto its real section, not a custom one', () => {
+    const sections = parseSections('*S:*\nsesak berkurang', aliases);
+    expect(sections.some((s) => s.sectionId === 's')).toBe(true);
+    expect(sections.some((s) => s.sectionId.startsWith('custom_'))).toBe(false);
+  });
+
+  it('ignores bold used mid-sentence', () => {
+    const body = 'Pasien dengan *nyeri dada* sejak kemarin';
+    const sections = parseSections(body, aliases);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.sectionId).toBe('_intro');
+  });
+
+  it('ignores an asterisk separator with no letters', () => {
+    const sections = parseSections('***\nisi', aliases);
+    expect(sections[0]?.sectionId).toBe('_intro');
+  });
+
+  it('ignores a wrapped line that is really a whole paragraph', () => {
+    const long = `*${'a'.repeat(90)}*`;
+    expect(parseSections(`${long}\nisi`, aliases)[0]?.sectionId).toBe('_intro');
+  });
+
+  it('stays lossless across a real pasted handover', () => {
+    const body = [
+      '*S:*',
+      '- nyeri dada tidak ada',
+      '',
+      '*EKG PJT Lantai 5 06-08-2026*',
+      'Sinus bradikardi',
+      '',
+      '*Laporan PCI PJT (05-08-2026)*',
+      'Post PCI 2 Stent DES di LAD',
+    ].join('\n');
+
+    const rebuilt = parseSections(body, aliases)
+      .map((section) => body.slice(section.start, section.end))
+      .join('');
+    expect(rebuilt).toBe(body);
+  });
+});
+
+describe('one-letter vitals inside O (audit 2026-09-29)', () => {
+  it('reads S: 36,5 and P: 20 under O as fields, not as S and P headings', () => {
+    const body = 'S:\nNyeri dada\nO:\nTD: 120/80\nN: 88\nP: 20\nS: 36,5\nSpO2: 98%\nA: CHF\nP: Furosemid';
+    const ids = parseSections(body).map((section) => section.sectionId);
+    expect(ids.filter((id) => id === 's')).toHaveLength(1);
+    expect(ids.filter((id) => id === 'p')).toHaveLength(1);
+    const plan = parseSections(body).find((section) => section.sectionId === 'p');
+    expect(plan?.text).toContain('Furosemid');
+    expect(plan?.text).not.toContain('20');
+  });
+});
+
+describe('colleague report headings (12.12, Lt 4 / Lt 5 exports)', () => {
+  const ids = (body: string) => parseSections(body).map((s) => s.sectionId);
+
+  it('a "Mohon izin kami … dengan" line is a heading with no colon', () => {
+    const body = 'S:\n- baik\n\nMohon izin kami assesst dengan\n- CHF\n\nMohon izin kami terapi pasien dengan\n- Furosemide';
+    expect(ids(body)).toEqual(['s', 'a', 'terapi']);
+  });
+
+  it('a bare "Plan" line is the Plan right after Terapi/A, but not inside a TS block', () => {
+    expect(ids('Mohon izin kami terapi dengan:\n- Furosemide\n\nPlan\n- Monitoring')).toEqual(['terapi', 'p']);
+    expect(ids('*TS EMD*\nA/\n- DM\nPlan\n- HbA1c')).not.toContain('p');
+  });
+
+  it('a short word alone on a line is still not a heading', () => {
+    expect(ids('S:\n- minum obat\nObat\n- teratur')).toEqual(['s']);
+  });
+});
+
+describe('bare TS headings (12.12): "TS Neuro" alone on its line opens the consultant block', () => {
+  const body = [
+    'Mohon izin kami terapi dengan:',
+    '- Furosemide',
+    '',
+    'Plan:',
+    '- Monitoring',
+    '',
+    'TS Neuro',
+    'A/',
+    '- Stroke iskemik',
+    'P/',
+    '- MRI kepala',
+    '',
+    'Ts EMD',
+    'A/',
+    '- DM tipe 2',
+    '',
+    'TS GH/',
+    '- CKD',
+  ].join('\n');
+
+  it('each TS line is its own section; a bullet "- TS Gizi" is not', () => {
+    const labels = parseSections(body).filter((s) => s.ownsLine).map((s) => s.label);
+    expect(labels).toEqual(['Terapi', 'Plan', 'TS Neuro', 'Ts EMD', 'TS GH']);
+    expect(parseSections('Plan:\n- Konsul\n- TS Gizi\n').map((s) => s.sectionId)).toEqual(['p']);
+  });
+});
+
+describe('bare dated investigation headings', () => {
+  const labelsOf = (body: string): string[] =>
+    assertLossless(body).filter((s) => s.ownsLine).map((s) => s.label);
+
+  it('reads the unbolded form like the bold one, bracket or not', () => {
+    const body = [
+      '*O :*',
+      'Laboratorium PJT (09-09-2026)',
+      'WBC : 9.000',
+      'Analisa Gas Darah 14-09-2026 jam 06:29 :',
+      'pH : 7.4',
+      'EKG IGD PJT Kanan Posterior (11-10-2026 pukul 19.34)',
+      'ST elevasi',
+      'Echo Hemodinamik CVCU (30-09-2026; 07.00)',
+      'LVEF 35%',
+    ].join('\n');
+    expect(labelsOf(body)).toEqual([
+      'Objektif',
+      'Laboratorium PJT (09-09-2026)',
+      'Analisa Gas Darah 14-09-2026 jam 06:29',
+      'EKG IGD PJT Kanan Posterior (11-10-2026 pukul 19.34)',
+      'Echo Hemodinamik CVCU (30-09-2026; 07.00)',
+    ]);
+  });
+
+  it('takes a short note after a bracketed date into the heading, and a result after a colon out of it', () => {
+    const noted = parseSections('*O :*\nEKG di IGD PJT (06-10-2026) onset 6 jam\nSinus');
+    expect(noted[1]?.ownsLine).toBe(true);
+    expect(noted[1]?.text).toBe('\nSinus');
+
+    const inline = parseSections('*O :*\nFoto Thorax RSUD X (24-09-2026): tidak ada kelainan');
+    expect(inline[1]?.ownsLine).toBe(false);
+    expect(inline[1]?.text).toBe('tidak ada kelainan');
+  });
+
+  it('leaves a dated line below the assessment inside the plan', () => {
+    const body = '*Mohon izin kami assess dengan:*\n- ADHF\n*Plan :*\nEKG (05-10-2026)\nLab 06-10-2026\n- kontrol';
+    expect(labelsOf(body)).toEqual(['Assessment', 'Plan']);
+  });
+
+  it('does not read a sentence, a bullet or a bare date plus value as a heading', () => {
+    expect(labelsOf('*O :*\n- EKG (05-10-2026)')).toEqual(['Objektif']);
+    expect(labelsOf('*O :*\nLab kemarin tanggal 12-10-2026 normal')).toEqual(['Objektif']);
+    expect(labelsOf('*O :*\nLab 12-10-2026 Hb 12')).toEqual(['Objektif']);
+    expect(labelsOf('*O :*\nEKG sinus rhythm tanggal 05-10-2026 tidak berubah dari sebelumnya')).toEqual(['Objektif']);
+  });
+});
+
+describe('a label alone on its line', () => {
+  it('may run to four words and 40 characters; with a value it still may not', () => {
+    const own = parseSections('*S :*\nFaktor Risiko Kardiovaskular :\n- HT');
+    expect(own.map((s) => s.label)).toEqual(['Subjektif', 'Faktor Risiko Kardiovaskular']);
+
+    const withValue = parseSections('*S :*\nFaktor Risiko Kardiovaskular : HT');
+    expect(withValue.map((s) => s.sectionId)).toEqual(['s']);
+  });
+
+  it('still refuses a prose line that happens to end in a colon', () => {
+    const body = '*O :*\nPada CT Coronary Angiography dan Calcium Scoring ditemukan :\n- LM normal';
+    expect(parseSections(body).map((s) => s.sectionId)).toEqual(['o']);
+  });
+});
+
+describe('a closing mark after a space', () => {
+  it('belongs to the heading, so the heading still owns its line', () => {
+    const sections = assertLossless('*Mohon izin kami assess dengan: *\n- Cardiogenic shock');
+    expect(sections[0]).toMatchObject({ sectionId: 'a', ownsLine: true, text: '\n- Cardiogenic shock' });
+  });
+
+  it('leaves bold content on the heading line alone', () => {
+    expect(parseSections('A: *Sesak berkurang*')[0]).toMatchObject({ ownsLine: false, text: '*Sesak berkurang*' });
+  });
+});
+
+describe('Lt. 5 export of 30-10-2026: headings the alias table did not list', () => {
+  const ids = (body: string) => assertLossless(body).filter((s) => s.headerLine !== null).map((s) => s.sectionId);
+
+  it.each([
+    ['Mohon Izin prof, pasien kami assest dengan:', 'a'],
+    ['Mohon izin kami assest pasien dengan: ', 'a'],
+    ['Mohon izin pasien kami asessment dengan :', 'a'],
+    ['*Mohon izin kami assessment pasien dengan*', 'a'],
+    ['Mohon ijn kami terapi dengan:', 'terapi'],
+    ['Mohon Izin prof, pasien kami terapi dengan:', 'terapi'],
+  ])('reads "%s" as a heading', (heading, id) => {
+    expect(ids(['S:', '- Baik', 'O:', 'Compos mentis', heading, '- isi'].join('\n'))).toEqual(['s', 'o', id]);
+  });
+
+  it('leaves the reporting sentence and a prose request alone', () => {
+    expect(ids(['Mohon izin melaporkan pasien baru atas nama:', 'Tn. X', 'S:', '- Baik', 'Plan:', '- Mohon izin terapi dilanjutkan'].join('\n'))).toEqual(['s', 'p']);
+  });
+
+  it('reads a bare "S" / "O" / "S;" line as the heading', () => {
+    expect(ids(['Tn. X', 'S', '- Baik', 'O', 'Compos mentis', 'Mohon izin kami assess dengan:', '- CCS'].join('\n'))).toEqual(['s', 'o', 'a']);
+    expect(ids(['S;', '- Baik', 'O:', 'Compos mentis'].join('\n'))).toEqual(['s', 'o']);
+  });
+
+  it('reads a bare letter only in the note\'s own order, never "S." and never after the Plan', () => {
+    expect(ids(['Plan:', '- Echo', 'O', 'S'].join('\n'))).toEqual(['p']);
+    expect(ids(['S.', '- Baik'].join('\n'))).toEqual([]);
+    expect(ids(['S:', '- Baik', 'O:', 'x', 'S', 'O'].join('\n'))).toEqual(['s', 'o']);
+  });
+
+  it('reads no bare letter inside a TS block', () => {
+    expect(ids(['S:', '- Baik', 'TS Paru', 'O', '- x'].join('\n')).filter((id) => !id.startsWith('custom_'))).toEqual(['s']);
+  });
+});
+
+describe('a report field is not the note\'s heading (PJT Lt. 4, 03-11-2026)', () => {
+  const ids = (body: string) => assertLossless(body).filter((s) => s.headerLine !== null && !s.sectionId.startsWith('custom_')).map((s) => s.sectionId);
+
+  it('keeps "- Plan : Check 1 year" inside the interrogation report', () => {
+    const body = [
+      '*S:*', '- Sesak berkurang', '*O:*', 'Compos Mentis',
+      '*Laporan Interrogate 22/1/26*', '- Summary : Pacemaker is pacing and sensing appropriately', '- Plan : Check 1 year',
+      '*Echocardiography Bedside 03-11-2026*', '- Mildly Abnormal LV Systolic Function',
+      'Echo Hemodynamic 3-11-2026', 'BP 140/77 mmHg',
+      '*Mohon izin kami assess dengan:*', '- CHF', '*Mohon izin kami terapi dengan:*', '- Furosemide',
+      '*Plan:*', '- Monitoring hemodinamik',
+    ].join('\n');
+    expect(ids(body)).toEqual(['s', 'o', 'a', 'terapi', 'p']);
+    const plan = copyableSections(body).find((s) => s.sectionId === 'p');
+    expect(plan?.text).toBe('- Monitoring hemodinamik');
+  });
+
+  it('still reads an unbulleted or own-line Plan after a report as the heading', () => {
+    expect(ids(['O:', '*Lab 03-11*', 'Hb 12', 'Plan: cek ulang'].join('\n'))).toEqual(['o', 'p']);
+    expect(ids(['O:', '*Lab 03-11*', 'Hb 12', '- Plan:', '- cek ulang'].join('\n'))).toEqual(['o', 'p']);
+  });
+});

@@ -1,0 +1,130 @@
+import { collection, doc, type CollectionReference, type DocumentReference } from 'firebase/firestore';
+import { db } from './firebase';
+import type { ClinicalDate } from '@/domain/types';
+
+/**
+ * SPEC 6 — every Firestore path in one file.
+ *
+ * Patients are TOP-LEVEL with `memberIds` (SPEC 6.1): isolation today, sharing
+ * later with zero migration. Nesting them under users/{uid} would have forced
+ * an export/re-import the day sharing ships.
+ *
+ * Entry and checklist doc ids are the clinical date string, which makes the
+ * daily "reset" a property of the schema rather than a scheduled job.
+ */
+export const patientsCol = (): CollectionReference => collection(db(), 'patients');
+export const patientDoc = (patientId: string): DocumentReference =>
+  doc(db(), 'patients', patientId);
+
+export const entriesCol = (patientId: string): CollectionReference =>
+  collection(db(), 'patients', patientId, 'entries');
+export const entryDoc = (patientId: string, date: ClinicalDate): DocumentReference =>
+  doc(db(), 'patients', patientId, 'entries', date);
+
+export const revisionsCol = (patientId: string, date: ClinicalDate): CollectionReference =>
+  collection(db(), 'patients', patientId, 'entries', date, 'revisions');
+
+export const checklistCol = (patientId: string): CollectionReference =>
+  collection(db(), 'patients', patientId, 'checklist');
+export const checklistDoc = (patientId: string, date: ClinicalDate): DocumentReference =>
+  doc(db(), 'patients', patientId, 'checklist', date);
+
+export const userDoc = (uid: string): DocumentReference => doc(db(), 'users', uid);
+export const documentsCol = (uid: string): CollectionReference =>
+  collection(db(), 'users', uid, 'documents');
+export const documentDoc = (uid: string, documentId: string): DocumentReference =>
+  doc(db(), 'users', uid, 'documents', documentId);
+
+/**
+ * Konfirmasi Jaga, synced per account: one document per parsed roster
+ * (`roster`, `dpjp`, `jarkom`, `pediatri`) and one `state` document for the
+ * working edits. A subcollection so that one listener covers all five.
+ */
+export const jagaCol = (uid: string): CollectionReference =>
+  collection(db(), 'users', uid, 'jaga');
+export const jagaDoc = (uid: string, id: string): DocumentReference =>
+  doc(db(), 'users', uid, 'jaga', id);
+
+/** Usernames, one document per handle (see `src/domain/username.ts`). Never listed. */
+export const usernameDoc = (handle: string): DocumentReference => doc(db(), 'usernames', handle);
+
+/** Access records, one per account (see `src/domain/access.ts`). */
+export const accessCol = (): CollectionReference => collection(db(), 'access');
+export const accessDoc = (uid: string): DocumentReference => doc(db(), 'access', uid);
+/** The enforcement switch. */
+export const accessConfigDoc = (): DocumentReference => doc(db(), 'config', 'access');
+
+/** Bug reports and suggestions (see `src/domain/feedback.ts`). Admin reads. */
+export const feedbackCol = (): CollectionReference => collection(db(), 'feedback');
+export const feedbackDoc = (id: string): DocumentReference => doc(db(), 'feedback', id);
+
+/**
+ * Images pasted into board sticky notes, one document each.
+ *
+ * Not on the profile: that document holds settings and every Catatan note
+ * under Firestore's 1 MiB cap, and a few photos there would push it over and
+ * break every save to it. One image per document keeps each within its own
+ * cap and leaves the profile untouched.
+ */
+export const boardImageDoc = (uid: string, imageId: string): DocumentReference =>
+  doc(db(), 'users', uid, 'boardImages', imageId);
+
+/**
+ * Saved Helper results (see `src/domain/helperResults.ts`), one document per
+ * (kind, date, subject). Not on the profile: a month of censuses and reports
+ * would push that one document toward its 1 MiB cap, and every settings save
+ * goes through it.
+ */
+export const helperResultsCol = (uid: string): CollectionReference =>
+  collection(db(), 'users', uid, 'helperResults');
+export const helperResultDoc = (uid: string, id: string): DocumentReference =>
+  doc(db(), 'users', uid, 'helperResults', id);
+
+/**
+ * One DPJP's census per day (`domain/census/evolution`): the history the
+ * Sensus maker's Riwayat is drawn from. One document per (DPJP, date), so a
+ * re-copy that morning replaces it rather than adding a second.
+ */
+export const sensusDaysCol = (uid: string): CollectionReference =>
+  collection(db(), 'users', uid, 'sensusDays');
+export const sensusDayDoc = (uid: string, id: string): DocumentReference =>
+  doc(db(), 'users', uid, 'sensusDays', id);
+
+/**
+ * Buat Sensus input per tanggal sensus (12.6): the pasted lists, AI results
+ * and ticks (`domain/census/makerSync`). Transient: pruned after a week.
+ */
+export const sensusInputCol = (uid: string): CollectionReference =>
+  collection(db(), 'users', uid, 'sensusInput');
+export const sensusInputDoc = (uid: string, date: string): DocumentReference =>
+  doc(db(), 'users', uid, 'sensusInput', date);
+
+/** The account's Anthropic key and AI switches (12.6). One document, `ai`. */
+export const aiPrivateDoc = (uid: string): DocumentReference => doc(db(), 'users', uid, 'private', 'ai');
+
+/** Device-only settings carried to a new address (`domain/moveSettings.ts`). */
+export const movePrivateDoc = (uid: string): DocumentReference => doc(db(), 'users', uid, 'private', 'move');
+
+/**
+ * List Maker floors (12.8): a shared floor list, its members and roles, and
+ * one document per day of reports and edits (`domain/floorList/floor.ts`).
+ */
+export const floorsCol = (): CollectionReference => collection(db(), 'floors');
+export const floorDoc = (floorId: string): DocumentReference => doc(db(), 'floors', floorId);
+export const floorDaysCol = (floorId: string): CollectionReference => collection(db(), 'floors', floorId, 'days');
+/** The floor's roster (12.12): one document per patient, key = patient key. */
+export const floorPatientsCol = (floorId: string): CollectionReference => collection(db(), 'floors', floorId, 'patients');
+export const floorPatientDoc = (floorId: string, key: string): DocumentReference =>
+  doc(db(), 'floors', floorId, 'patients', key);
+/** Sent lists (12.12): message + roster snapshot, free-text time. */
+export const floorEditionsCol = (floorId: string): CollectionReference => collection(db(), 'floors', floorId, 'editions');
+export const floorEditionDoc = (floorId: string, editionId: string): DocumentReference => doc(db(), 'floors', floorId, 'editions', editionId);
+/** The list's shared Catatan Visite (24 Oct 2026): one document. */
+export const floorVisitNoteDoc = (floorId: string): DocumentReference => doc(db(), 'floors', floorId, 'visitNote', 'main');
+/** Restore points (2026-10-16): the roster as it was, before a paste and with each edition. */
+export const floorRestoresCol = (floorId: string): CollectionReference => collection(db(), 'floors', floorId, 'restores');
+/** A point's patients, as JSON text in parts (see `domain/floorList/restore`). */
+export const floorRestorePartsCol = (floorId: string, id: string): CollectionReference =>
+  collection(db(), 'floors', floorId, 'restores', id, 'parts');
+export const floorRestorePartDoc = (floorId: string, id: string, n: number): DocumentReference =>
+  doc(db(), 'floors', floorId, 'restores', id, 'parts', String(n));

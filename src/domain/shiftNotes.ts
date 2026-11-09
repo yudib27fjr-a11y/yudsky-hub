@@ -1,0 +1,155 @@
+import type { ShiftNote } from './types';
+
+/**
+ * `HH.MM`, not `HH:MM`.
+ *
+ * A colon is a heading delimiter to the section parser. Shift note text gets
+ * pasted into bodies and copied into WhatsApp, and a stamp that turns into a
+ * section header the next time it lands in an editor is a trap worth avoiding
+ * for the cost of one character.
+ */
+export function formatShiftTime(at: Date): string {
+  const hh = String(at.getHours()).padStart(2, '0');
+  const mm = String(at.getMinutes()).padStart(2, '0');
+  return `${hh}.${mm}`;
+}
+
+/**
+ * What a new jaga note starts with: the four headings and a vitals line,
+ * the shape a jaga review is written in. A blank box made every jaga note
+ * start by typing the same scaffold, at 03.00. Everything is editable, and
+ * the vitals are blank so nothing stale is implied.
+ */
+export const JAGA_TEMPLATE = [
+  'S:',
+  '- ',
+  '',
+  'O:',
+  'TD :  mmHg, N :  x/m, P :  x/m, S :  C, SpO2 :  %',
+  '',
+  'A:',
+  '- ',
+  '',
+  'P:',
+  '- ',
+].join('\n');
+
+/** Where the caret goes in a new note: after the first `- ` (the complaint). */
+export const JAGA_TEMPLATE_CARET = JAGA_TEMPLATE.indexOf('- ') + 2;
+
+/**
+ * A typed time, normalised to `HH.MM`, or null when it is not a time.
+ * Accepts `3.10`, `03:10`, `0310`, `3 10`.
+ */
+export function parseShiftTime(input: string): string | null {
+  const match = /^\s*(\d{1,2})\s*[.:\s]?\s*(\d{2})\s*$/.exec(input);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return `${String(hours).padStart(2, '0')}.${String(minutes).padStart(2, '0')}`;
+}
+
+/**
+ * Ids are generated here rather than by index.
+ *
+ * The array is never reordered and entries are never spliced out, but an
+ * index-based key would still break the moment either happens — and the tick
+ * state in the copy sheet is keyed on this. A value that is only stable while
+ * nobody touches the list is not a stable value.
+ */
+export function newShiftNoteId(
+  at: Date,
+  existing: readonly ShiftNote[],
+  kind: 'jaga' | 'versi' = 'jaga',
+): string {
+  const base = `${kind}-${at.getTime()}`;
+  if (!existing.some((note) => note.id === base)) return base;
+  // Two taps inside the same millisecond is not realistic, but a colliding id
+  // would silently merge two notes into one box.
+  let n = 1;
+  while (existing.some((note) => note.id === `${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+}
+
+/**
+ * Shift notes that should be shown and offered for copy.
+ *
+ * A cleared note is kept in storage for the revision trail but is not a thing
+ * the user is still working on, so it does not occupy a box or a tick.
+ */
+export function visibleShiftNotes(notes: readonly ShiftNote[] | undefined): ShiftNote[] {
+  return (notes ?? []).filter((note) => note.clearedAt === null);
+}
+
+/**
+ * Whether the shift note section should appear at all.
+ *
+ * Nothing on screen when there are none. The button to add one lives in the
+ * note's own action menu, not in a permanently-visible empty panel: a section
+ * header with nothing under it costs a row of a phone screen on every patient
+ * to serve the few days that have a jaga complaint.
+ */
+export function hasShiftNotes(notes: readonly ShiftNote[] | undefined): boolean {
+  return visibleShiftNotes(notes).length > 0;
+}
+
+/**
+ * Render selected shift notes for copy.
+ *
+ * OPT-IN: the caller passes exactly the ids that were ticked, and passing none
+ * yields an empty string. The morning note sent to the chief must not change
+ * shape because a shift note was added to the same day hours later.
+ *
+ * The heading is emphasised so it survives into WhatsApp looking like a
+ * heading, and the time goes on the heading line because here it is display
+ * text rather than something the parser will read back.
+ */
+export function renderShiftNotes(
+  notes: readonly ShiftNote[] | undefined,
+  selectedIds: readonly string[],
+): string {
+  const selected = new Set(selectedIds);
+  const blocks = visibleShiftNotes(notes)
+    .filter((note) => selected.has(note.id))
+    // An empty box contributes nothing rather than an orphan heading.
+    .filter((note) => note.body.trim().length > 0)
+    .map((note) => `*SOAP Jaga ${note.time}*\n${note.body.trim()}`);
+
+  return blocks.join('\n\n');
+}
+
+/** A SOAP version rather than a jaga note. Absent kind is a jaga note. */
+export function isVersion(note: Pick<ShiftNote, 'kind'>): boolean {
+  return note.kind === 'versi';
+}
+
+/**
+ * The name shown on the chip, the rail and Compare.
+ *
+ * The user's title when there is one. Otherwise a jaga note is named by its
+ * hour, as it always was, and a version is `Versi`.
+ */
+export function noteLabel(note: Pick<ShiftNote, 'kind' | 'title' | 'time'>): string {
+  const title = note.title?.trim();
+  if (title) return title;
+  return isVersion(note) ? 'Versi' : `Jaga ${note.time}`;
+}
+
+/**
+ * A default name for a new version: `Versi dr. AHA` when the note's DPJP is
+ * known, else `Versi 2`, `Versi 3`… counted from the versions already there.
+ */
+export function defaultVersionTitle(
+  existing: readonly ShiftNote[],
+  dpjpInitials?: string | null,
+): string {
+  const taken = new Set(visibleShiftNotes(existing).map((note) => noteLabel(note)));
+  if (dpjpInitials) {
+    const named = `Versi dr. ${dpjpInitials}`;
+    if (!taken.has(named)) return named;
+  }
+  let n = visibleShiftNotes(existing).filter(isVersion).length + 2;
+  while (taken.has(`Versi ${n}`)) n += 1;
+  return `Versi ${n}`;
+}

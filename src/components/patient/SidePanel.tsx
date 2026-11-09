@@ -1,0 +1,104 @@
+import { useState, type ReactNode } from 'react';
+
+import { IconChevronRight } from '@/components/common/Icons';
+
+/**
+ * One section of the patient sidebar in the panel layout.
+ *
+ * The sidebar used to be four blocks of text separated by nothing but a gap:
+ * a heading in the same muted grey as the content under it, then the next.
+ * With a long stay the date list alone ran past the fold, so the checklist —
+ * the thing you tick while reading — was off screen, and the flat rhythm gave
+ * no way to see at a glance which block was which.
+ *
+ * So each section is a card with its own edge, and each starts SMALL rather
+ * than shut: the header carries the count, and under it a condensed view of
+ * the content itself — the note's first lines, the checklist as ticks, the
+ * next dates. Closed is still readable; opening it makes it editable and
+ * complete.
+ *
+ * A header-only accordion was the first attempt and it was the wrong one.
+ * "Minimised" has to mean less of the thing, not none of it: a sidebar of four
+ * closed bars answers nothing without four taps, which is slower than the flat
+ * list it replaced.
+ *
+ * Closed on mount, deliberately not remembered. A sidebar that reopens
+ * whichever sections were open on the last patient puts different things in
+ * front of you depending on where you have been, and the summaries mean a
+ * closed section is not a hidden one.
+ */
+export function SidePanel({
+  title,
+  summary,
+  tone = 'plain',
+  defaultOpen = false,
+  preview,
+  children,
+}: {
+  title: string;
+  /** What the header says when closed — the answer, not a label. */
+  summary?: string;
+  /** `done` tints the summary: a finished checklist reads at a glance. */
+  tone?: 'plain' | 'done';
+  defaultOpen?: boolean;
+  /**
+   * The condensed view, shown while closed. Readable, not interactive: a
+   * control that works in a preview and a different one that works when open
+   * is two places to fix a behaviour.
+   */
+  preview?: ReactNode;
+  children: ReactNode;
+}): JSX.Element {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    /*
+      `shrink-0` is load-bearing.
+
+      The sidebar is a fixed-height flex column so that it scrolls on its own.
+      Flex children shrink by default, so without this each card was squeezed
+      to fit the column instead of the column scrolling — and because the card
+      clips its corners, what got squeezed got CUT: the Tanggal panel lost its
+      header, Custom Checklist lost its buttons. A panel is its natural height;
+      the column scrolls.
+    */
+    <section className="shrink-0 overflow-hidden rounded-xl border border-border bg-surface">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex min-h-tap w-full items-center gap-2 px-3 text-left hover:bg-bg-subtle [@media(pointer:fine)]:min-h-10"
+      >
+        <IconChevronRight
+          aria-hidden="true"
+          className={`h-3.5 w-3.5 shrink-0 text-fg-faint transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+        <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-fg-faint">
+          {title}
+        </span>
+        {summary ? (
+          <span
+            className={[
+              'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums',
+              tone === 'done' ? 'bg-[var(--accent-soft)] text-accent' : 'bg-bg-subtle text-fg-muted',
+            ].join(' ')}
+          >
+            {summary}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="border-t border-border px-3 py-2">{children}</div>
+      ) : preview ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label={`Buka ${title}`}
+          className="w-full cursor-pointer border-t border-border px-3 py-2 text-left"
+        >
+          {preview}
+        </button>
+      ) : null}
+    </section>
+  );
+}

@@ -1,0 +1,209 @@
+import { describe, expect, it } from 'vitest';
+
+import { composeKonsul, missingKonsulMeasurements } from './composeKonsul';
+import { DEFAULT_SECTION_ALIASES as ALIASES } from '../defaults';
+import { makePatient } from '../testFactories';
+
+const PATIENT = makePatient({
+  name: 'Tn. Muh. Darman Dahlan',
+  mrn: '800008',
+  age: 53,
+  ward: 'PJT Lt. 4',
+  room: '402',
+});
+
+/** Verbatim shape of the bangsal note this referral is composed from. */
+const BODY = [
+  'Assalamualaikum dokter, Tabe dokter, mohon izin melaporkan follow up pasien.',
+  '',
+  '*Tn. Muh. Darman Dahlan/01-02-1973/53 tahun/RM 800008*',
+  '',
+  '_DPJP Kardio: dr. Aussie Fitriani Ghaznawie, Sp.JP, Subsp.Eko(K)_',
+  '_DPJP Tindakan: Dr. dr. Akhtar Fajar Muzakkir, Sp.JP, Subsp.IKKV(K), KI(K)_',
+  '',
+  '*S:*',
+  '- Nyeri dada ada berkurang.',
+  '',
+  '*O:*',
+  'Compos Mentis',
+  'Tekanan Darah : 137/95 mmHg',
+  '',
+  'TB : 160 cm',
+  'BB : 78 kg',
+  '',
+  '*Mohon izin kami assess dengan:*',
+  '- Unstable Angina Pectoris (GRACE Score 53 points)',
+  '- Heart Failure mildly reduced Ejection Fraction',
+  '- Hypertensive Heart Disase',
+  '',
+  '*Mohon izin kami terapi dengan:*',
+  '- Aspilet 80 mg/24 jam/oral',
+  '',
+  '*Plan:*',
+  '- Monitoring Tanda vital',
+].join('\n');
+
+describe('composeKonsul', () => {
+  const out = composeKonsul(BODY, PATIENT, ALIASES, { purpose: '6MWT' });
+
+  it('names the purpose and the location in the opening', () => {
+    expect(out).toContain('Mohon izin mengirimkan konsul pasien rencana 6MWT');
+    expect(out).toContain('*PJT Lt. 4 Kamar 402*');
+  });
+
+  it("reuses the note's own identity line, date of birth and all", () => {
+    // Rebuilt from the patient record it would lose the DOB, which the record
+    // does not always hold and a referral needs.
+    expect(out).toContain('*Tn. Muh. Darman Dahlan/01-02-1973/53 tahun/RM 800008*');
+  });
+
+  it('carries every DPJP line, in order', () => {
+    const kardio = out.indexOf('_DPJP Kardio:');
+    const tindakan = out.indexOf('_DPJP Tindakan:');
+    expect(kardio).toBeGreaterThan(-1);
+    expect(tindakan).toBeGreaterThan(kardio);
+  });
+
+  it('copies the assessment verbatim under a Diagnosis heading', () => {
+    expect(out).toContain('*Diagnosis:*');
+    expect(out).toContain('- Unstable Angina Pectoris (GRACE Score 53 points)');
+    expect(out).toContain('- Heart Failure mildly reduced Ejection Fraction');
+    expect(out).toContain('- Hypertensive Heart Disase');
+  });
+
+  it('does not reword the assessment', () => {
+    // A referral that paraphrases the assessment is a referral that disagrees
+    // with the chart. The typo in "Disase" is in the note and stays.
+    expect(out).toContain('Hypertensive Heart Disase');
+  });
+
+  it('carries height and weight', () => {
+    expect(out).toContain('TB : 160 cm');
+    expect(out).toContain('BB : 78 kg');
+  });
+
+  it('takes nothing from the therapy or plan sections', () => {
+    expect(out).not.toContain('Aspilet');
+    expect(out).not.toContain('Monitoring Tanda vital');
+  });
+
+  it('ends with the closing', () => {
+    expect(out.trimEnd().endsWith('mohon arahan ta dokter.')).toBe(true);
+  });
+
+  it('takes our assessment, not a TS block\u2019s', () => {
+    const withTs = [
+      '*Mohon izin kami assess dengan:*',
+      '- milik kami',
+      '',
+      '*TS BTKV*',
+      '*A/*',
+      '- milik TS',
+    ].join('\n');
+    const result = composeKonsul(withTs, PATIENT, ALIASES, { purpose: '6MWT' });
+    expect(result).toContain('- milik kami');
+    expect(result).not.toContain('milik TS');
+  });
+
+  it('leaves no gap where an absent block would have been', () => {
+    const bare = '*Mohon izin kami assess dengan:*\n- CHF';
+    const result = composeKonsul(bare, PATIENT, ALIASES, { purpose: 'Echo' });
+    expect(result).not.toMatch(/\n{3,}/);
+  });
+
+  it('still composes when the note has no assessment yet', () => {
+    const result = composeKonsul('*S:*\n- sesak', PATIENT, ALIASES, { purpose: '6MWT' });
+    expect(result).toContain('konsul pasien rencana 6MWT');
+    expect(result).not.toContain('*Diagnosis:*');
+  });
+});
+
+/**
+ * The "list pasien" shape — the echo full-study request.
+ *
+ * One entry in a list several residents add to, not a letter about a single
+ * patient. Same body, different framing, which is why it is a flag on this
+ * composer rather than a second one that would drift from it.
+ */
+describe('composeKonsul list style', () => {
+  const out = composeKonsul(BODY, PATIENT, ALIASES, {
+    purpose: 'Echocardiography full study',
+    listStyle: true,
+    listFrom: 'PJT Lt. 4',
+    listDate: '8 Oktober 2026',
+  });
+
+  it('opens as the ward writes the list (Avi, 2026-10-12)', () => {
+    expect(out.split('\n')[0]).toBe(
+      'Assalamualaikum dokter. Tabe dokter, mohon izin mengirimkan rencana pasien Echocardiography full study tanggal *8 Oktober 2026* dari *PJT Lantai 4* atas nama:',
+    );
+    expect(out).not.toContain('konsul pasien rencana');
+  });
+
+  it('numbers the patient and adds the room inside the bold', () => {
+    expect(out).toContain('1. *Tn. Muh. Darman Dahlan/01-02-1973/53 tahun/RM 800008 / Kamar 402*');
+  });
+
+  it('does not send TB/BB with an echo request', () => {
+    expect(out).not.toContain('TB : 160 cm');
+    expect(out).not.toContain('BB : 78 kg');
+  });
+
+  it('takes the room from the opening line when the record has none', () => {
+    const body = `Tabe dokter, mohon izin melaporkan follow up pasien di *PJT Lt 4 Kamar 421 Bed 4* atas nama :\n\n${BODY}`;
+    const bare = composeKonsul(body, makePatient({ name: 'Tn. Muh. Darman Dahlan', ward: 'PJT Lt 4' }), ALIASES, {
+      purpose: 'Echocardiography full study',
+      listStyle: true,
+    });
+    expect(bare).toContain('RM 800008 / Kamar 421 Bed 4*');
+  });
+
+  it('keeps the DPJP and diagnosis blocks identical to a referral', () => {
+    expect(out).toContain('_DPJP Kardio:');
+    expect(out).toContain('*Diagnosis:*');
+    expect(out).toContain('- Unstable Angina Pectoris (GRACE Score 53 points)');
+  });
+
+  it('uses the shorter closing', () => {
+    expect(out.trimEnd().endsWith('Tabe terima kasih dokter')).toBe(true);
+  });
+});
+
+describe('DPJP lines with the label mistyped (2026-10-12)', () => {
+  it('keeps "_DJPJP Utama" and sends it as DPJP Utama', () => {
+    // The real note's typo: the main DPJP vanished from the konsul.
+    const body = BODY.replace('_DPJP Kardio:', '_DJPJP Utama :');
+    const out = composeKonsul(body, PATIENT, ALIASES, { purpose: 'Echocardiography full study', listStyle: true });
+    expect(out).toContain('_DPJP Utama : dr. Aussie Fitriani Ghaznawie, Sp.JP, Subsp.Eko(K)_');
+    expect(out.indexOf('_DPJP Utama')).toBeLessThan(out.indexOf('_DPJP Tindakan'));
+  });
+});
+
+describe('missingKonsulMeasurements', () => {
+  const withBoth = ['*A :*', '- CAD', 'TB : 160 cm', 'BB : 60 kg'].join('\n');
+
+  it('says nothing when both are in the note', () => {
+    expect(missingKonsulMeasurements('6MWT', withBoth)).toEqual([]);
+  });
+
+  it('names what is missing', () => {
+    expect(missingKonsulMeasurements('6MWT', 'TB : 160 cm')).toEqual(['BB']);
+    expect(missingKonsulMeasurements('6MWT', 'BB : 60 kg')).toEqual(['TB']);
+    expect(missingKonsulMeasurements('6MWT', '*A :*\n- CAD')).toEqual(['TB', 'BB']);
+  });
+
+  it('treats a label with no value as missing', () => {
+    expect(missingKonsulMeasurements('6MWT', 'TB :\nBB : 60 kg')).toEqual(['TB']);
+  });
+
+  it('matches the ways the purpose is written', () => {
+    for (const purpose of ['6MWT', '6 MWT', 'Tes 6mwt', 'six minute walk test']) {
+      expect(missingKonsulMeasurements(purpose, '')).toEqual(['TB', 'BB']);
+    }
+  });
+
+  it('stays quiet for consults that do not need them', () => {
+    expect(missingKonsulMeasurements('Echo', '')).toEqual([]);
+    expect(missingKonsulMeasurements('Rehab jantung', '')).toEqual([]);
+  });
+});

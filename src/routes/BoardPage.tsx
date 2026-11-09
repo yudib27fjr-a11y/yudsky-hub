@@ -1,0 +1,1649 @@
+import { DEFAULT_REMINDER_KINDS } from '@/domain/reminders';
+import { useSlowWait } from '@/lib/loadTiming';
+import { privateText } from '@/domain/identity';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { CanvasBackdrop } from '@/components/board/CanvasBackdrop';
+import { PhoneCanvas, type PhoneSticky } from '@/components/board/PhoneCanvas';
+import { readingOrder, sanitizePhoneGrid, type PhoneGrid } from '@/domain/board/phoneGrid';
+import { mergeScope, sanitizePhoneShelves, type PhoneShelf } from '@/domain/board/phoneShelf';
+import { canvasShelfId, layoutsWithShelves, shelfPatch, shelvesFromLayouts } from '@/domain/board/shelfSync';
+import { parseSharedCanvas, type CanvasLayouts } from '@/domain/board/canvasLayout';
+import { dropLegacyPhoneShelves, patchSharedCanvas, savePhoneGrid, saveSharedCanvas } from '@/data/repositories/boardCanvas.repo';
+import { useNavigate } from 'react-router-dom';
+
+import { AppShell } from '@/components/common/AppShell';
+import { FilterBar } from '@/components/board/FilterBar';
+import { IncomingTransfers } from '@/components/board/IncomingTransfers';
+import { DenahView } from '@/components/board/DenahView';
+import { ARCHIVE_REASON_LABELS } from '@/domain/archive';
+import type { ArchiveReason } from '@/domain/types';
+
+import { BoardAddMenu, ADD_ITEM, CLOSES_MENU } from '@/components/board/BoardAddMenu';
+import { CanvasBoard } from '@/components/board/CanvasBoard';
+import { StickyNoteCard } from '@/components/board/StickyNoteCard';
+import { CanvasStickers, CardStickers } from '@/components/board/CanvasStickers';
+import { CanvasDrawing } from '@/components/board/CanvasDrawing';
+import { useBoardStickers } from '@/hooks/useBoardStickers';
+import { pruneDetachedStickers } from '@/domain/board/stickers';
+import { useBoardDrawing } from '@/hooks/useBoardDrawing';
+import { createBoardNote } from '@/data/repositories/boardNotes.repo';
+import { activeBoardNotes, noteIdFromCanvasId, stickyCanvasId, type StickyKind } from '@/domain/boardNotes';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { usePersistentIdSet } from '@/hooks/usePersistentIdSet';
+import { MasonryGrid, MasonryItem } from '@/components/board/MasonryGrid';
+import { LabSheet } from '@/components/patient/LabSheet';
+import { copyText } from '@/lib/clipboard';
+import { PatientCard } from '@/components/board/PatientCard';
+import { PatientPeekWindow } from '@/components/board/PatientPeekWindow';
+import { QuickChecklistSheet } from '@/components/board/QuickChecklistSheet';
+import { VisiteSheet } from '@/components/board/VisiteSheet';
+import { IconMore, IconPlus, IconSearch } from '@/components/common/Icons';
+import { Sheet } from '@/components/common/Sheet';
+import { useHideOnScroll } from '@/hooks/useHideOnScroll';
+import { NoteSearchToggle, useSearchNotesPreference } from '@/components/archive/NoteSearchToggle';
+import { useArchiveText } from '@/hooks/useArchiveText';
+import { matchArchived, searchTokens } from '@/domain/archiveSearch';
+import { useClinicalToday } from '@/hooks/useClinicalToday';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { archivePatient, createBlankPatient } from '@/data/repositories/patients.repo';
+import { usePatients } from '@/hooks/usePatients';
+import { setPatientStatus } from '@/data/repositories/patients.repo';
+import {
+  availableLabels,
+  availableWards,
+  buildCard,
+  filterPatients,
+  hasActiveFilters,
+  groupLabel,
+  orderPatients,
+  STATUS_LABEL,
+  statusRank,
+  reorderBoard,
+  sortPatients,
+  EMPTY_FILTERS,
+  type BoardFilters,
+  type BoardOrder,
+  type BoardCard,
+} from '@/domain/board';
+import { useBoardLayout } from '@/hooks/useBoardLayout';
+import { BoardRow, BoardRowHeader } from '@/components/board/BoardRow';
+import { BOARD_ORDERS, BoardViewMenu } from '@/components/board/BoardViewMenu';
+import { PatientCompactCard } from '@/components/board/PatientCompactCard';
+import { pendingFilters } from '@/domain/checklist';
+import { useSession } from '@/store/useSession';
+import { Button, Segmented } from '@/components/common/ui';
+
+export default function BoardPage(): JSX.Element {
+  const today = useClinicalToday();
+  const navigate = useNavigate();
+  const uid = useSession((state) => state.user?.uid ?? null);
+
+  /**
+   * SPEC 1.2 rule 5 — nothing between the tap and a cursor in a blank note.
+   * The record is created locally and navigated to immediately; the write is
+   * never awaited, so this works with no signal.
+   */
+  /**
+   * New patients land in the list you are LOOKING AT.
+   *
+   * Not a prompt on every admission. The choice is real but lopsided — almost
+   * every new patient is an ordinary one — and a modal on the most-pressed
+   * button of the day charges every admission for the rare case. Inheriting
+   * the scope gets it right without a tap: you are on Titipan because you are
+   * dealing with a titipan patient.
+   *
+   * The choice is not hidden, it is MOVED: the new patient's page offers both
+   * lists as a segmented control for as long as the note is still blank, where
+   * it costs nothing to ignore and one tap to correct. A wrong guess here is
+   * visible immediately and reversible from the same screen.
+   */
+  const createAndOpen = useCallback(() => {
+    if (!uid) return;
+    const { id, written } = createBlankPatient(uid, today, scopeRef.current === 'temporary');
+    void written.catch((error: unknown) => console.error('[board] create rejected', error));
+    navigate(`/p/${id}/${today}`);
+  }, [uid, today, navigate]);
+  const settings = useSession((state) => state.settings());
+  const { patients, loading, error, fromCache } = usePatients('active');
+  useSlowWait('daftar pasien', loading);
+
+  const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState<BoardFilters>(EMPTY_FILTERS);
+  const [quickPatientId, setQuickPatientId] = useState<string | null>(null);
+  /**
+   * The lab extractor, reachable without opening a patient.
+   *
+   * A lab PDF often arrives before you know which chart it belongs to, and
+   * having to open some patient first meant opening the wrong one to use a tool
+   * that is not about them. Here it just copies; inserting still happens on the
+   * patient page, where there is a note to insert into.
+   */
+  const [labOpen, setLabOpen] = useState(false);
+
+  /**
+   * Night-shift patients are held apart, not mixed in.
+   *
+   * They are covered for one shift and handed back, so they do not belong in a
+   * count of "my patients" — a board that says twelve when four of them go home
+   * with someone else at 7am is not telling you what you need. Same cards, same
+   * checklist, separate list.
+   */
+  /**
+   * Remembered, like the board order.
+   *
+   * It reset to "mine" on every navigation, so marking a patient as titipan and
+   * coming back showed them gone from the list you were looking at — which is
+   * indistinguishable from the flag not having saved. That is almost certainly
+   * the "selalu kembali ke pasien utama": the write was fine, the tab was not.
+   */
+  /**
+   * The scope, readable from a callback that must not change identity.
+   *
+   * `createAndOpen` is memoised and passed to a button; adding `scope` to its
+   * dependency list would rebuild it on every tab switch for the sake of one
+   * boolean read at press time.
+   */
+  const scopeRef = useRef<'mine' | 'temporary'>('mine');
+
+  const [scope, setScope] = useState<'mine' | 'temporary'>(() => {
+    try {
+      return localStorage.getItem('visite.boardScope') === 'temporary' ? 'temporary' : 'mine';
+    } catch {
+      return 'mine';
+    }
+  });
+
+  scopeRef.current = scope;
+
+  /** The stickers of the scope on screen: one list, drawn by the canvas and by each card. */
+  const stickerState = useBoardStickers(scope);
+  /** The scope's drawing, on this device only (Avi: "stay on each device"). */
+  const drawingState = useBoardDrawing(scope);
+
+  const changeScope = (next: 'mine' | 'temporary'): void => {
+    setScope(next);
+    try {
+      localStorage.setItem('visite.boardScope', next);
+    } catch (error) {
+      console.warn('[board] scope preference not saved', error);
+    }
+  };
+
+  /**
+   * Board order, remembered across sessions.
+   *
+   * `location` walks the ward the way the denah is laid out, which is the order
+   * a round is actually done in. Stored in localStorage rather than settings
+   * because it is a per-device view preference, not a fact about the user —
+   * the phone in your pocket and the laptop at the desk are used differently.
+   */
+  const [storedOrder, setOrder] = useState<BoardOrder>(() => {
+    try {
+      const stored = localStorage.getItem('visite.boardOrder');
+      return stored === 'location' || stored === 'visite' || stored === 'dpjp' || stored === 'status' || stored === 'custom'
+        ? stored
+        : 'recent';
+    } catch {
+      return 'recent';
+    }
+  });
+
+  const changeOrder = (next: BoardOrder): void => {
+    setOrder(next);
+    try {
+      localStorage.setItem('visite.boardOrder', next);
+    } catch (error) {
+      console.warn('[board] order preference not saved', error);
+    }
+  };
+
+  /**
+   * The hand-made order, as a list of patient ids.
+   *
+   * Beside the order preference in localStorage, for the same reason and with
+   * the same tradeoff: it is a view arrangement, not a fact about the patient,
+   * and keeping it out of Firestore means dragging a card writes nothing to
+   * the server. The cost is that an order built on the phone is not the order
+   * on the laptop — say so if that turns out to be the wrong side of it.
+   */
+  const [customIds, setCustomIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('visite.boardCustomOrder');
+      const parsed: unknown = stored ? JSON.parse(stored) : null;
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Read by the drag's window listeners, which outlive the render they
+  // were created in.
+  const customIdsRef = useRef(customIds);
+  customIdsRef.current = customIds;
+
+  const saveCustomIds = (ids: string[]): void => {
+    setCustomIds(ids);
+    customIdsRef.current = ids;
+    try {
+      localStorage.setItem('visite.boardCustomOrder', JSON.stringify(ids));
+    } catch (error) {
+      console.warn('[board] custom order not saved', error);
+    }
+  };
+
+  /**
+   * The card currently in hand, or null.
+   *
+   * Pointer events, not HTML5 drag-and-drop. The latter never fires on touch,
+   * and this board is used one-handed on a phone on a ward round — a
+   * reordering gesture that works only with a mouse is a reordering gesture
+   * that does not work.
+   */
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  /**
+   * Multi-select, off by default.
+   *
+   * A mode rather than a checkbox on every card. The board's primary action is
+   * opening a patient, and a permanent checkbox on each card both crowds it
+   * and puts a destructive target next to the one you tap all day.
+   */
+  /** The patient whose note is being previewed, or null. */
+  /**
+   * Every peek window currently open, oldest first.
+   *
+   * An array rather than one id: the array IS the z-order, so bringing a
+   * window forward is moving its id to the end and nothing has to track a
+   * separate stacking number that can drift out of step with the list.
+   */
+  const [previewIds, setPreviewIds] = useState<string[]>([]);
+  /** The patient open in Visite mode, by id so a board change cannot swap it. */
+  const [visiteId, setVisiteId] = useState<string | null>(null);
+  // Re-peeking an open window brings it forward rather than opening a second copy.
+  const openPreview = useCallback((id: string): void => {
+    setPreviewIds((current) =>
+      current.includes(id) ? [...current.filter((x) => x !== id), id] : [...current, id],
+    );
+  }, []);
+
+  /** How many times Dx asked each window for its diagnosis section; a new count scrolls it there again. */
+  const [diagnosisAsks, setDiagnosisAsks] = useState<Readonly<Record<string, number>>>({});
+  const openDiagnosis = useCallback(
+    (id: string): void => {
+      openPreview(id);
+      setDiagnosisAsks((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+    },
+    [openPreview],
+  );
+
+  /** Cards folded to name and DPJP, remembered per device. */
+  const [cardsFolded, toggleFolded] = usePersistentIdSet('visite.board.cardsFolded');
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+  // Stable callbacks: PatientCard is memoised, and a new function per render
+  // would redraw every card on every board state change.
+  const toggleSelected = useCallback((patientId: string): void => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(patientId)) next.delete(patientId);
+      else next.add(patientId);
+      return next;
+    });
+  }, []);
+
+  const leaveSelection = (): void => {
+    setSelecting(false);
+    setSelected(new Set());
+  };
+
+  /**
+   * Archive every selected patient, with one reason for the batch.
+   *
+   * A reason is asked for rather than defaulted. `ARCHIVE_REASON_LABELS` is
+   * what the archive is later browsed and filtered by, and a batch filed under
+   * a guessed reason is worse than an unfiled one — it is wrong in a way
+   * nobody will re-check. Batching is honest here: the case this exists for is
+   * the end of a round where several patients went home the same day, which is
+   * one reason by construction.
+   *
+   * Archiving is not deletion — every entry, checklist day and revision
+   * survives and the patient stays copyable. That is why it needs no
+   * confirmation step beyond naming the reason.
+   */
+  const [archiveReason, setArchiveReason] = useState<ArchiveReason | null>(null);
+
+  const archiveSelected = (reason: ArchiveReason): void => {
+    for (const patientId of selected) {
+      void archivePatient(patientId, reason).catch((error: unknown) =>
+        console.error('[board] archive rejected', error),
+      );
+    }
+    setArchiveReason(null);
+    leaveSelection();
+  };
+
+  const trashSelected = (): void => {
+    // Moving to the trash is reversible and needs no confirmation; emptying
+    // the trash is the step that asks.
+    for (const patientId of selected) void setPatientStatus(patientId, 'trashed');
+    leaveSelection();
+  };
+
+  const startCardDrag = (event: React.PointerEvent, patientId: string): void => {
+    const handle = event.currentTarget as HTMLElement;
+    // Capture, so the gesture keeps reporting even when the finger leaves the
+    // small handle — which it does immediately, because the point is to move
+    // away from it.
+    handle.setPointerCapture(event.pointerId);
+    setDraggingId(patientId);
+
+    const cardUnder = (clientX: number, clientY: number): string | null => {
+      // `elementFromPoint` rather than measuring every card: the board is a
+      // masonry column layout, so a card's position is not derivable from its
+      // index, and re-measuring the lot on every move is work per frame.
+      const element = document.elementFromPoint(clientX, clientY);
+      return element?.closest<HTMLElement>('[data-patient-id]')?.dataset.patientId ?? null;
+    };
+
+    const onMove = (move: PointerEvent): void => {
+      const targetId = cardUnder(move.clientX, move.clientY);
+      if (!targetId || targetId === patientId) return;
+      /**
+       * Reorder DURING the drag, not on drop.
+       *
+       * The list rearranging under the finger is the feedback that the gesture
+       * is working; without it the board sits still until release and the only
+       * way to find out where a card landed is to let go.
+       */
+      saveCustomIds(
+        reorderBoard(
+          cards.map((card) => card.patient),
+          patientId,
+          targetId,
+          { stored: customIdsRef.current, all: patients.map((patient) => patient.id) },
+        ),
+      );
+    };
+
+    const onUp = (): void => {
+      setDraggingId(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    // `pointercancel` fires when the browser takes the gesture over — a scroll
+    // it decided was a scroll, a call arriving. Without it the listeners stay
+    // attached and the next tap anywhere moves a card.
+    window.addEventListener('pointercancel', onUp);
+  };
+  const startCardDragRef = useRef(startCardDrag);
+  useEffect(() => {
+    startCardDragRef.current = startCardDrag;
+  });
+  const onDragHandleDown = useCallback(
+    (event: React.PointerEvent, patientId: string) => startCardDragRef.current(event, patientId),
+    [],
+  );
+
+  /**
+   * Is there room for a canvas at all?
+   *
+   * `lg` is where the masonry itself goes to three columns, which is the point
+   * at which arranging cards side by side becomes a thing you can do rather
+   * than a thing you can describe.
+   */
+  const canvasWidth = useMediaQuery('(min-width: 1024px)');
+  /** Chosen in the board's Tampilan menu. Wide screens only: a phone keeps the list it has. */
+  const [chosenLayout, setChosenLayout] = useBoardLayout();
+  const layout = canvasWidth ? chosenLayout : 'standar';
+  /*
+    Rows have no hand-placed position to honour, so Urutan sendiri reads as the
+    ward route there. Only for display: the stored choice comes back with the
+    canvas.
+  */
+  const order: BoardOrder = layout === 'baris' && storedOrder === 'custom' ? 'visite' : storedOrder;
+  /**
+   * On a phone in Urutan sendiri: the laptop's canvas scaled down, or the
+   * plain list. Per device, like the order itself.
+   */
+  const [phoneView, setPhoneViewState] = useState<'canvas' | 'list'>(() => {
+    try {
+      // Daftar by default (2026-10-23): a list explains itself to a first-time
+      // user; the canvas stays one tap away and is remembered once chosen.
+      return localStorage.getItem('visite.board.phoneView') === 'canvas' ? 'canvas' : 'list';
+    } catch {
+      return 'list';
+    }
+  });
+  /** Normal or Ringkas cards (2026-10-10), per device. */
+  const [dense, setDenseState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('visite.board.density') === 'ringkas';
+    } catch {
+      return false;
+    }
+  });
+  const setDense = (next: boolean): void => {
+    setDenseState(next);
+    try {
+      localStorage.setItem('visite.board.density', next ? 'ringkas' : 'normal');
+    } catch {
+      // Per-device convenience only.
+    }
+  };
+  const setPhoneView = (next: 'canvas' | 'list'): void => {
+    setPhoneViewState(next);
+    try {
+      localStorage.setItem('visite.board.phoneView', next);
+    } catch {
+      // Per-device convenience only.
+    }
+  };
+
+  /**
+   * A callback ref, not `useRef`: the canvas needs to RE-RENDER once the slot
+   * exists, and a ref object mutating does not cause that — the portal would
+   * be told about a node that was null on the render it was decided in and
+   * never look again.
+   */
+  const [canvasActions, setCanvasActions] = useState<HTMLElement | null>(null);
+  const [addSlot, setAddSlot] = useState<HTMLElement | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  /**
+   * The drag hint, shown until dismissed once. It was a permanent line of the
+   * pinned header in Urutan sendiri: useful the first time, 20 px of a pinned
+   * header every time after.
+   */
+  const [dragHintSeen, setDragHintSeen] = useState(() => {
+    try {
+      return localStorage.getItem('visite.board.dragHintSeen') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const dismissDragHint = (): void => {
+    setDragHintSeen(true);
+    try {
+      localStorage.setItem('visite.board.dragHintSeen', '1');
+    } catch {
+      // No storage: hidden for this visit.
+    }
+  };
+
+
+  const debouncedQuery = useDebouncedValue(query, 150);
+
+  /**
+   * The archive is searched too, but only while searching.
+   *
+   * A patient discharged last week is exactly who you look for by name, and
+   * "not found" on the board is indistinguishable from "does not exist" —
+   * which sends someone to create a duplicate record. The second listener
+   * attaches only when there is a query, so an idle board still costs one.
+   */
+  const searching = debouncedQuery.trim().length > 0;
+
+  /**
+   * Sticky notes. Hidden while searching or selecting: a search asks "which
+   * patient", and a note matching nothing would sit in the result looking like
+   * an answer; in selection mode a tap means "tick", and a note cannot be
+   * ticked for archive.
+   */
+  const rawBoardNotes = useSession((state) => state.profile?.boardNotes);
+  const boardNotes = useMemo(() => activeBoardNotes(rawBoardNotes, scope), [rawBoardNotes, scope]);
+  const showStickies = !searching && !selecting;
+  /** Papan Kerja has a Catatan column, and a sticky above the rows would push them off the screen. */
+  const placedNotes = useMemo(
+    () => (layout === 'baris' ? boardNotes.filter((entry) => entry.note.kind !== 'catatan') : boardNotes),
+    [boardNotes, layout],
+  );
+  const addSticky = (kind?: StickyKind): void => {
+    // Written on the board on screen, and shown only there.
+    if (uid) createBoardNote(uid, kind === 'lab' ? 'biru' : 'kuning', scopeRef.current, kind);
+  };
+  const { patients: archived } = usePatients('archived', searching);
+  const [searchNotes, setSearchNotes] = useSearchNotesPreference();
+  const archiveText = useArchiveText(archived, searching && searchNotes);
+
+  const items = settings.checklistItems;
+  const reminderKinds = settings.reminderKinds ?? DEFAULT_REMINDER_KINDS;
+
+  /** The whole scope, unfiltered: what the canvas must make room for. */
+  const scopeIds = useMemo(
+    () =>
+      orderPatients(
+        patients.filter((patient) =>
+          scope === 'temporary' ? patient.temporary === true : patient.temporary !== true,
+        ),
+        order,
+        customIds,
+      ).map((patient) => patient.id),
+    [patients, scope, order, customIds],
+  );
+
+  /*
+    Stickers stuck on a card that has left this board go with it
+    (`pruneDetachedStickers`). Only against a list the SERVER confirmed: the
+    first answer can come from this device's cache, which on a fresh or
+    long-offline device may be missing patients, and pruning against it
+    would delete stickers of patients who are still here. And only once the
+    stickers loaded are this scope's, not the previous one's.
+  */
+  const { stickers: currentStickers, persist: persistStickers, loadedFor: stickersScope } = stickerState;
+  useEffect(() => {
+    if (loading || fromCache || error || stickersScope !== scope) return;
+    const next = pruneDetachedStickers(currentStickers, new Set(scopeIds));
+    if (next !== currentStickers) persistStickers(next);
+  }, [loading, fromCache, error, stickersScope, scope, scopeIds, currentStickers, persistStickers]);
+
+  const compactCard = (card: BoardCard): JSX.Element => (
+    <PatientCompactCard
+      card={card}
+      onChecklist={setQuickPatientId}
+      selectable={selecting}
+      checked={selected.has(card.patient.id)}
+      onToggleSelected={toggleSelected}
+      onPreview={selecting ? undefined : openPreview}
+      onDiagnosis={selecting ? undefined : openDiagnosis}
+      onVisite={selecting ? undefined : setVisiteId}
+    />
+  );
+
+  /** One canvas cell: a sticky note or a patient card. Shared by the laptop canvas and the phone viewer. */
+  const renderCanvasItem = (
+    id: string,
+    {
+      fitHeight,
+      onHeightBounds,
+      maxPreviewLines,
+    }: {
+      fitHeight: boolean;
+      onHeightBounds?: (bounds: { min: number; max: number }) => void;
+      maxPreviewLines: number;
+    },
+  ): ReactNode => {
+    const noteId = noteIdFromCanvasId(id);
+    if (noteId !== null) {
+      const entry = boardNotes.find((candidate) => candidate.id === noteId);
+      return entry && uid ? (
+        <StickyNoteCard
+          uid={uid}
+          id={entry.id}
+          note={entry.note}
+          fitHeight={fitHeight}
+          onHeightBounds={onHeightBounds}
+          cards={summaryCards}
+          today={today}
+        />
+      ) : null;
+    }
+    const card = cards.find((entry) => entry.patient.id === id);
+    if (!card) return null;
+    if (layout === 'kartu') return compactCard(card);
+    return (
+      <PatientCard
+        card={card}
+        fitHeight={fitHeight}
+        onHeightBounds={onHeightBounds}
+        maxPreviewLines={maxPreviewLines}
+        dense={dense && !canvasWidth}
+        collapsed={cardsFolded.has(card.patient.id)}
+        onToggleCollapsed={toggleFolded}
+        onLongPress={setQuickPatientId}
+        selectable={selecting}
+        checked={selected.has(card.patient.id)}
+        onToggleSelected={toggleSelected}
+        onPreview={
+          selecting ? undefined : openPreview
+        }
+        onVisite={selecting ? undefined : setVisiteId}
+      />
+    );
+  };
+
+  /*
+    The canvas mirrored to the account, for the phone (see SharedCanvas).
+    Debounced: a drag ends in one stored change, but a resize of the window
+    produces a burst. Skipped when nothing differs from what is already there.
+  */
+  const rawSharedCanvas = useSession((state) => state.profile?.boardCanvas);
+  const sharedCanvas = useMemo(() => parseSharedCanvas(rawSharedCanvas), [rawSharedCanvas]);
+  const mirrorTimer = useRef<number | undefined>(undefined);
+  const lastMirrored = useRef<string | null>(null);
+  const mirrorCanvas = useCallback(
+    (layouts: CanvasLayouts, width: number) => {
+      if (!uid) return;
+      window.clearTimeout(mirrorTimer.current);
+      mirrorTimer.current = window.setTimeout(() => {
+        const key = JSON.stringify({ layouts, width: Math.round(width) });
+        const remoteKey = sharedCanvas
+          ? JSON.stringify({ layouts: sharedCanvas.layouts, width: Math.round(sharedCanvas.width) })
+          : null;
+        if (key === lastMirrored.current || key === remoteKey) return;
+        lastMirrored.current = key;
+        void saveSharedCanvas(uid, { layouts, width: Math.round(width), at: Date.now() }).catch(
+          (error: unknown) => console.warn('[board] canvas not mirrored', error),
+        );
+      }, 2000);
+    },
+    [uid, sharedCanvas],
+  );
+
+  /*
+    The phone's block grid (PhoneCanvas). Saved on the account, optimistic
+    locally so a drop lands at once. First use: blocks fill in the laptop
+    canvas's reading order, so the phone starts out like the laptop.
+  */
+  const rawPhoneGrid = useSession((state) => state.profile?.boardPhoneGrid);
+  const [localPhoneGrid, setLocalPhoneGrid] = useState<PhoneGrid | null>(null);
+  const phoneGrid = useMemo(
+    () => localPhoneGrid ?? sanitizePhoneGrid(rawPhoneGrid, 5),
+    [localPhoneGrid, rawPhoneGrid],
+  );
+  /*
+    The phone's shelves are the canvas's (29 Oct 2026): read out of the
+    mirrored layouts, so a shelf made on the laptop is on the phone and the
+    other way round (see `shelfSync`). An edit on the phone is shown at once
+    from `localShared`, and written as changes to single entries so it does
+    not touch the positions the laptop arranged; the next snapshot of the
+    account replaces the local copy.
+  */
+  const [localShared, setLocalShared] = useState<CanvasLayouts | null>(null);
+  useEffect(() => setLocalShared(null), [sharedCanvas]);
+  const sharedLayouts = localShared ?? sharedCanvas?.layouts;
+  const allPhoneShelves = useMemo(() => shelvesFromLayouts(sharedLayouts ?? {}), [sharedLayouts]);
+  const phoneShelves = useMemo(() => allPhoneShelves.filter((shelf) => shelf.scope === scope), [allPhoneShelves, scope]);
+  const phoneShelvesRef = useRef(allPhoneShelves);
+  phoneShelvesRef.current = allPhoneShelves;
+  const sharedLayoutsRef = useRef(sharedLayouts);
+  sharedLayoutsRef.current = sharedLayouts;
+  const sharedWidthRef = useRef(sharedCanvas?.width ?? null);
+  sharedWidthRef.current = sharedCanvas?.width ?? null;
+  const writeShelves = useCallback(
+    (shelves: readonly PhoneShelf[]) => {
+      if (!uid) return;
+      const base = sharedLayoutsRef.current ?? {};
+      const updated = layoutsWithShelves(base, shelves);
+      const patch = shelfPatch(base, updated);
+      if (Object.keys(patch).length === 0) return;
+      sharedLayoutsRef.current = updated;
+      setLocalShared(updated);
+      void patchSharedCanvas(uid, patch, sharedWidthRef.current).catch((error: unknown) =>
+        console.warn('[board] shelves not saved', error),
+      );
+    },
+    [uid],
+  );
+  const phoneGridRef = useRef(phoneGrid);
+  phoneGridRef.current = phoneGrid;
+  const changePhoneGrid = useCallback(
+    (next: PhoneGrid, columns: number) => {
+      setLocalPhoneGrid(next);
+      if (!uid) return;
+      void savePhoneGrid(uid, { cells: next, columns, at: Date.now() }).catch((error: unknown) =>
+        console.warn('[board] phone grid not saved', error),
+      );
+    },
+    [uid],
+  );
+  const changePhoneShelves = useCallback(
+    (next: PhoneShelf[]) => writeShelves(mergeScope(phoneShelvesRef.current, scopeRef.current, next)),
+    [writeShelves],
+  );
+
+  /*
+    One-time move of the phone's own shelf list (before 29 Oct) into the
+    canvas's shelves, from whichever device opens the board first. Ids are
+    derived, so two devices doing it at once write the same entries.
+  */
+  const legacyPhoneShelves = useMemo(() => sanitizePhoneShelves(rawPhoneGrid), [rawPhoneGrid]);
+  const migratedShelves = useRef(false);
+  useEffect(() => {
+    if (!uid || migratedShelves.current || legacyPhoneShelves.length === 0) return;
+    migratedShelves.current = true;
+    const known = new Set(allPhoneShelves.map((shelf) => shelf.id));
+    const moved = legacyPhoneShelves
+      .map((shelf) => ({ ...shelf, id: canvasShelfId(shelf.id) }))
+      .filter((shelf) => !known.has(shelf.id));
+    writeShelves([...allPhoneShelves, ...moved]);
+    void dropLegacyPhoneShelves(uid).catch((error: unknown) => console.warn('[board] old phone shelves not cleared', error));
+  }, [uid, legacyPhoneShelves, allPhoneShelves, writeShelves]);
+
+  const cards = useMemo(() => {
+    const matched = filterPatients(
+      patients.filter((patient) =>
+        scope === 'temporary' ? patient.temporary === true : patient.temporary !== true,
+      ),
+      { ...filters, query: debouncedQuery },
+      items,
+      today,
+    );
+    const built = orderPatients(matched, order, customIds).map((patient) =>
+      buildCard(patient, items, today, settings.privacy.boardShowInitialsOnly, reminderKinds),
+    );
+    // "Status hari ini": what still needs doing first, in walking order
+    // within each status (orderPatients already sorted by location). Pinned
+    // cards stay on top, as in every order. `sort` is stable.
+    if (order === 'status') {
+      return built.sort((a, b) =>
+        a.patient.pinned !== b.patient.pinned ? (a.patient.pinned ? -1 : 1) : statusRank(a) - statusRank(b),
+      );
+    }
+    return built;
+  }, [
+    patients,
+    scope,
+    filters,
+    debouncedQuery,
+    items,
+    today,
+    order,
+    customIds,
+    settings.privacy.boardShowInitialsOnly,
+    reminderKinds,
+  ]);
+
+  /** Summary stickies list patients in "Urutan visite" (the ward route), whatever order the board shows. */
+  const summaryCards = useMemo(() => {
+    const byId = new Map(cards.map((card) => [card.patient.id, card]));
+    return orderPatients(
+      cards.map((card) => card.patient),
+      'visite',
+    ).flatMap((patient) => byId.get(patient.id) ?? []);
+  }, [cards]);
+
+  /** Visite steps bed to bed in the order the board shows. */
+  const visitePatients = useMemo(() => cards.map((card) => card.patient), [cards]);
+
+  /** Inputs of the phone's block canvas. */
+  const phoneCards = useMemo(() => new Map(cards.map((card) => [card.patient.id, card])), [cards]);
+  /** The sticky note open for editing on the phone canvas (see PhoneCanvas → StickyBlock). */
+  const [phoneStickyId, setPhoneStickyId] = useState<string | null>(null);
+  const phoneSticky = phoneStickyId ? boardNotes.find((entry) => entry.id === phoneStickyId) ?? null : null;
+  const phoneStickies = useMemo(
+    () =>
+      new Map<string, PhoneSticky>(
+        boardNotes.map((entry) => [
+          stickyCanvasId(entry.id),
+          // A summary sticky has no text of its own: the block shows what it lists.
+          entry.note.kind === 'catatan'
+            ? {
+                id: entry.id,
+                title: 'Catatan pasien',
+                text: summaryCards
+                  .filter((card) => card.patient.notes.trim())
+                  .map((card) => `${card.name}: ${card.patient.notes.trim()}`)
+                  .join('\n'),
+              }
+            : entry.note.kind === 'lab'
+              ? {
+                  id: entry.id,
+                  title: 'Lab hari ini',
+                  text: summaryCards
+                    .flatMap((card) =>
+                      (card.patient.labPlans ?? [])
+                        .filter((plan) => plan.date === today)
+                        .map((plan) => `${card.name}: ${plan.text}`),
+                    )
+                    .join('\n'),
+                }
+              : { id: entry.id, text: entry.note.text },
+        ]),
+      ),
+    [boardNotes, summaryCards, today],
+  );
+  const phoneIds = useMemo(() => {
+    const ids = [
+      ...cards.map((card) => card.patient.id),
+      ...(showStickies ? boardNotes.map((entry) => stickyCanvasId(entry.id)) : []),
+    ];
+    return sharedCanvas ? readingOrder(ids, sharedCanvas.layouts) : ids;
+  }, [cards, showStickies, boardNotes, sharedCanvas]);
+
+  /*
+    A selection is of cards ON SCREEN. It used to survive a scope switch or a
+    search, so "Pindahkan ke sampah" also trashed patients picked in the other
+    view and no longer visible; only the count hinted at it.
+  */
+  useEffect(() => {
+    const visible = new Set(cards.map((card) => card.patient.id));
+    setSelected((current) => {
+      const kept = [...current].filter((id) => visible.has(id));
+      return kept.length === current.size ? current : new Set(kept);
+    });
+  }, [cards]);
+
+  const temporaryCount = useMemo(
+    () => patients.filter((patient) => patient.temporary === true).length,
+    [patients],
+  );
+
+  /**
+   * Cards grouped under their heading, in the order they already sit in.
+   *
+   * Grouping is a render concern, not a sort: the sort put them in walking
+   * order, and this only inserts a heading each time the room changes. Doing it
+   * the other way round — grouping first, then sorting groups — is how a board
+   * ends up with Kamar 410 before Kamar 401.
+   */
+  const groups = useMemo(() => {
+    // `custom` is flat like `recent`: the user arranged these by hand, and
+    // inserting room or consultant headings would cut their arrangement into
+    // sections it does not have.
+    if (order === 'recent' || order === 'custom') return [{ label: '', cards }];
+
+    const result: Array<{ label: string; cards: typeof cards }> = [];
+    for (const card of cards) {
+      const label = card.patient.pinned
+        ? 'Pinned'
+        : order === 'status'
+          ? (STATUS_LABEL[statusRank(card)] ?? '')
+          : groupLabel(card.patient, order);
+      const last = result[result.length - 1];
+      if (last && last.label === label) last.cards.push(card);
+      else result.push({ label, cards: [card] });
+    }
+    return result;
+  }, [cards, order]);
+
+  /*
+    Archived matches, with the notes searched too when that is switched on.
+    `snippet` says where in the notes the words were found, so a match from
+    inside a SOAP is not a card that seems to match nothing.
+  */
+  const archivedCards = useMemo(() => {
+    if (!searching) return [];
+    const tokens = searchTokens(debouncedQuery);
+    return sortPatients(filterPatients(archived, { ...filters, query: '' }, items, today))
+      .map((patient) => matchArchived(patient, tokens, archiveText.text(patient)))
+      .filter((match): match is NonNullable<typeof match> => match !== null)
+      .map((match) => ({
+        ...buildCard(match.patient, items, today, settings.privacy.boardShowInitialsOnly, reminderKinds),
+        snippet: match.snippet
+          ? privateText(match.snippet, match.patient, settings.privacy.boardShowInitialsOnly)
+          : match.snippet,
+      }));
+  }, [
+    searching,
+    archived,
+    filters,
+    debouncedQuery,
+    items,
+    today,
+    settings.privacy.boardShowInitialsOnly,
+    reminderKinds,
+    archiveText,
+  ]);
+
+  // Archived search results are long-pressable too; they were looked up only
+  // among active patients, so the long-press did nothing.
+  const quickPatient =
+    patients.find((patient) => patient.id === quickPatientId) ??
+    archived.find((patient) => patient.id === quickPatientId) ??
+    null;
+  const filtering = hasActiveFilters({ ...filters, query: debouncedQuery });
+
+  const headerRef = useRef<HTMLDivElement>(null);
+  /*
+    Phone and tablet only, and never while searching or selecting: the header
+    is then the thing being used, and hiding it under the keyboard or mid-
+    selection would take the control away from the hand using it.
+  */
+  const headerHidden = useHideOnScroll(headerRef, !canvasWidth && !searching && !selecting);
+
+  /**
+   * The same select, as a compact button for the phone row (2026-10-08).
+   *
+   * "Urutan" plus a full-width select plus "⋯ Aksi" was a whole second row of
+   * header on a phone — 52 px of a pinned bar, above every card. The current
+   * order's name is the label; the native select sits invisibly on top of it,
+   * so the platform's own picker still opens.
+   */
+  const orderCompact = (
+    <label className={`${CONTROL} relative flex shrink-0 items-center gap-1 rounded-lg border border-border bg-surface px-2.5 text-xs font-semibold text-fg`}>
+      <span className="sr-only">Urutan</span>
+      <span aria-hidden="true">{ORDER_SHORT[order]}</span>
+      <span aria-hidden="true" className="text-[11px] text-fg-faint">▾</span>
+      <select
+        value={order}
+        onChange={(event) => changeOrder(event.target.value as BoardOrder)}
+        aria-label="Urutan kartu"
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        {BOARD_ORDERS.map((entry) => (
+          <option key={entry.id} value={entry.id}>
+            {entry.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
+  return (
+    <AppShell title="Aktif">
+      {/*
+        THE HEADER STAYS; ONLY THE CARDS SCROLL.
+
+        Search, scope, order and the actions used to scroll away with the
+        board, so changing the order or searching from halfway down a long
+        board meant scrolling back up first. Pinned to the top of the page's
+        scroller, opaque, so cards pass cleanly underneath it.
+      */}
+      <div
+        ref={headerRef}
+        className={[
+          'sticky top-0 z-20 border-b border-border bg-bg transition-transform duration-200',
+          headerHidden ? '-translate-y-full' : 'translate-y-0',
+        ].join(' ')}
+      >
+      {/*
+        ONE ROW ON A LAPTOP, TWO ON A PHONE.
+
+        Pinning the header made its size matter: four stacked rows (search;
+        scope chips; four order chips plus actions; a hint line) took about a
+        third of a laptop screen. The same controls now fit one row:
+
+          search · Saya|Titipan · Urutan ▾ · [canvas actions] · actions · +Pasien baru
+
+        - Scope is one segmented switch, not two pills on their own row.
+        - The four order chips are one dropdown. Exactly one is ever on, which
+          is what a select is for, and it costs one control's width.
+        - Controls are 36 px tall with a mouse and 44 px on touch
+          (`CONTROL`): the tap-target rule is about fingers.
+        - On a phone the actions go behind ⋯, and the header hides while
+          scrolling down and returns on scroll up (`useHideOnScroll`).
+      */}
+      {/* One row from xl; below that it wraps rather than squeezing search
+          to a sliver (it was ~30 px wide at 1024 px). */}
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2 xl:flex-nowrap">
+        <label className={`${CONTROL} flex min-w-[12rem] flex-1 basis-40 items-center gap-2 rounded-lg border border-border bg-surface px-3 lg:max-w-sm`}>
+          <IconSearch className="shrink-0 text-fg-faint" width={16} height={16} />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            aria-label="Cari pasien"
+            placeholder="Cari nama, RM, bed…"
+            className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none"
+          />
+        </label>
+
+        {/* Titipan only exists when there are some; a one-option switch is
+            not a control. */}
+        {temporaryCount > 0 || scope === 'temporary' ? (
+          <div role="group" aria-label="Daftar pasien" className="flex shrink-0 rounded-lg bg-bg-subtle p-0.5">
+            {(
+              [
+                ['mine', 'Saya', patients.length - temporaryCount],
+                ['temporary', 'Titipan', temporaryCount],
+              ] as const
+            ).map(([value, label, count]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={scope === value}
+                onClick={() => changeScope(value)}
+                className={[
+                  `${CONTROL} rounded-md px-2.5 text-xs`,
+                  scope === value ? 'bg-surface font-semibold text-accent shadow-card' : 'text-fg-muted',
+                ].join(' ')}
+              >
+                {label} <span className="font-normal opacity-70">{count}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {canvasWidth ? (
+          <BoardViewMenu
+            layout={layout}
+            order={order}
+            onOrder={changeOrder}
+            onLayout={(next) => {
+              setChosenLayout(next);
+              // Denah draws no cards: asking for a card layout means leaving it.
+              if (order === 'location') changeOrder('visite');
+            }}
+          />
+        ) : null}
+
+        {/* Phone and tablet: order and the occasional actions in the SAME
+            row as search. Pilih stays visible while selecting, because it is
+            how you leave. */}
+        {!canvasWidth ? (
+          <>
+            {orderCompact}
+            {selecting ? (
+              <SelectButton selecting onToggle={leaveSelection} />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setMoreOpen(true)}
+                aria-label="Aksi lain"
+                className={`${CONTROL} flex min-w-tap shrink-0 items-center justify-center rounded-lg border border-border bg-surface text-fg-muted`}
+              >
+                <IconMore width={18} height={18} />
+              </button>
+            )}
+          </>
+        ) : null}
+
+        {canvasWidth ? (
+          <>
+            {/*
+              Where the canvas puts Rapikan / Urungkan / Penanda: portalled
+              into this `contents` span so they sit in the row as if written
+              here. Desktop only, which is the only place the canvas exists.
+            */}
+            <span ref={setCanvasActions} className="contents" />
+            <span aria-hidden="true" className="h-5 w-px shrink-0 bg-border" />
+            <BoardAddMenu slotRef={setAddSlot}>
+              <button
+                type="button"
+                {...CLOSES_MENU}
+                onClick={() => addSticky()}
+                disabled={!uid}
+                title="Tempel catatan singkat di papan"
+                className={ADD_ITEM}
+              >
+                <span aria-hidden="true">📌</span> Sticky Note
+              </button>
+              {layout !== 'baris' ? (
+                <button
+                  type="button"
+                  {...CLOSES_MENU}
+                  onClick={() => addSticky('catatan')}
+                  disabled={!uid}
+                  title="Catatan pasien semua pasien di papan, bisa diedit dan sinkron dengan halaman SOAP"
+                  className={ADD_ITEM}
+                >
+                  <span aria-hidden="true">📋</span> Sticky Catatan pasien
+                </button>
+              ) : null}
+              <button
+                type="button"
+                {...CLOSES_MENU}
+                onClick={() => addSticky('lab')}
+                disabled={!uid}
+                title="Lab yang direncanakan hari ini, dibaca dari Plan SOAP"
+                className={ADD_ITEM}
+              >
+                <span aria-hidden="true">🧪</span> Sticky Lab hari ini
+              </button>
+            </BoardAddMenu>
+            <Button size="sm" variant="quiet" className="shrink-0 text-fg" onClick={() => setLabOpen(true)}>
+              Format lab
+            </Button>
+            <SelectButton selecting={selecting} onToggle={() => (selecting ? leaveSelection() : setSelecting(true))} />
+          </>
+        ) : null}
+
+        {/* From tablet up the primary action sits in the row; on a phone it
+            is the floating + in the corner. */}
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={createAndOpen}
+          icon={<IconPlus width={16} height={16} />}
+          className="hidden shrink-0 sm:inline-flex lg:ml-auto"
+        >
+          Pasien baru
+        </Button>
+      </div>
+
+
+      {searching ? (
+        <div className="px-4 pb-1">
+          <NoteSearchToggle on={searchNotes} onChange={setSearchNotes} status={archiveText} />
+        </div>
+      ) : null}
+
+      {selecting ? (
+        <div className="mx-4 mb-2 space-y-2 rounded-xl border border-border bg-surface px-3 py-2 shadow-card">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="flex-1 text-xs text-fg-muted">
+              {selected.size === 0
+                ? 'Ketuk kartu untuk memilih.'
+                : `${selected.size} pasien dipilih`}
+            </span>
+            <Button
+              size="sm"
+              disabled={selected.size === 0}
+              onClick={() => setArchiveReason((current) => (current ? null : 'pulang'))}
+              aria-expanded={archiveReason !== null}
+            >
+              Arsipkan
+            </Button>
+            <Button size="sm" variant="danger" disabled={selected.size === 0} onClick={trashSelected}>
+              Pindahkan ke sampah
+            </Button>
+          </div>
+
+          {/*
+            The reason, asked before anything is written.
+
+            Opening a second row rather than a dialog: the selection is on
+            screen behind it and staying able to see WHAT is about to be
+            archived is most of the safety here.
+          */}
+          {archiveReason !== null && selected.size > 0 ? (
+            <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+              <span className="text-xs text-fg-muted">Alasan:</span>
+              {(Object.keys(ARCHIVE_REASON_LABELS) as ArchiveReason[]).map((reason) => (
+                <Button key={reason} size="sm" onClick={() => archiveSelected(reason)}>
+                  {ARCHIVE_REASON_LABELS[reason]}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/*
+        Says the handle is there.
+
+        A gesture with no on-screen trace is one that gets forgotten between
+        shifts, and the grip is deliberately quiet so it does not compete with
+        the card. One line, only in the mode where it applies.
+      */}
+      {order === 'custom' && !dragHintSeen ? (
+        <p className="flex items-center gap-2 px-4 pb-2 text-xs text-fg-faint">
+          <span className="flex-1">Seret ⠿ untuk menyusun ulang. Urutan tersimpan di perangkat ini.</span>
+          <button
+            type="button"
+            onClick={dismissDragHint}
+            className="min-h-tap shrink-0 px-2 text-accent [@media(pointer:fine)]:min-h-8"
+          >
+            Mengerti
+          </button>
+        </p>
+      ) : null}
+      </div>
+
+      {/* Filters hidden for now. The row of "Belum …" chips ate
+          the top of the board and pushed the cards below the fold before there
+          were enough patients for filtering to earn that space. The state and
+          the component are untouched — restoring it is deleting this comment
+          and the `false &&`. */}
+      {false && (
+        <FilterBar
+          wards={availableWards(patients)}
+          labels={availableLabels(patients)}
+          pending={pendingFilters(items)}
+          filters={filters}
+          onChange={setFilters}
+        />
+      )}
+
+      <IncomingTransfers />
+
+      {/*
+        Its own stacking context: canvas cards raise themselves with z-index
+        up to 40 (bring-to-front), and without this they would paint over the
+        pinned header as they scroll under it. Peek windows stay outside.
+      */}
+      <div className="isolate">
+      {error ? (
+        <p role="alert" className="px-4 py-6 text-center text-sm text-danger">
+          {error}
+        </p>
+      ) : loading ? (
+        <p className="px-4 py-10 text-center text-sm text-fg-muted">Memuat…</p>
+      ) : cards.length === 0 && archivedCards.length === 0 ? (
+        <EmptyState filtering={filtering} onCreate={createAndOpen} />
+      ) : (
+        <>
+          {/* Headed only while searching. On an idle board the heading would be
+              noise — there is nothing to distinguish it from. */}
+          {!canvasWidth && order === 'custom' && !searching && cards.length > 0 ? (
+            <div className="flex items-center gap-2 px-4 pb-2 pt-1">
+              <Segmented
+                label="Tampilan"
+                size="sm"
+                value={phoneView}
+                onChange={setPhoneView}
+                options={[
+                  ['list', 'Daftar'],
+                  ['canvas', 'Kanvas'],
+                ]}
+              />
+            </div>
+          ) : null}
+
+          {searching && cards.length > 0 ? (
+            <SectionHeading label={`Pasien aktif (${cards.length})`} />
+          ) : null}
+
+          {cards.length > 0 && order === 'location' ? (
+            <DenahView
+              patients={cards.map((card) => card.patient)}
+              today={today}
+              showInitialsOnly={settings.privacy.boardShowInitialsOnly}
+            />
+          ) : cards.length > 0 && order === 'custom' && canvasWidth ? (
+            /*
+              THE FREE CANVAS, and why it is only here.
+
+              `custom` is the one order that means "I decided where these go",
+              so it is the only one where a hand position is not immediately
+              contradicted by a sort. On `Terbaru` or `Denah` a dragged card
+              would move back the moment anything changed, which teaches the
+              user the drag does not work.
+
+              Below `lg` the masonry renders instead. A canvas needs room for
+              cards to be beside each other, and a phone has room for one
+              column — where "where you put it" degenerates into a list, and a
+              worse one, because the gaps arranged on a desktop survive as dead
+              space you scroll through.
+            */
+            <CanvasBackdrop>
+            <CanvasBoard
+              enabled
+              // Each view has its own shelves (2026-10-17).
+              scope={scope}
+              seed={sharedCanvas?.layouts}
+              onStoredChange={mirrorCanvas}
+              /*
+                Notes AFTER patients: the canvas auto-places in this order, so a
+                new note takes the next free slot instead of pushing every
+                arranged card down one.
+              */
+              packFor={layout}
+              ids={[
+                ...cards.map((card) => card.patient.id),
+                ...(showStickies ? placedNotes.map((entry) => stickyCanvasId(entry.id)) : []),
+              ]}
+              layoutIds={[
+                ...scopeIds,
+                ...placedNotes.map((entry) => stickyCanvasId(entry.id)),
+              ]}
+              actionsSlot={canvasActions}
+              addSlot={addSlot}
+              // Stickers are hidden while searching or selecting, like the
+              // sticky notes and for the same reason: neither answers "which
+              // patient" and neither can be ticked.
+              overlay={(surfaceRef) => (
+                <>
+                  {/* First, so it is drawn under every card (see CanvasDrawing). */}
+                  <CanvasDrawing
+                    surfaceRef={surfaceRef}
+                    enabled={showStickies}
+                    addSlot={addSlot}
+                    state={drawingState}
+                  />
+                  <CanvasStickers
+                    surfaceRef={surfaceRef}
+                    enabled={showStickies}
+                    addSlot={addSlot}
+                    state={stickerState}
+                  />
+                </>
+              )}
+              renderInCard={(id) =>
+                showStickies ? <CardStickers cardId={id} state={stickerState} /> : null
+              }
+              // Why a card is shown at natural height, if it is: folded to
+              // one line, or its note is open. See `isUncapped` on the canvas
+              // for how the two differ.
+              isUncapped={(id) => {
+                if (noteIdFromCanvasId(id) !== null) return false;
+                // Kartu Ringkas has one height, what it holds: no cap and no height grip.
+                if (layout === 'kartu' || cardsFolded.has(id)) return 'folded';
+                // A note never uncaps a card any more: it opens in a
+                // floating panel (PatientCard → NotePopover).
+                return false;
+              }}
+              renderItem={renderCanvasItem}
+            />
+            </CanvasBackdrop>
+          ) : cards.length > 0 && order === 'custom' && phoneView === 'canvas' ? (
+            <CanvasBackdrop>
+            <PhoneCanvas
+              ids={phoneIds}
+              cards={phoneCards}
+              stickies={phoneStickies}
+              grid={phoneGrid}
+              onChange={changePhoneGrid}
+              shelves={phoneShelves}
+              scope={scope}
+              onShelves={changePhoneShelves}
+              onLongPress={setQuickPatientId}
+              onOpenSticky={setPhoneStickyId}
+            />
+            </CanvasBackdrop>
+          ) : cards.length > 0 ? (
+            <>
+            {/*
+              Outside the canvas the notes sit in their own row above the
+              patients. Masonry places by measurement, not by hand, so there is
+              nowhere a note could be "left" among the cards; a row of their
+              own keeps them findable and out of the patient order.
+            */}
+            {showStickies && placedNotes.length > 0 && uid ? (
+              <MasonryGrid>
+                {placedNotes.map((entry) => (
+                  <MasonryItem key={stickyCanvasId(entry.id)}>
+                    <StickyNoteCard uid={uid} id={entry.id} note={entry.note} cards={summaryCards} today={today} />
+                  </MasonryItem>
+                ))}
+              </MasonryGrid>
+            ) : null}
+            {layout === 'baris' ? <div className="px-4 pt-2"><BoardRowHeader /></div> : null}
+            {groups.map((group) => (
+              <section key={group.label || 'all'}>
+                {group.label ? <SectionHeading label={`${group.label} · ${group.cards.length}`} /> : null}
+                {layout === 'baris' ? (
+                  <div className="px-4">
+                    {group.cards.map((card, at) => (
+                      <BoardRow
+                        key={card.patient.id}
+                        card={card}
+                        roomStart={at > 0 && group.cards[at - 1]?.patient.room !== card.patient.room}
+                        onChecklist={setQuickPatientId}
+                        selectable={selecting}
+                        checked={selected.has(card.patient.id)}
+                        onToggleSelected={toggleSelected}
+                        onPreview={selecting ? undefined : openPreview}
+                        onDiagnosis={selecting ? undefined : openDiagnosis}
+                        onVisite={selecting ? undefined : setVisiteId}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                /* Grid masonry rather than CSS multi-column, so a card with
+                   its note open can span two columns and grow to the RIGHT.
+                   Nothing inside a multicol column can be wider than the
+                   column — see MasonryGrid for why that ruled it out. */
+                <MasonryGrid>
+                  {group.cards.map((card) => (
+                    <MasonryItem key={card.patient.id}>
+                    {layout === 'kartu' ? compactCard(card) : (
+                    <PatientCard
+                      card={card}
+                      collapsed={cardsFolded.has(card.patient.id)}
+                      onToggleCollapsed={toggleFolded}
+                      onLongPress={setQuickPatientId}
+                      onDragHandleDown={
+                        order === 'custom' && !selecting ? onDragHandleDown : undefined
+                      }
+                      dragging={draggingId === card.patient.id}
+                      dense={dense && !canvasWidth}
+                      // Phone and tablet list only: on a laptop a sideways
+                      // drag is a text selection, and in custom order it is
+                      // the drag handle's.
+                      swipe={!canvasWidth && !selecting && order !== 'custom'}
+                      selectable={selecting}
+                      checked={selected.has(card.patient.id)}
+                      onToggleSelected={toggleSelected}
+                      // Not offered while selecting: in that mode a tap means
+                      // "tick this", and a second meaning on the same card is
+                      // how the wrong one gets ticked.
+                      onPreview={
+                      selecting ? undefined : openPreview
+                    }
+                      onVisite={selecting ? undefined : setVisiteId}
+                    />
+                    )}
+                    </MasonryItem>
+                  ))}
+                </MasonryGrid>
+                )}
+              </section>
+            ))}
+            </>
+          ) : searching ? (
+            <p className="px-4 py-3 text-sm text-fg-muted">
+              Tidak ada pasien aktif yang cocok.
+            </p>
+          ) : null}
+
+          {searching && archivedCards.length > 0 ? (
+            <>
+              <SectionHeading label={`Arsip (${archivedCards.length})`} />
+              <MasonryGrid>
+                {archivedCards.map((card) => (
+                  <MasonryItem key={card.patient.id}>
+                    <PatientCard card={card} onLongPress={setQuickPatientId} />
+                    {card.snippet ? (
+                      <p className="px-2 pt-1 text-xs italic leading-snug text-fg-muted">
+                        {card.snippet}
+                      </p>
+                    ) : null}
+                  </MasonryItem>
+                ))}
+              </MasonryGrid>
+            </>
+          ) : null}
+        </>
+      )}
+      </div>
+
+      <button
+        type="button"
+        onClick={createAndOpen}
+        aria-label="Pasien baru"
+        // Phone only — the tablet/desktop equivalent lives beside the search box.
+        className="fixed bottom-[calc(env(safe-area-inset-bottom)+76px)] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-2xl text-on-accent shadow-pop sm:hidden"
+      >
+        +
+      </button>
+
+      {/* The phone canvas's sticky note, open in the same editor the laptop uses. */}
+      <Sheet
+        open={phoneSticky !== null && uid !== null}
+        onOpenChange={(open) => {
+          if (!open) setPhoneStickyId(null);
+        }}
+        title="Sticky Note"
+      >
+        {phoneSticky && uid ? (
+          <div className="p-3">
+            <StickyNoteCard uid={uid} id={phoneSticky.id} note={phoneSticky.note} cards={summaryCards} today={today} />
+          </div>
+        ) : null}
+      </Sheet>
+
+      <Sheet open={moreOpen} onOpenChange={setMoreOpen} title="Aksi">
+        <div className="space-y-2 p-4">
+          {[
+            ['+ Sticky Note', () => addSticky()],
+            ['+ Sticky Catatan pasien', () => addSticky('catatan')],
+            ['+ Sticky Lab hari ini', () => addSticky('lab')],
+            ['Format lab', () => setLabOpen(true)],
+            [dense ? 'Kartu: Normal (tampilkan diagnosis lengkap)' : 'Kartu: Ringkas (satu baris diagnosis)', () => setDense(!dense)],
+            ['Pilih pasien (arsipkan / sampah)', () => setSelecting(true)],
+          ].map(([label, run]) => (
+            <button
+              key={label as string}
+              type="button"
+              onClick={() => {
+                setMoreOpen(false);
+                (run as () => void)();
+              }}
+              className="min-h-tap w-full rounded-lg border border-border px-3 text-left text-sm font-medium"
+            >
+              {label as string}
+            </button>
+          ))}
+        </div>
+      </Sheet>
+
+      <LabSheet
+        open={labOpen}
+        onOpenChange={setLabOpen}
+        date={today}
+        onInsert={(text) => void copyText(text)}
+      />
+
+      {/*
+        A window, not a sheet.
+
+        The peek is used WHILE looking at the board — comparing a plan against
+        the card beside it, keeping a note open while writing a report. A sheet
+        covers the board, so those two things alternate instead of being
+        visible together.
+      */}
+      {/*
+        Several at once, and that is the point of a window.
+
+        One peek at a time is a sheet with extra steps. The case this exists
+        for is comparing two patients, or keeping one open while working
+        through the others — both need more than one.
+
+        Focus order is the array order, so pressing a window moves it to the
+        end and therefore to the front. Last-touched-on-top is the rule every
+        window manager uses and the only one nobody has to be told.
+      */}
+      {previewIds.map((id, index) => {
+        // Looked up in the full patient list, not in `cards`: a window must
+        // not vanish because a filter or a search stopped matching the patient
+        // it is showing.
+        const peeked = patients.find((candidate) => candidate.id === id) ?? null;
+        if (!peeked) return null;
+        return (
+          <PatientPeekWindow
+            key={id}
+            patient={peeked}
+            today={today}
+            index={index}
+            z={40 + index}
+            focusDiagnosis={diagnosisAsks[id] ?? 0}
+            onFocus={() =>
+              setPreviewIds((current) =>
+                current.at(-1) === id ? current : [...current.filter((x) => x !== id), id],
+              )
+            }
+            onClose={() => setPreviewIds((current) => current.filter((x) => x !== id))}
+          />
+        );
+      })}
+
+      <QuickChecklistSheet
+        patient={quickPatient}
+        items={items}
+        today={today}
+        onOpenChange={(open) => {
+          if (!open) setQuickPatientId(null);
+        }}        onVisite={(id) => {
+          setQuickPatientId(null);
+          setVisiteId(id);
+        }}
+      />
+
+      {visiteId && visitePatients.some((patient) => patient.id === visiteId) ? (
+        <VisiteSheet
+          patients={visitePatients}
+          index={visitePatients.findIndex((patient) => patient.id === visiteId)}
+          today={today}
+          onIndex={(next) => setVisiteId(visitePatients[next]?.id ?? null)}
+          onClose={() => setVisiteId(null)}
+        />
+      ) : null}
+    </AppShell>
+  );
+}
+
+/**
+ * Control height: 44 px for a finger, 36 px for a mouse. The 44 px rule is
+ * about fingers; on a laptop it made every chip in the pinned header half
+ * again as tall as it needed to be.
+ */
+const CONTROL = 'min-h-tap [@media(pointer:fine)]:min-h-9';
+
+/** The order's name as the compact phone control shows it. */
+const ORDER_SHORT: Record<BoardOrder, string> = {
+  recent: 'Terbaru',
+  location: 'Denah',
+  visite: 'Visite',
+  dpjp: 'DPJP',
+  status: 'Status',
+  custom: 'Sendiri',
+};
+
+/** Pilih / Batal: enters and leaves selection mode. */
+function SelectButton({
+  selecting,
+  onToggle,
+}: {
+  selecting: boolean;
+  onToggle: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={selecting}
+      className={[
+        `${CONTROL} shrink-0 rounded-lg px-2.5 text-xs font-medium`,
+        selecting ? 'bg-accent text-on-accent' : 'text-fg hover:bg-bg-subtle',
+      ].join(' ')}
+    >
+      {selecting ? 'Batal' : 'Pilih'}
+    </button>
+  );
+}
+
+function SectionHeading({ label }: { label: string }): JSX.Element {
+  return (
+    <h2 className="px-4 pb-1 pt-3 text-xs font-semibold uppercase tracking-wide text-fg-faint">
+      {label}
+    </h2>
+  );
+}
+
+/** The three things a round is made of, in the order a new user meets them. */
+const FIRST_STEPS: readonly (readonly [string, string])[] = [
+  ['Tambah pasien', 'Satu kartu per pasien. Tulis SOAP bebas, Plano mengenali bagiannya.'],
+  ['Centang checklist', 'Tahan kartu untuk checklist harian; di daftar, geser kanan untuk mencentang.'],
+  ['Salin laporan', 'Dari halaman pasien, Salin menyiapkan teks untuk WhatsApp atau SIMGOS.'],
+];
+
+function EmptyState({
+  filtering,
+  onCreate,
+}: {
+  filtering: boolean;
+  onCreate: () => void;
+}): JSX.Element {
+  if (filtering) {
+    return (
+      // Left-aligned and near the top from lg: a message centred in a 900 px
+      // viewport reads as an error page rather than an empty list.
+      <p className="px-6 py-14 text-center text-sm text-fg-muted lg:px-4 lg:py-10 lg:text-left">
+        Tidak ada pasien yang cocok.
+      </p>
+    );
+  }
+  // First run (or an emptied board): what the app is for, then one action.
+  return (
+    <div className="px-4 py-8 lg:py-10">
+      <div className="mx-auto max-w-md rounded-2xl border border-border bg-surface p-5 shadow-card lg:mx-0">
+        <h2 className="text-base font-semibold tracking-tight">Belum ada pasien aktif</h2>
+        <p className="mt-1 text-sm text-fg-muted">Visite di Plano berjalan dalam tiga langkah:</p>
+        <ol className="mt-4 space-y-3">
+          {FIRST_STEPS.map(([title, detail], index) => (
+            <li key={title} className="flex gap-3">
+              <span
+                aria-hidden="true"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] font-mono text-xs font-semibold text-accent"
+              >
+                {index + 1}
+              </span>
+              <span className="min-w-0 text-sm">
+                <span className="font-medium text-fg">{title}</span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-fg-muted">{detail}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+        <Button variant="primary" full className="mt-5" onClick={onCreate}>
+          Tambah pasien pertama
+        </Button>
+      </div>
+    </div>
+  );
+}

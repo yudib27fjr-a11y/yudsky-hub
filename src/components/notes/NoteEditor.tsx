@@ -1,0 +1,225 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { IconBack, IconMore, IconPin } from '@/components/common/Icons';
+import { patchScratchNote } from '@/data/repositories/scratchNotes.repo';
+import { displayTitle, relativeTime, type ResolvedNote } from '@/domain/notes/scratchNotes';
+
+import { sinkDone } from './editor/commands';
+import { NoteBodyView, useNoteBody } from './NoteBody';
+
+/**
+ * One Catatan, open for editing.
+ *
+ * Rendered with `key={note.id}`, so switching notes is a fresh mount: the
+ * title draft and the text-sync draft can never belong to the note you just
+ * left. `useTextSync` flushes on unmount.
+ *
+ * THE BODY (rebuilt 18 Oct 2026). A TipTap (ProseMirror) editor replaced the
+ * contentEditable + execCommand box, whose list behaviour was repaired after
+ * the fact in checklistDom. The schema writes the same HTML as before
+ * (`editor/schema.ts`), so storage, search and previews are unchanged.
+ *
+ * Sync rules:
+ *  - only a user edit saves (`onUpdate`); opening a note never writes it;
+ *  - another device's version replaces the content quietly
+ *    (`replaceContent`), unless it is the HTML this editor itself just sent.
+ *
+ * CHROME, KEPT TO TWO ROWS: header (back, title, pin, ⋯) that scrolls away,
+ * and the toolbar that stays.
+ */
+
+/** Actions the page's ⋯ menu can offer for the open note. */
+export interface NoteMenuActions {
+  /** "Pindahkan yang selesai ke bawah"; null when nothing would move. */
+  sinkDone: (() => void) | null;
+}
+
+export function NoteEditor({
+  uid,
+  note,
+  now,
+  autoFocus = false,
+  onBack,
+  onMenu,
+  onPopOut,
+}: {
+  uid: string | null;
+  note: ResolvedNote;
+  now: number;
+  /** A note just created: put the caret in it. */
+  autoFocus?: boolean;
+  /** Phone only: back to the list. Absent in the two-pane layout. */
+  onBack?: (() => void) | undefined;
+  onMenu: (actions: NoteMenuActions) => void;
+  /** Open this note in the small window (desktop). Absent inside that window. */
+  onPopOut?: (() => void) | undefined;
+}): JSX.Element {
+  const noteRef = useRef(note);
+  noteRef.current = note;
+  const trashed = note.deletedAt !== undefined;
+
+  const write = useCallback(
+    (body: string) =>
+      uid ? patchScratchNote(uid, noteRef.current, { body }) : Promise.resolve(),
+    [uid],
+  );
+
+  const { editor, sync, editable } = useNoteBody({
+    syncKey: `scratch|${uid ?? 'none'}|${note.id}`,
+    serverText: note.body,
+    // A note in Sampah is read-only until restored: edits there would be
+    // edits nobody can find.
+    locked: uid === null || trashed,
+    write,
+    autoFocus,
+  });
+
+  // ── Title: local while typing, written on a pause or on blur ───────────────
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const titleTimer = useRef<number | undefined>(undefined);
+  const commitTitle = useCallback(
+    (title: string) => {
+      if (!uid) return;
+      void patchScratchNote(uid, noteRef.current, { title }).catch((error: unknown) =>
+        console.error('[catatan] rename rejected', error),
+      );
+    },
+    [uid],
+  );
+  const onTitle = (title: string): void => {
+    setTitleDraft(title);
+    window.clearTimeout(titleTimer.current);
+    titleTimer.current = window.setTimeout(() => {
+      commitTitle(title);
+      setTitleDraft(null);
+    }, 400);
+  };
+  const flushTitle = (): void => {
+    if (titleDraft === null) return;
+    window.clearTimeout(titleTimer.current);
+    commitTitle(titleDraft);
+    setTitleDraft(null);
+  };
+  // Leaving the note mid-rename still saves the rename.
+  const titleDraftRef = useRef(titleDraft);
+  titleDraftRef.current = titleDraft;
+  useEffect(
+    () => () => {
+      window.clearTimeout(titleTimer.current);
+      if (titleDraftRef.current !== null) commitTitle(titleDraftRef.current);
+    },
+    [commitTitle],
+  );
+
+  const togglePin = (): void => {
+    if (!uid) return;
+    void patchScratchNote(uid, note, { pinned: !note.pinned }).catch((error: unknown) =>
+      console.error('[catatan] pin rejected', error),
+    );
+  };
+
+  const edited = relativeTime(note.updatedAt, now);
+
+  return (
+    <div className="flex min-h-full flex-col">
+      {/* Row 1 — scrolls away once you are writing. */}
+      <div className="flex items-center gap-1 pb-1 pt-3">
+        {onBack ? (
+          <button
+            type="button"
+            aria-label="Kembali ke daftar"
+            onClick={() => {
+              sync.flush();
+              flushTitle();
+              onBack();
+            }}
+            className="flex min-h-tap min-w-tap shrink-0 items-center justify-center rounded-lg text-fg-muted hover:bg-bg-subtle"
+          >
+            <IconBack />
+          </button>
+        ) : null}
+        <input
+          type="text"
+          value={titleDraft ?? note.title}
+          onChange={(event) => onTitle(event.target.value)}
+          onBlur={flushTitle}
+          onKeyDown={(event) => {
+            // Enter in the title moves into the note, like every notes app.
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              flushTitle();
+              editor?.commands.focus('start');
+            }
+          }}
+          readOnly={trashed}
+          aria-label="Judul catatan"
+          placeholder={displayTitle({ title: '', body: sync.value }) === 'Tanpa judul'
+            ? 'Judul'
+            : displayTitle({ title: '', body: sync.value })}
+          className="min-h-tap min-w-0 flex-1 rounded-lg bg-transparent px-2 text-xl font-semibold tracking-tight outline-none placeholder:font-normal placeholder:text-fg-faint focus:bg-bg-subtle"
+        />
+        {onPopOut && !trashed ? (
+          <button
+            type="button"
+            aria-label="Buka di jendela kecil"
+            title="Buka di jendela kecil (tetap di atas SIMGOS)"
+            onClick={() => {
+              sync.flush();
+              flushTitle();
+              onPopOut();
+            }}
+            className="flex min-h-tap min-w-tap shrink-0 items-center justify-center rounded-lg text-fg-muted hover:bg-bg-subtle"
+          >
+            <span aria-hidden="true" className="text-base">⧉</span>
+          </button>
+        ) : null}
+        {!trashed ? (
+          <button
+            type="button"
+            aria-label={note.pinned ? 'Lepas pin' : 'Pin'}
+            aria-pressed={note.pinned === true}
+            title={note.pinned ? 'Lepas pin' : 'Pin'}
+            onClick={togglePin}
+            className={[
+              'flex min-h-tap min-w-tap shrink-0 items-center justify-center rounded-lg hover:bg-bg-subtle',
+              note.pinned ? 'text-accent' : 'text-fg-faint',
+            ].join(' ')}
+          >
+            <IconPin filled={note.pinned === true} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          aria-label="Menu catatan"
+          onClick={() => {
+            sync.flush();
+            flushTitle();
+            onMenu({
+              sinkDone:
+                editor && editable && sinkDone(editor.state)
+                  ? () => editor.commands.command(({ state, dispatch }) => sinkDone(state, dispatch))
+                  : null,
+            });
+          }}
+          className="flex min-h-tap min-w-tap shrink-0 items-center justify-center rounded-lg text-fg-muted hover:bg-bg-subtle"
+        >
+          <IconMore />
+        </button>
+      </div>
+
+      <NoteBodyView
+        editor={editor}
+        sync={sync}
+        editable={editable}
+        notice={
+          trashed ? (
+            <p className="mx-3 mt-1 rounded-lg bg-bg-subtle px-3 py-2 text-xs text-fg-muted">
+              Catatan ini ada di Sampah dan tidak bisa diubah. Pulihkan lewat menu ⋯.
+            </p>
+          ) : null
+        }
+        footer={edited ? ` · diubah ${edited}` : ''}
+      />
+    </div>
+  );
+}

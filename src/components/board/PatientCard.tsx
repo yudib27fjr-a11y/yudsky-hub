@@ -1,0 +1,1651 @@
+import { useClinicalToday } from '@/hooks/useClinicalToday';
+import { toggleReminderDone, type ActiveReminder } from '@/domain/reminders';
+import { setReminderDone } from '@/data/repositories/patients.repo';
+import { setTick } from '@/data/repositories/checklist.repo';
+import { clinicalDate, daysBetween } from '@/domain/clinicalDate';
+import { formatDmy } from '@/domain/dateDmy';
+import { useSession } from '@/store/useSession';
+import { memo, useEffect, useRef, useState } from 'react';
+import { NOTE_FILL, NotePopover } from './NotePopover';
+import { useClipboardNote } from '@/store/useClipboardNote';
+import { Link } from 'react-router-dom';
+
+import { previewLines, shortStepLabel, soapState, type BoardCard } from '@/domain/board';
+import { ProgressStrip } from './ProgressStrip';
+import { IconCar, IconClipboard, IconCopy, IconEye, IconGrip } from '@/components/common/Icons';
+import { isTrioDpjp } from '@/domain/dpjp';
+import { formatLocation } from '@/domain/identity';
+import { copyText } from '@/lib/clipboard';
+import {
+  STAGE_LABELS,
+  STAGE_SHORT,
+  STAGE_TOKEN,
+  type DischargeStage,
+} from '@/domain/discharge';
+
+/**
+ * SPEC F2 — a Google-Keep-style card.
+ *
+ * Background comes from the resolved checklist token; the progress strip and
+ * the pending chip carry the same information without relying on colour.
+ */
+function PatientCardView({
+  card,
+  collapsed = false,
+  onToggleCollapsed,
+  onLongPress,
+  onDragHandleDown,
+  fitHeight = false,
+  onHeightBounds,
+  maxPreviewLines = 4,
+  dragging,
+  selectable,
+  checked,
+  onToggleSelected,
+  onPreview,
+  onVisite,
+  dense = false,
+  swipe = false,
+}: {
+  card: BoardCard;
+  /**
+   * Ringkas (2026-10-10): one line of diagnoses, no chief, labels or change
+   * line. For a long round on a phone, where the question is "who is left",
+   * not "what do they have".
+   */
+  dense?: boolean;
+  /**
+   * Phone list only: swipe right ticks the next checklist item (with undo),
+   * swipe left opens the preview. Never on the canvas or while selecting,
+   * where a horizontal drag already means something.
+   */
+  swipe?: boolean;
+  onLongPress: (patientId: string) => void;
+  /**
+   * Present only while the board is in hand-made order.
+   *
+   * Drag lives on a HANDLE, not the card. The card is a link that opens the
+   * patient and a long-press target that opens the quick checklist; a third
+   * gesture on the same element would have to win a race against both, and
+   * losing that race either opens a chart you did not want or moves a card you
+   * did not mean to move.
+   */
+  onDragHandleDown?: ((event: React.PointerEvent, patientId: string) => void) | undefined;
+  /**
+   * Fill the container's height instead of growing to content, and give up the
+   * MIDDLE first when there is not enough room.
+   *
+   * Only the canvas passes this, and only for a card the user has capped. The
+   * point is what stays readable when a card is made short: the header says
+   * which patient this is, the progress strip says what is left to do, and a
+   * card that has lost either is not a smaller card — it is an anonymous one,
+   * still sitting where you expect to find that patient. The diagnosis list is
+   * what can be cut, because it is what you open the card to read anyway.
+   */
+  fitHeight?: boolean;
+  /**
+   * Reports the shortest and tallest useful height of THIS card, measured.
+   *
+   * The canvas cannot work these out: it knows the box it drew, not what is
+   * inside it. The card knows both — the chrome it cannot give up, and the
+   * full height of the block that can be clipped — and they change with the
+   * note, the width and the font. Measured and reported, never assumed.
+   */
+  onHeightBounds?: ((bounds: { min: number; max: number }) => void) | undefined;
+  /**
+   * How many lines of the note to show. Four on the masonry board, where the
+   * card grows to fit and a long note would push everything below it off the
+   * screen; effectively unlimited on the canvas, where the user set the height
+   * themselves and a `…` in a card with visible empty space under it is just
+   * the app refusing to use the room it was given.
+   */
+  maxPreviewLines?: number;
+  dragging?: boolean;
+  /** True while the board is in selection mode. */
+  selectable?: boolean;
+  checked?: boolean;
+  onToggleSelected?: ((patientId: string) => void) | undefined;
+  /** Opens the read-only note preview. Absent while selecting. */
+  onPreview?: ((patientId: string) => void) | undefined;
+  /** Opens Visite mode (the bedside cheat sheet) for this patient. */
+  onVisite?: ((patientId: string) => void) | undefined;
+  /**
+   * Folded to its name and DPJP. Held by the board (and remembered there),
+   * like the note's open state, because the board is what lays cards out.
+   */
+  collapsed?: boolean;
+  onToggleCollapsed?: ((patientId: string) => void) | undefined;
+}): JSX.Element {
+  const { patient } = card;
+  const lines = previewLines(card.preview, maxPreviewLines);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const linkRef = useRef<HTMLAnchorElement>(null);
+  const noteRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Measure the two ends of this card's useful height range and report them.
+   *
+   * `min` is the card with the middle collapsed to nothing — everything that
+   * identifies the patient, and none of what can be cut. `max` is the card
+   * with the whole note shown.
+   *
+   * The middle's `scrollHeight` is the full content height whatever the card
+   * has been clamped to, which is why this can be measured while the card is
+   * already capped. The card's own `scrollHeight` cannot: under `fitHeight` it
+   * is a flex column that compresses to the height it is given and therefore
+   * always reports exactly that.
+   *
+   * Observed rather than measured once: the note changes, the card is resized,
+   * the window reflows, and a stale bound would either block a legitimate drag
+   * or let one go somewhere useless.
+   */
+  useEffect(() => {
+    const root = rootRef.current;
+    const body = bodyRef.current;
+    if (!fitHeight || !onHeightBounds || !root) return;
+
+    /*
+      Folded, there is no body to measure: the card is its header and nothing
+      else. It still reports, because the canvas holds a FLOOR per card and a
+      stale one from before the fold would keep the slot tall and empty.
+    */
+    if (collapsed || !body) {
+      const measureFolded = (): void => {
+        const height = Math.round(root.scrollHeight);
+        onHeightBounds({ min: height, max: height });
+      };
+      const folded = new ResizeObserver(measureFolded);
+      folded.observe(root);
+      measureFolded();
+      return () => folded.disconnect();
+    }
+
+    /*
+      Measured from what the parts NEED, not from the box they are in.
+
+      This was `root.offsetHeight - body.clientHeight`. Under a cap the root is
+      pinned to exactly the cap (`h-full`), so once the body had shrunk to
+      nothing the formula returned the cap itself — it could not see the header
+      and progress strip overflowing the box, and reported a minimum smaller
+      than the parts that cannot shrink. The grip then allowed a height that
+      did not fit them, and the "Belum:" line printed over the note.
+
+      `link.scrollHeight` is the card's content height whatever its box is
+      clamped to, so minus the body's current share it is the fixed part; the
+      note strip is measured on its own because it sits outside the link.
+    */
+    /*
+      The minimum keeps ONE line of the body, not zero.
+
+      With a floor of zero the body could be squeezed to a sliver a few pixels
+      tall — too short for a line of text, tall enough for the fade — so the
+      card showed an empty band between its header and "Belum:", which read as
+      a broken card (the screenshot with the gap). A capped card now always
+      shows at least the first diagnosis; if the body has less than a line,
+      the minimum is exactly what it has.
+    */
+    const ONE_LINE = 22;
+    const measure = (): void => {
+      const link = linkRef.current;
+      const fixed = (link ? link.scrollHeight : root.offsetHeight) - body.clientHeight;
+      const note = noteRef.current?.offsetHeight ?? 0;
+      const floor = Math.min(body.scrollHeight, ONE_LINE);
+      const min = Math.round(fixed + note + floor);
+      onHeightBounds({ min, max: Math.round(fixed + note + body.scrollHeight) });
+    };
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    observer.observe(body);
+    if (noteRef.current) observer.observe(noteRef.current);
+    measure();
+    return () => observer.disconnect();
+  }, [fitHeight, onHeightBounds, collapsed]);
+
+  // Long-press opens the quick checklist (SPEC 11.3) so ticking during rounds
+  // never requires opening the note. Implemented with pointer events + a timer
+  // rather than `contextmenu` so it behaves the same on touch and mouse.
+  //
+  // A REF, not a render-local `let`: pressing a card brings it to the front,
+  // which re-renders it before pointer-up, and the new render's `timer` was 0.
+  // `cancelPress` then cleared nothing and the quick checklist opened 500 ms
+  // after an ordinary tap on the eye or fold button.
+  const pressTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(pressTimer.current), []);
+  const startPress = (): void => {
+    window.clearTimeout(pressTimer.current);
+    pressTimer.current = window.setTimeout(() => onLongPress(patient.id), 500);
+  };
+  const cancelPress = (): void => window.clearTimeout(pressTimer.current);
+
+  const gesture = useSwipe({
+    enabled: swipe && !selectable,
+    onStart: cancelPress,
+    onRight: () => tickNext(),
+    onLeft: onPreview ? () => onPreview(patient.id) : null,
+  });
+  const [undo, setUndo] = useState<{ itemId: string; label: string; date: string } | null>(null);
+  const undoTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(undoTimer.current), []);
+  const doneMap = (): Record<string, boolean> =>
+    Object.fromEntries(card.progress.segments.map((segment) => [segment.itemId, segment.done]));
+  const tickNext = (): void => {
+    const itemId = card.progress.pendingItemId;
+    if (!itemId) return;
+    const settings = useSession.getState().settings();
+    const today = clinicalDate(new Date(), settings.timezone, settings.dayRolloverHour);
+    void setTick(patient.id, today, itemId, true, { ...doneMap(), [itemId]: true }, true).catch((error: unknown) =>
+      console.warn('[board] swipe tick failed', error),
+    );
+    setUndo({ itemId, label: card.progress.pendingLabel ?? 'Item', date: today });
+    window.clearTimeout(undoTimer.current);
+    undoTimer.current = window.setTimeout(() => setUndo(null), 5000);
+  };
+  const undoTick = (): void => {
+    if (!undo) return;
+    window.clearTimeout(undoTimer.current);
+    void setTick(patient.id, undo.date, undo.itemId, false, { ...doneMap(), [undo.itemId]: false }, true).catch(
+      (error: unknown) => console.warn('[board] swipe undo failed', error),
+    );
+    setUndo(null);
+  };
+
+  const showCardNote = useSession((state) => state.settings().showCardNote === true);
+  const note = showCardNote ? patient.notes.trim() : '';
+
+  /*
+    FOLDED: one plain box, the name and the DPJP as text, and the button that
+    unfolds it.
+
+    Its own render rather than the full card with parts hidden. The first
+    version hid the body, progress and note with conditionals through the full
+    card and left the rest — so the EKG and discharge badges, the KJS mark, the
+    eye and the location row all survived the fold, and "folded" still looked
+    like a card. Anything added to the full card later would have survived it
+    too. Here the folded card is only what is written below.
+
+    It keeps the card's colour: the colour is the checklist progress, which is
+    information, not decoration. And it keeps what makes a card a card on the
+    board — it opens the patient, selects in selection mode, and can still be
+    dragged in custom order.
+  */
+  if (collapsed) {
+    return (
+      <div ref={rootRef}>
+        <Link
+          ref={linkRef}
+          to={`/p/${patient.id}`}
+          onClick={
+            selectable
+              ? (event) => {
+                  event.preventDefault();
+                  onToggleSelected?.(patient.id);
+                }
+              : undefined
+          }
+          data-patient-id={patient.id}
+          data-color-token={card.colorToken}
+          data-patient-card
+          className={[
+            'flex min-w-0 items-center gap-2 rounded-lg border border-black/5 bg-token px-3 py-1 text-token-fg shadow-card dark:border-white/10',
+            dragging ? 'opacity-40' : '',
+            selectable && checked ? 'ring-2 ring-accent' : '',
+          ].join(' ')}
+        >
+          {onDragHandleDown ? (
+            <button
+              type="button"
+              aria-label={`Pindahkan ${card.title}`}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onDragHandleDown(event, patient.id);
+              }}
+              onClick={(event) => event.preventDefault()}
+              className="-my-1 -ml-2 flex min-h-tap w-7 shrink-0 cursor-grab touch-none items-center justify-center text-[color-mix(in_srgb,var(--token-fg)_55%,transparent)]"
+            >
+              <IconGrip width="14" height="14" />
+            </button>
+          ) : null}
+          {/* Wraps, never truncates — the rule the full card's name keeps,
+              for the same reason: a name cut short is a patient you cannot
+              tell apart from the next. */}
+          <span className="min-w-0 flex-1 break-words text-ctitle">
+            <span className="font-semibold">{card.title}</span>
+            {/* Initials, as on the full card's badge. The full name is on the
+                title attribute for the one time it is needed. */}
+          </span>
+          {card.dpjp ? (
+            <span className="shrink-0 rounded bg-black/20 px-1.5 text-xs font-semibold leading-5" title={card.dpjp.name}>
+              {card.dpjp.initials}
+            </span>
+          ) : null}
+          {card.progress.total > 0 ? (
+            <span className="card-status shrink-0 text-[11px] font-semibold tabular-nums opacity-75" aria-label={`${card.progress.doneCount} dari ${card.progress.total} selesai`}>
+              {card.progress.complete ? '✓' : `${card.progress.doneCount}/${card.progress.total}`}
+            </span>
+          ) : null}
+          {onToggleCollapsed ? (
+            <button
+              type="button"
+              aria-label={`Buka kartu ${card.title}`}
+              aria-expanded={false}
+              title="Tampilkan kartu"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleCollapsed(patient.id);
+              }}
+              className="-my-1 -mr-2 flex min-h-tap w-9 shrink-0 items-center justify-center text-[color-mix(in_srgb,var(--token-fg)_75%,transparent)] hover:text-token-fg"
+            >
+              <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 6l4 4 4-4" />
+              </svg>
+            </button>
+          ) : null}
+        </Link>
+      </div>
+    );
+  }
+
+  /** H-1 and pulang hari ini get the strip; the other stages keep the corner chip. */
+  const dischargeStrip = card.discharge === 'h1' || card.discharge === 'today' ? card.discharge : null;
+  /** An open usul H-1 gets the strip too, in the H-1 amber but dashed: a proposal, not a plan. */
+  const usulStrip = dischargeStrip === null && card.usulDays !== null;
+  const stripShown = dischargeStrip !== null || usulStrip;
+
+  return (
+    /*
+      THE NOTE GOES UNDER THE CARD, not beside it.
+
+      Two attempts put it to the right, and both failed on the same constraint
+      rather than on styling. A note can be to the RIGHT, sized to its CONTENT,
+      and not OVERLAP its neighbour — any two of those, never all three. The
+      board reserves whole columns, so a right-hand note that does not overlap
+      has to reserve a whole column too, and a three-word note then leaves most
+      of one empty. Splitting the columns in half halved the gap and left it
+      obviously there.
+
+      Underneath, all three hold. The note is as wide as the card and as tall as
+      its text, masonry closes up beneath it exactly as it does for a card with
+      one more line of diagnoses, and nothing is reserved or covered.
+
+      It is still outside the card's border — square top corners against the
+      card's squared-off bottom, its own fill and outline — so it reads as paper
+      stuck to the card rather than as another field inside it, which was the
+      actual objection to keeping it inside.
+    */
+    <div ref={rootRef} className={fitHeight ? 'flex h-full flex-col' : undefined} {...gesture.handlers}>
+    <Link
+      ref={linkRef}
+      to={`/p/${patient.id}`}
+      /**
+       * In selection mode the card SELECTS instead of opening.
+       *
+       * Not a checkbox in the corner: the whole card is the target you are
+       * already aiming at, and a small box beside a large link is a way to
+       * open a chart when you meant to tick it.
+       */
+      onClick={
+        selectable
+          ? (event) => {
+              event.preventDefault();
+              onToggleSelected?.(patient.id);
+            }
+          : undefined
+      }
+      // Read by the drag tracker's hit test to find which card is under the
+      // pointer. An id on the element is cheaper and steadier than measuring
+      // every card's rectangle on each move.
+      data-patient-id={patient.id}
+      data-color-token={card.colorToken}
+      data-patient-card
+      onPointerDown={startPress}
+      onPointerUp={cancelPress}
+      onPointerLeave={cancelPress}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onLongPress(patient.id);
+      }}
+      style={gesture.style}
+      className={[
+        // `p-2.5`, not `p-3`: part of the compact pass — with twelve cards on a
+        // board every pixel of padding is paid twelve times.
+        'block min-w-0 border border-black/5 bg-token text-token-fg shadow-card transition-shadow hover:shadow-pop dark:border-white/10',
+        dense ? 'p-d-card-s' : 'p-d-card',
+        // `min-h-0` is what lets the middle actually shrink: a flex child
+        // defaults to `min-height: auto`, which refuses to go below its content
+        // and would push the progress strip out of the bottom of the card
+        // instead of clipping the diagnosis list.
+        fitHeight ? 'flex min-h-0 flex-1 flex-col' : '',
+        // Square bottom edge whenever a note is attached, so the card and the
+        // note form one continuous shape with a seam rather than two rounded
+        // boxes stacked with a hairline between them.
+        note ? 'rounded-t-xl rounded-b-none' : 'rounded-xl',
+        // The card being dragged fades rather than moves. Moving it would mean
+        // owning a live preview of the whole list mid-gesture; fading says
+        // which one is in hand and lets the drop do the rearranging.
+        dragging ? 'opacity-40' : '',
+        /**
+         * Pemantauan reads on the card's EDGE, not as a mark inside it.
+         *
+         * A dot beside the name was the first attempt and it disappeared into
+         * the card — the cards already carry a colour, a title, a location and
+         * a preview, and one more small thing among them is not something the
+         * eye catches while scanning. A striped left edge changes the card's
+         * silhouette, which is what actually registers at a glance down a
+         * column of twenty.
+         *
+         * Warning colours rather than the accent: the accent already means
+         * "selected" here, and a flag that shares a colour with a state is a
+         * flag you have to think about.
+         */
+        /*
+         * A ring around the WHOLE card, in the danger colour, plus a flag.
+         *
+         * The previous treatment was a left edge in `--warn-strong` with a
+         * faint ring — and it lost, twice over. It shared the left edge with
+         * the discharge stage, whose inline `borderLeftColor` overrides a
+         * class and silently erased it on any patient who had both; and even
+         * alone it read as one more amber accent on cards that already carry a
+         * stage colour, a title, a location and a preview.
+         *
+         * The ring cannot collide with the discharge edge because it is not on
+         * the same property, and the danger token is used nowhere else on a
+         * card, so it means one thing.
+         */
+        /*
+         * Ring only. NOTHING absolutely positioned inside a board card.
+         *
+         * The badge was `absolute -top-2 left-3` on a `relative` card, and the
+         * board is a CSS multi-column layout (`columns-2 … columns-5`). An
+         * absolutely-positioned box inside a relatively-positioned element in a
+         * multicol container has no reliably-resolved containing block: the
+         * browser fragments the flow into columns and the abspos child is laid
+         * out against the wrong fragment. So the red pill landed in open space
+         * between two other cards, several hundred pixels from the patient it
+         * belonged to.
+         *
+         * `ring` is safe because it paints on the border box and never leaves
+         * the flow. The label below is in normal flow for the same reason.
+         */
+        card.pemantauan ? 'ring-2 ring-[var(--danger)]' : '',
+      ].join(' ')}
+      /*
+        NO discharge treatment on the card's own background. See DischargeChip.
+
+        The wash removed here was a gradient in the stage token laid over
+        `bg-token`, and it failed for a structural reason rather than a
+        stylistic one: the card's background is ALREADY carrying domain data.
+        `colorToken` encodes how far the checklist got, and every pixel of the
+        card is that signal. Tinting it with a second, unrelated fact means the
+        colour answers neither question — worst on a finished patient, where a
+        green "done" background under a green "pulang hari ini" wash reads as
+        one flat green block and the checklist colour is simply gone.
+
+        This is the same failure as the 4px `borderLeftColor` before it and the
+        left edge before that: a mark placed on a channel something else owns.
+        The fix is a channel nothing else uses — the top-right corner.
+      */
+    >
+      {/*
+        A strip across the top of the card, in normal flow.
+
+        Named as well as coloured: a red ring says "something", the word says
+        which something, and a resident scanning twenty cards should not have to
+        remember what a colour meant. Negative margins pull it out to the card's
+        padding edge so it reads as part of the frame rather than as content.
+      */}
+      {card.pemantauan ? (
+        <p
+          className={[
+            // Bleed matches the card's own padding (p-2 dense, p-2.5), so the
+            // strip meets the border instead of overshooting it.
+            dense ? '-mx-d-card-s -mt-d-card-s px-d-card-s' : '-mx-d-card -mt-d-card px-d-card',
+            'rounded-t-xl py-1 text-[11px] font-semibold uppercase tracking-wide',
+            stripShown ? '' : 'mb-2',
+          ].join(' ')}
+          style={{ backgroundColor: 'var(--pemantauan-bg)', color: 'var(--pemantauan-fg)' }}
+        >
+          Pemantauan
+        </p>
+      ) : null}
+      {/*
+        H-1 and pulang hari ini as a STRIP, not the corner chip (2026-10-07).
+
+        The chip was graded to stay quieter than the name, and for these two
+        stages that was the wrong trade: they change what is done on this
+        round (resume, obat pulang, kontrol), and a 10 px pill in a corner of
+        twenty cards was found by looking for it, not by seeing it. The strip
+        is the pemantauan pattern: full width, named, solid, in normal flow,
+        and on the frame, so the card's own background keeps carrying the
+        checklist colour. Rencana and Lewat? keep the chip.
+      */}
+      {stripShown ? (
+        <p
+          className={[
+            dense ? '-mx-d-card-s px-d-card-s' : '-mx-d-card px-d-card',
+            'mb-2 flex items-center gap-1.5 py-1 text-[11px] font-bold uppercase tracking-wide',
+            card.pemantauan ? '' : dense ? '-mt-d-card-s rounded-t-xl' : '-mt-d-card rounded-t-xl',
+          ].join(' ')}
+          style={{
+            backgroundColor: STAGE_TOKEN[dischargeStrip ?? 'h1'],
+            color: 'var(--discharge-fg)',
+            ...(usulStrip ? { borderBottom: '2px dashed color-mix(in srgb, var(--discharge-fg) 55%, transparent)' } : {}),
+          }}
+        >
+          <IconCar width={13} height={13} className="shrink-0" aria-hidden="true" />
+          {usulStrip
+            ? `Usul pulang besok · H-1${card.usulDays ? ` · ${card.usulDays} hari` : ''}`
+            : dischargeStrip === 'today'
+              ? 'Pulang hari ini'
+              : 'Pulang besok · H-1'}
+          {/* AFG, AFM and ZD want a 6MWT before discharge: said where the
+              discharge is said, from H-1, so it is not found on the day. */}
+          {isTrioDpjp(card.dpjp?.id) ? <span className="ml-auto rounded bg-black/15 px-1.5">6MWT</span> : null}
+        </p>
+      ) : null}
+      {/*
+        WRAPS. The badge cluster drops to its own line before it squeezes the
+        name.
+
+        This row's fixed cost grows every time a badge is added — eye, EKG,
+        discharge — and the name was the only flexible member, so each new
+        badge was paid for out of the patient's name. That is the same failure
+        as the truncation this row replaced, arriving through a different door.
+
+        With `flex-wrap` and a floor on the name, the row cannot take the name
+        below a readable column: the badges wrap under it instead. They stay in
+        the top-right corner whenever there is room, which on a full-width card
+        is always.
+      */}
+      {/*
+        The badges SIT NEXT TO the name, not at the far edge.
+
+        The name used to be `flex-1` with a `min-w-[55%]` floor, which did two
+        things wrong at once: it took every spare pixel, so the eye button was
+        pushed to the far right and left a hand's width of nothing between it
+        and a short name; and the floor meant a badge that would not fit in the
+        remainder wrapped to its own line, even on a card with room to spare.
+
+        Sizing the name to its content instead lets the badges follow it
+        immediately and wrap with it, as words in a sentence do. Only the eye
+        keeps `ml-auto` — it is a control rather than a label, and a control
+        that moves depending on the length of a name is one you have to look
+        for every time.
+      */}
+      {/*
+        THE IDENTITY BAND — who and where, set apart from the clinical text.
+
+        It used to be four stacked paragraphs in the same colour and weight as
+        the diagnosis list below it, which meant finding a patient on a board
+        of twelve cards was reading rather than glancing: the name had no edge,
+        and the bed sat in the same visual layer as a sentence about their
+        coronaries.
+
+        A tinted band with a hairline under it is enough. Not a heavier border
+        or a different hue — the card background already carries checklist
+        progress, and a second colour on the same surface is the collision
+        recorded on the discharge wash. This is the same colour at a different
+        weight, which is a separation the eye reads without having to be told.
+      */}
+      <div className="card-band -mx-d-card -mt-d-card mb-d-flag border-b border-[color-mix(in_srgb,var(--token-fg)_10%,transparent)] bg-black/[0.05] px-d-card py-d-band dark:bg-white/[0.04]">
+      {/*
+        TWO COLUMNS: everything that wraps on the left, the eye fixed on the
+        right. It is not decoration — it is what stops the blank row.
+
+        The eye used to be the last child of the wrapping row with `ml-auto`.
+        On a narrow card the name and its badges fill that row, so the eye
+        wrapped onto a line of its own — and being a 44 px tap target, that
+        line was 44 px of nothing between the name and the location. The card
+        looked broken at exactly the widths where space matters most.
+
+        A control cannot share a wrapping row with content. Here it sits
+        outside the wrap entirely: the left column wraps as much as it likes
+        and the eye stays where it was, top-right, at every width.
+      */}
+      <div className="flex items-start gap-2">
+      <div className="min-w-0 flex-1">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        {selectable ? (
+          <span
+            aria-hidden="true"
+            className={[
+              'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs',
+              checked
+                ? 'border-transparent bg-accent text-on-accent'
+                : 'border-current opacity-40',
+            ].join(' ')}
+          >
+            {checked ? '✓' : ''}
+          </span>
+        ) : null}
+        {onDragHandleDown ? (
+          <button
+            type="button"
+            aria-label={`Pindahkan ${card.title}`}
+            // The handle must not open the patient. `preventDefault` stops the
+            // link, and stopping propagation keeps the card's long-press timer
+            // from starting underneath the gesture.
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onDragHandleDown(event, patient.id);
+            }}
+            onClick={(event) => event.preventDefault()}
+            className="-my-1 -ml-1 min-h-tap min-w-tap shrink-0 cursor-grab touch-none text-[color-mix(in_srgb,var(--token-fg)_70%,transparent)]"
+          >
+            <span aria-hidden="true">⠿</span>
+          </button>
+        ) : null}
+        {/*
+          THE NAME WRAPS. It is never truncated.
+
+          `truncate` is `white-space: nowrap` + `overflow: hidden` + an
+          ellipsis, and this row was a single flex line in which every other
+          child was `shrink-0`. So the name was the only thing that could give,
+          and the width it had left was the card minus however many badges the
+          patient happened to carry — DPJP, KJS, discharge, pin. That put the
+          rule exactly backwards: the patients with the most going on were the
+          ones whose names you could not read. "Tn. Petrus Da…" was not a long
+          name, it was a name standing next to two badges.
+
+          Wrapping costs a second line only on the cards that need one, and the
+          board is masonry — a taller card closes the gap beneath it. Truncation
+          cost a name on every card that carried badges, permanently.
+
+          `overflow-wrap: anywhere` is for the ones with no space to break at:
+          a single 30-character name would otherwise push the row wider than the
+          card and reintroduce the overflow it just fixed.
+        */}
+        {/*
+          `break-words`, NOT `overflow-wrap: anywhere`. The difference is not
+          cosmetic and it is what broke this card.
+
+          Both allow a break inside a word, but `anywhere` also lets those
+          break points count toward the element's MIN-CONTENT width, which
+          collapses it to roughly one character. In a flex row that is a
+          licence for every `shrink-0` badge beside it to take what it likes,
+          and the name is left with a column five letters wide — "Tn. Arka /
+          Wijay / a Dimas". `break-word` keeps the min-content width at the
+          longest word, so the name holds a readable column and breaks inside a
+          word only when a single word genuinely cannot fit.
+
+          The `min-w-` floor below is the second half: it stops the badges from
+          taking the column down to the longest word either. Together they mean
+          the name can only lose width down to a point, and past that the
+          badges wrap instead.
+        */}
+        <h3 className="max-w-full break-words text-ctitle font-semibold">
+          {card.name}
+        </h3>
+
+        {/*
+          Daily ECG, beside the discharge chip and in the same corner.
+
+          A badge rather than a checklist item: the checklist asks "EKG sesuai
+          kebutuhan", and this is the patient for whom the answer is always
+          yes. A task you tick is finished; this is true until somebody says
+          otherwise.
+
+          Word, not icon. A tracing symbol at 10px is a squiggle, and the
+          reader of this badge is deciding whether to walk back with a machine.
+        */}
+      </div>
+
+      {/*
+        WHERE, and WHOSE. One row.
+
+        The DPJP initials, the KJS mark and the pin used to sit on the title
+        row, where they were `shrink-0` and the name was not — so each of them
+        was, in effect, spending the patient's name to show itself. They are
+        reference marks, not controls: you read them after you have found the
+        card, never in order to find it. Down here they cost nothing that
+        matters and the row wraps on its own if a location line is long.
+
+        Location stays spelled out to the bed: on a round the room and bed are
+        what you are walking to, and a card showing only "PJT Lt 4" still has
+        to be opened to find out where.
+      */}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs opacity-70">
+        <span>{formatLocation(patient) || 'Lokasi belum diisi'}</span>
+        {card.mrn ? <RmChip mrn={card.mrn} hidden={card.mrnHidden} patientId={card.patient.id} name={card.name} /> : null}
+        {/*
+          THREE MARKS, THREE SHAPES — they used to be one shape.
+
+          DPJP, KJS and RM were all the same outlined box in the same
+          weight, so telling them apart meant reading them. They differ by
+          FORM, not by hue: the card colour already means checklist progress,
+          and a second hue on the same surface is the collision recorded on
+          the discharge wash. Every mark stays in the card's own ink, so each
+          passes contrast on every card colour by construction.
+
+            DPJP  a soft pill, no border       — a person
+            KJS   a square tag; Kardio is solid (inverted), TS is outlined
+            RM    no box: mono digits + copy icon, dotted underline — a control
+        */}
+        {card.dpjp ? (
+          <span
+            title={`DPJP: ${card.dpjp.name}`}
+            className="card-dpjp rounded-full bg-black/10 px-1.5 text-xs font-semibold dark:bg-white/15"
+          >
+            {card.dpjp.initials}
+          </span>
+        ) : null}
+        {/*
+          KJS, with the direction on it.
+
+          "KJS" alone said a second service is involved and left out the half
+          that changes what you do: on a `kardio` patient the primary DPJP is
+          not ours, the plan is a recommendation rather than an order, and the
+          discharge is someone else's call. Two patients on the same board can
+          both be "KJS" and need opposite handling, so the badge names which.
+
+          The direction word carries it, not the colour — `kardio` also gets a
+          filled badge because it is the rarer and more easily mis-read of the
+          two, but the badge is readable with the fill ignored.
+        */}
+      </div>
+      </div>
+
+        {/*
+          Its own small target, not a gesture on the card.
+
+          The card is already a link, a long-press and — in custom order — a
+          drag handle. A fourth gesture would have to win a race against three
+          others, and losing that race opens a chart you did not ask for.
+        */}
+        {/*
+          Fold. Beside the eye rather than anywhere on the card, for the reason
+          the eye has its own target: the card is already a link, a long-press
+          and a drag handle, and a fifth gesture would lose the race to them.
+        */}
+        {/*
+          The two controls as ONE tight pair.
+
+          Each was a 44 × 44 target with its own gap, so together they took
+          ~90px of the header — on a narrow card that pushed the name onto two
+          lines and the location onto two more (the tall header in the
+          screenshots). They stay 44px TALL, which is the dimension a thumb
+          misses on; they are 28px wide each, with no gap, which is still above
+          the 24px WCAG 2.2 minimum and gives the name back ~34px.
+        */}
+        <div className="-mr-1.5 -mt-1 flex shrink-0">
+        {onToggleCollapsed ? (
+          <button
+            type="button"
+            aria-label={`Lipat kartu ${card.title}`}
+            aria-expanded
+            title="Lipat kartu"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleCollapsed(patient.id);
+            }}
+            className="flex min-h-tap w-7 shrink-0 items-center justify-center text-base font-semibold leading-none text-[color-mix(in_srgb,var(--token-fg)_70%,transparent)]"
+          >
+            −
+          </button>
+        ) : null}
+        {onPreview ? (
+          <button
+            type="button"
+            aria-label={`Preview catatan ${card.title}`}
+            onClick={(event) => {
+              // The card is a `<Link>`; without this the preview opens and the
+              // route changes underneath it.
+              event.preventDefault();
+              event.stopPropagation();
+              onPreview(patient.id);
+            }}
+            className="flex min-h-tap w-7 shrink-0 items-center justify-center text-[color-mix(in_srgb,var(--token-fg)_70%,transparent)]"
+          >
+            <IconEye width={16} height={16} />
+          </button>
+        ) : null}
+        {onVisite ? (
+          <button
+            type="button"
+            aria-label={`Visite ${card.title}`}
+            title="Visite: ringkasan untuk visite DPJP"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onVisite(patient.id);
+            }}
+            className="flex min-h-tap w-7 shrink-0 items-center justify-center text-[color-mix(in_srgb,var(--token-fg)_70%,transparent)]"
+          >
+            <IconClipboard width={16} height={16} />
+          </button>
+        ) : null}
+        </div>
+
+        {/*
+          The corner. Nothing else on the card may sit to the right of this.
+
+          The board is a measured-span CSS grid now (`MasonryGrid` /
+          `MasonryItem`), not the multi-column layout the comment above was
+          written against — but this is still in normal flow, not `absolute`.
+          A flex row that ends here IS the top-right corner, and it stays the
+          corner when the name below it wraps to two lines.
+        */}
+      </div>
+      </div>
+      {/*
+        THE STATUS RAIL (2026-10-10). What is left to do on this patient, on
+        one line under the name, where the eye already is:
+          ○ SOAP kemarin / ○ Belum ada SOAP (nothing once today's is written)
+          the checklist strip with its count, and the next step, short.
+        It replaces "Belum: Visite pasien + TTV + EKG sesuai kebutuhan" at the
+        bottom, which was the longest line on every card and identical on all
+        of them each morning: the information is HOW FAR each patient is.
+      */}
+      <StatusRail card={card} />
+      {gesture.hint ? (
+        <p aria-hidden="true" className="mb-1 text-xs font-semibold">
+          {gesture.hint === 'right'
+            ? card.progress.pendingLabel
+              ? `→ Centang: ${shortStepLabel(card.progress.pendingLabel) ?? card.progress.pendingLabel}`
+              : 'Checklist sudah selesai'
+            : '← Preview catatan'}
+        </p>
+      ) : null}
+      {/*
+        Hari rawat removed from the card.
+        
+        It is the same count the header setting already made optional, and on a
+        board it earns even less: you are scanning for WHO and WHERE, and the
+        admission-day number is not something any decision on this screen turns
+        on. The chief stays, because that is who you hand the note to.
+      */}
+      {/*
+        The part that gives way when the card is short.
+
+        Everything in here is detail you open the card to read properly; the
+        header above it and the progress strip below are what the card is FOR
+        while it sits on the board. So when there is not enough height, this is
+        what loses it — clipped from the bottom, with a fade, rather than the
+        whole card being cut off mid-line at whatever height it happened to
+        reach.
+
+        Outside `fitHeight` this div contributes nothing: no classes, so the
+        block flows exactly as it did when these four were siblings.
+      */}
+      <ClampedBody enabled={fitHeight} bodyRef={bodyRef}>
+      {/* First in the body, not last: on a capped canvas card the body is
+          clipped from the bottom, and what changed matters more than the
+          rest of a list you can open. */}
+      {card.dxChanges && !dense ? <DxChangeLine card={card} /> : null}
+
+      {/* `leading-snug`: a list of diagnoses reads fine at 1.375, and
+          `relaxed` spent a fifth of the body's height between the lines. */}
+      {lines.length > 0 && dense ? (
+        <p className="mt-0.5 line-clamp-1 text-cbody opacity-90">
+          {lines.map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '')).join(' · ')}
+        </p>
+      ) : lines.length > 0 ? (
+        <>
+          {/* Phone (2026-10-08): the diagnoses run on one line each, clamped
+              to two, so a long problem list cannot make one card a screen
+              tall. The whole list is one tap away, on the patient page. */}
+          <p className="mt-d-gap line-clamp-2 text-cbody opacity-90 sm:hidden">
+            {lines.map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '')).join(' · ')}
+          </p>
+          <p className="mt-d-gap hidden whitespace-pre-line text-cbody opacity-90 sm:block">
+            {lines.join('\n')}
+          </p>
+        </>
+      ) : (
+        <p className="mt-d-gap text-cbody italic opacity-60">Belum ada catatan hari ini.</p>
+      )}
+
+      {patient.labels.length > 0 && !dense ? (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {patient.labels.map((label) => (
+            <span
+              key={label}
+              className="rounded-full bg-black/10 px-2 py-0.5 text-[11px] dark:bg-white/15"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      </ClampedBody>
+
+      {/*
+        META LINE (distill pass): the pin and the chief, demoted from the
+        identity band. The band keeps what finds a patient (name, bed, DPJP,
+        RM); these are read after the card is found.
+
+        Outside ClampedBody on purpose. The chief was once a faint line INSIDE
+        the body, where it was clipped first on a short card and read like part
+        of the diagnosis list; this one is labelled "Chief:" and never clipped.
+      */}
+      {patient.pinned || card.chief ? (
+        <p className={`mt-d-gap flex min-w-0 items-center gap-1.5 text-xs ${fitHeight ? 'shrink-0' : ''}`}>
+          {patient.pinned ? (
+            <span aria-label="Pinned" className="shrink-0 opacity-70">
+              ★
+            </span>
+          ) : null}
+          {card.chief ? (
+            // The chief is who the note is handed to (26 Oct 2026, Avi: "not noticeable
+            // enough"): full strength and bold, with only the label kept quiet.
+            <span className="min-w-0 truncate" title={`Chief: ${card.chief}`}>
+              <span className="opacity-70">Chief</span> <b className="font-semibold">{card.chief}</b>
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+
+      {/*
+        ONE FLAG ROW (2026-10-10): reminders, discharge, EKG, KJS — the marks
+        that change what is done on this round. They were scattered over the
+        name row (reminder, discharge) and the location row (KJS), each
+        spending the name's width. Never clipped: outside the body that gives
+        way on a short canvas card.
+      */}
+      <FlagRow card={card} dischargeStrip={dischargeStrip} className={fitHeight ? 'shrink-0' : ''} />
+    </Link>
+
+      {undo ? (
+        <div role="status" className="mt-1 flex items-center gap-2 rounded-lg bg-surface px-3 py-1 text-xs shadow-card">
+          <span className="min-w-0 flex-1 truncate">✓ {undo.label}</span>
+          <button type="button" onClick={undoTick} className="min-h-tap shrink-0 px-2 font-semibold text-accent">
+            Urungkan
+          </button>
+        </div>
+      ) : null}
+
+      {note ? (
+        // Measured on its own: it sits outside the link, and a minimum that
+        // left it out was the other half of the overlap.
+        <div ref={noteRef} className="shrink-0">
+          <CardNote note={note} patientName={patient.name} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * How strongly the chip is tinted, by stage.
+ *
+ * Graded rather than uniform because the four stages are not equally urgent —
+ * a discharge four days out is a note to self, one happening today changes
+ * what you do on this round. Grading the FILL and not the text keeps the
+ * contrast of the label fixed at the card's own foreground, so the loudest
+ * chip is still no harder to read than the quietest.
+ *
+ * The ceiling is 32%. A solid fill was tried and rejected: at full saturation
+ * the chip out-shouted the patient's name, which is the one thing on a card
+ * that must win.
+ */
+const STAGE_TINT: Record<DischargeStage, number> = {
+  planned: 12,
+  h1: 24,
+  today: 32,
+  overdue: 32,
+};
+
+/**
+ * Discharge, as a car in the card's top-right corner.
+ *
+ * WHY A CORNER CHIP AND NOT A CARD-WIDE MARK
+ *
+ * Every card-level treatment tried so far has collided with something that was
+ * already there: a 4px left border lost to the pemantauan edge (an inline
+ * `borderLeftColor` silently beats a class); a bare coloured stripe read as
+ * noise among cards that are already coloured by checklist progress; and the
+ * background wash it replaced tinted `colorToken` itself, which is domain data
+ * — a finished patient going home today showed a green wash over a green
+ * "selesai" background and lost both facts at once.
+ *
+ * The corner is free. Nothing else claims it, so a mark placed there cannot be
+ * overridden, cannot be mistaken for a checklist colour, and does not have to
+ * shout to be found — the eye lands on a card's corners on its own.
+ *
+ * WHY A CAR
+ *
+ * A glyph is a silhouette, and silhouettes survive peripheral vision in a way
+ * that a coloured dot does not. It also lets the word shrink: "Pulang hari
+ * ini" becomes "Hari ini" because the picture already said pulang, and the
+ * width that frees goes to the patient's name.
+ *
+ * Colour is never the only signal — the label is always rendered, and the full
+ * phrase is on `title` and in the accessible name for anyone who cannot see
+ * either.
+ */
+function DischargeChip({ stage }: { stage: DischargeStage }): JSX.Element {
+  const token = STAGE_TOKEN[stage];
+  return (
+    <span
+      title={STAGE_LABELS[stage]}
+      className="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none"
+      style={{
+        backgroundColor: `color-mix(in srgb, ${token} ${STAGE_TINT[stage]}%, transparent)`,
+        // A ring drawn as an inset shadow rather than a border: a border would
+        // add a pixel to the chip's box and nudge the row it sits in.
+        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${token} 55%, transparent)`,
+      }}
+    >
+      <IconCar width={12} height={12} className="shrink-0" style={{ color: token }} />
+      {/* The short form is for the eye; the full phrase is for the reader who
+          is not using one. */}
+      <span className="sr-only">{STAGE_LABELS[stage]}</span>
+      <span aria-hidden="true">{STAGE_SHORT[stage]}</span>
+    </span>
+  );
+}
+
+/**
+ * The standing note, as paper stuck to the bottom of the card.
+ *
+ * REIMPLEMENTED 2026-10-01. It used to expand IN PLACE: the full note grew
+ * inside the card's flow and the board was asked to make room (two columns
+ * in masonry, an uncapped height on the canvas). On the canvas nothing makes
+ * room — cards sit where they were put — so an opened note grew over the card
+ * below, and its fill (`--warn-soft`, 25–33 % alpha) let that card's text
+ * show through: two notes printed on top of each other.
+ *
+ * Now the strip is FIXED in size (two lines at most, `+N baris` when there is
+ * more) and the full note opens in a floating panel above the board: opaque,
+ * shadowed, scrollable, closed by tapping outside or Escape. The board never
+ * relays out for a note, so no layout can overlap, and the card's measured
+ * height no longer depends on whether its note is open.
+ */
+function CardNote({ note, patientName }: { note: string; patientName: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const stripRef = useRef<HTMLButtonElement & HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [clamped, setClamped] = useState(false);
+  const lines = note.split('\n').filter((line) => line.trim() !== '');
+  const more = Math.max(0, lines.length - 2);
+
+  // `more` counts lines, but one long line wraps past the two-line clamp too.
+  // Only a strip that actually hides text is a button: a panel that opens to
+  // repeat what the strip already shows is noise.
+  useEffect(() => {
+    const node = textRef.current;
+    if (!node) return;
+    const measure = (): void => setClamped(node.scrollHeight > node.clientHeight + 1);
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    measure();
+    return () => observer.disconnect();
+  }, [note]);
+  const expandable = more > 0 || clamped;
+
+  const className = `flex w-full items-start gap-1.5 rounded-b-xl rounded-t-none border border-t-0 border-[var(--warn-strong)] ${NOTE_FILL} px-2.5 py-1.5 text-left text-fg`;
+  const content = (
+    <>
+      <span aria-hidden="true" className="mt-px shrink-0 text-[11px] leading-snug text-[var(--warn-strong)]">
+        ✎
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          ref={textRef}
+          className="line-clamp-2 whitespace-pre-line break-words text-xs leading-snug [overflow-wrap:anywhere]"
+        >
+          {lines.slice(0, 2).join('\n')}
+        </span>
+        {more > 0 ? (
+          <span className="mt-0.5 block text-[11px] font-medium opacity-75">+{more} baris · ketuk untuk membaca</span>
+        ) : null}
+      </span>
+    </>
+  );
+  if (!expandable) {
+    return (
+      <div ref={stripRef} className={className}>
+        {content}
+      </div>
+    );
+  }
+  return (
+    <>
+      <button
+        ref={stripRef}
+        type="button"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={`Catatan ${patientName}: buka`}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => setOpen((current) => !current)}
+        className={className}
+      >
+        {content}
+      </button>
+      {open ? (
+        <NotePopover unfold anchor={stripRef} title={patientName} note={note} onClose={() => setOpen(false)} />
+      ) : null}
+    </>
+  );
+}
+
+
+
+
+/**
+ * The part of a card that gives way when the card is short.
+ *
+ * Two jobs, and the second is why it is a component rather than a `div`.
+ *
+ * It SHRINKS but never GROWS. `flex-1` was wrong: it stretched the middle to
+ * fill whatever height the card was given, so a card dragged taller than its
+ * content spread the diagnosis list out and pushed the progress strip to the
+ * bottom of a field of nothing. Shrink-only means the content keeps its shape
+ * and a cap larger than the content simply leaves empty space below it —
+ * visible, self-explanatory, and one drag from being taken back.
+ *
+ * And it knows whether it is ACTUALLY clipping, which nothing outside it can:
+ * the card is rendered at a fixed height, so its `scrollHeight` is always that
+ * height and tells you nothing. Here, inside an `overflow-hidden` box whose
+ * content is unconstrained, `scrollHeight > clientHeight` is the real answer.
+ * The fade is drawn only then — a fade over text that is not cut off says
+ * "there is more below" where there is not, and a signal that is sometimes
+ * false stops being read.
+ */
+function ClampedBody({
+  enabled,
+  bodyRef,
+  children,
+}: {
+  enabled: boolean;
+  bodyRef: React.RefObject<HTMLDivElement>;
+  children: React.ReactNode;
+}): JSX.Element {
+  const ref = bodyRef;
+  const [clipped, setClipped] = useState(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || !enabled) {
+      setClipped(false);
+      return;
+    }
+    const measure = (): void => setClipped(node.scrollHeight > node.clientHeight + 1);
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    measure();
+    return () => observer.disconnect();
+    // `ref` is the caller's ref object and its identity is stable for the life
+    // of the card; listing it only re-runs this on renders where nothing it
+    // depends on changed.
+  }, [enabled, ref]);
+
+  if (!enabled) return <div>{children}</div>;
+
+  return (
+    <div ref={ref} className="relative min-h-0 shrink overflow-hidden">
+      {children}
+      {clipped ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-6"
+          style={{
+            // A fade rather than a clean edge: a straight cut through a line of
+            // text reads as a rendering fault, and the first response to a
+            // rendering fault is to distrust the rest of the card.
+            backgroundImage: 'linear-gradient(to bottom, transparent, var(--card-face, var(--token-bg)))',
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The RM number, which copies itself when tapped.
+ *
+ * The number IS the button, rather than a number with a "Salin RM" button
+ * beside it: one thing on the card instead of two, on a board that is
+ * already dense with controls. Digits only, without the "RM " prefix, the
+ * same as the patient page, because the paste goes into a search box that
+ * wants the digits.
+ *
+ * Inside the card's link, so it prevents the link and stops the press from
+ * reaching the card's long-press (select) handler. The hit area is a full
+ * 44 px, pulled into the text row with negative margins, so the row stays the
+ * height of its text.
+ */
+export function RmChip({
+  mrn,
+  hidden,
+  patientId,
+  name,
+}: {
+  mrn: string;
+  hidden: boolean;
+  patientId: string;
+  name: string;
+}): JSX.Element {
+  const remember = useClipboardNote((state) => state.remember);
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  return (
+    <button
+      type="button"
+      title={hidden ? 'Salin nomor RM' : `Salin nomor RM ${mrn}`}
+      aria-label={hidden ? 'Salin nomor RM' : `Salin nomor RM ${mrn}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void copyText(mrn).then((ok) => {
+          if (!ok) return;
+          remember({ what: 'Nomor RM', patientId, patientName: name, mrn: hidden ? null : mrn });
+          setCopied(true);
+          window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      className="-my-3 flex min-h-tap items-center"
+    >
+      {/* No box: the only mark here that DOES something, so it looks like a
+          link to copy rather than a label to read. */}
+      <span className="inline-flex items-center gap-0.5 font-mono text-xs underline decoration-dotted underline-offset-2">
+        {copied ? (
+          'Tersalin ✓'
+        ) : (
+          <>
+            {hidden ? 'Salin RM' : `RM ${mrn}`}
+            <IconCopy width="11" height="11" className="opacity-70" />
+          </>
+        )}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * One daily reminder on the card, tickable for today.
+ *
+ * Replaces the EKG badge, which could only say "needed": a tracing done at
+ * 07.00 still said "EKG hari ini" at 13.00, so the badge was either ignored
+ * or re-checked. Now the chip is ticked when it is done and reads as done
+ * (✓, dimmed) until the clinical day changes, when a standing reminder is
+ * due again by itself.
+ *
+ * Amber while due: a thing to do, not an alarm (danger) and not a selection
+ * (accent).
+ */
+function ReminderChip({
+  patient,
+  reminder,
+}: {
+  patient: BoardCard['patient'];
+  reminder: ActiveReminder;
+}): JSX.Element {
+  const today = useClinicalToday();
+  return (
+    <button
+      type="button"
+      aria-pressed={reminder.done}
+      title={`${reminder.label} ${reminder.mode === 'harian' ? 'setiap hari' : 'hari ini'}. Ketuk untuk ${reminder.done ? 'membatalkan tanda selesai' : 'menandai selesai'}.`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void setReminderDone(patient.id, toggleReminderDone(patient.reminderDone, reminder.id, today)).catch(
+          (error: unknown) => console.error('[card] reminder tick rejected', error),
+        );
+      }}
+      className={[
+        '-my-2 flex min-h-tap shrink-0 items-center [@media(pointer:fine)]:min-h-0 [@media(pointer:fine)]:my-0',
+      ].join(' ')}
+    >
+      <span
+        className={[
+          'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-semibold',
+          // Neither fill is a translucent hue laid on the card: that took on
+          // the card's colour (olive on a green card). Done is the card's own
+          // ink in a neutral tint; due is the opaque note amber.
+          reminder.done
+            ? 'border-[color-mix(in_srgb,var(--token-fg)_30%,transparent)] bg-black/10 text-token-fg dark:bg-white/15'
+            : `border-[var(--warn-strong)] ${NOTE_FILL} text-fg`,
+        ].join(' ')}
+      >
+        <span aria-hidden="true">{reminder.done ? '✓' : '○'}</span>
+        {reminder.label}
+        {reminder.mode === 'harian' ? <span className="font-normal opacity-70">/hari</span> : null}
+      </span>
+    </button>
+  );
+}
+
+function StatusRail({ card }: { card: BoardCard }): JSX.Element {
+  const { progress } = card;
+  const soap = soapState(card);
+  const next = shortStepLabel(progress.pendingLabel);
+  return (
+    <div className="mb-d-gap flex items-center gap-2 text-xs">
+      {/*
+        Only the exception is written (2026-10-31). "● SOAP hari ini" was the
+        same words on every card once the round was under way, and it took the
+        width the next step needed ("5/8 · Inp…"). A missing SOAP is the thing
+        to find, so it is the one that shows, in weight rather than the faded
+        style it had: the card's colour already means checklist progress, so
+        no second hue. Screen readers still hear the written state.
+      */}
+      {soap === 'today' ? (
+        <span className="sr-only">SOAP hari ini sudah ditulis.</span>
+      ) : (
+        <span
+          className="flex shrink-0 items-center gap-1 font-semibold"
+          title={
+            soap === 'stale'
+              ? 'Catatan terakhir dari hari sebelumnya — SOAP hari ini belum ditulis'
+              : 'Belum ada catatan'
+          }
+        >
+          <span aria-hidden="true">○</span>
+          {soap === 'stale' ? 'SOAP kemarin' : 'Belum ada SOAP'}
+        </span>
+      )}
+      {card.checkCount ? (
+        <span
+          className="shrink-0 rounded-sm border border-current px-1 text-[11px] font-semibold"
+          title={`${card.checkCount} hal perlu diperiksa lagi di catatan hari ini`}
+          aria-label={`${card.checkCount} hal perlu diperiksa lagi di catatan hari ini`}
+        >
+          {/* Flag and number again (26 Oct 2026, Avi disliked "3 cek"); the title and aria-label say what it counts. */}
+          ⚑ {card.checkCount}
+        </span>
+      ) : null}
+      {progress.total > 0 ? (
+        <>
+          <span className="min-w-6 flex-1">
+            <ProgressStrip progress={progress} />
+          </span>
+          <span className="card-status min-w-0 max-w-[60%] truncate tabular-nums opacity-80" title={progress.pendingLabel ?? 'Semua selesai'}>
+            {progress.complete ? '✓ selesai' : `${progress.doneCount}/${progress.total}${next ? ` · ${next}` : ''}`}
+          </span>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+export function FlagRow({
+  card,
+  dischargeStrip,
+  className = '',
+}: {
+  card: BoardCard;
+  dischargeStrip: DischargeStage | null;
+  className?: string;
+}): JSX.Element | null {
+  const [showDone, setShowDone] = useState(false);
+  const showDischarge = card.discharge !== null && !dischargeStrip;
+  // Two or more finished reminders fold into one "✓ n pengingat" chip: they
+  // need no action, and each used to take a chip's width from the marks that do.
+  // Tapping it unfolds them, so a wrong tick can still be taken back here.
+  const doneReminders = card.reminders.filter((reminder) => reminder.done);
+  const foldDone = doneReminders.length >= 2 && !showDone;
+  const reminderFlags = card.reminders
+    .filter((reminder) => !(foldDone && reminder.done))
+    .map((reminder) => ({
+      key: `r-${reminder.id}`,
+      always: true,
+      node: <ReminderChip key={`r-${reminder.id}`} patient={card.patient} reminder={reminder} />,
+    }));
+  // Distill pass: at most MAX_FLAGS chips, then "+n". Reminders (a thing due now)
+  // and KJS · Kardio (changes how you act on the plan) are never hidden; the
+  // rest fill whatever budget is left, in this order.
+  const flags: Array<{ key: string; always: boolean; node: JSX.Element }> = [
+    ...reminderFlags,
+    ...(foldDone || (showDone && doneReminders.length >= 2)
+      ? [
+          {
+            key: 'done-reminders',
+            always: true,
+            node: (
+              <button
+                key="done-reminders"
+                type="button"
+                aria-expanded={!foldDone}
+                title={doneReminders.map((reminder) => reminder.label).join(', ')}
+                onPointerDown={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setShowDone((current) => !current);
+                }}
+                className="-my-2 flex min-h-tap shrink-0 items-center [@media(pointer:fine)]:my-0 [@media(pointer:fine)]:min-h-0"
+              >
+                <span className="inline-flex items-center gap-1 rounded-full border border-[color-mix(in_srgb,var(--token-fg)_30%,transparent)] bg-black/10 px-1.5 py-0.5 text-[11px] font-semibold text-token-fg dark:bg-white/15">
+                  <span aria-hidden="true">{foldDone ? '✓' : '−'}</span>
+                  {foldDone ? `${doneReminders.length} pengingat` : 'Lipat'}
+                </span>
+              </button>
+            ),
+          },
+        ]
+      : []),
+    ...(showDischarge && card.discharge
+      ? [{ key: 'discharge', always: false, node: <DischargeChip key="discharge" stage={card.discharge} /> }]
+      : []),
+    ...(card.ekg
+      ? [
+          {
+            key: 'ekg',
+            always: false,
+            node: (
+              <span
+                key="ekg"
+                title={card.ekg === 'harian' ? 'EKG setiap hari' : 'EKG hari ini'}
+                className="rounded-sm border border-current px-1 text-[11px] font-semibold"
+              >
+                {card.ekg === 'harian' ? 'EKG harian' : 'EKG hari ini'}
+              </span>
+            ),
+          },
+        ]
+      : []),
+    ...(card.kjs === 'kardio'
+      ? [
+          {
+            key: 'kjs',
+            always: true,
+            node: (
+              <span
+                key="kjs"
+                title="KJS — pasien TS lain, kita konsulen kardiologi. DPJP utama bukan kita."
+                // Inverted: the one mark on the card that changes how you act on
+                // it (the plan is a recommendation, the discharge is not ours).
+                className="rounded-sm bg-token-fg px-1 text-[11px] font-bold uppercase tracking-wide text-token"
+              >
+                KJS · Kardio
+              </span>
+            ),
+          },
+        ]
+      : card.kjs === 'ts'
+        ? [
+            {
+              key: 'kjs',
+              always: false,
+              node: (
+                <span
+                  key="kjs"
+                  title="KJS — pasien kita, rawat bersama TS lain"
+                  className="rounded-sm border border-current px-1 text-[11px] font-bold uppercase tracking-wide"
+                >
+                  KJS · TS
+                </span>
+              ),
+            },
+          ]
+        : []),
+  ];
+  if (flags.length === 0) return null;
+  let budget = MAX_FLAGS - flags.filter((flag) => flag.always).length;
+  const shown = flags.filter((flag) => flag.always || budget-- > 0);
+  const hidden = flags.length - shown.length;
+  return (
+    <div className={`mt-d-flag flex flex-wrap items-center gap-1 ${className}`}>
+      {shown.map((flag) => flag.node)}
+      {hidden > 0 ? (
+        <span
+          className="text-[11px] font-semibold opacity-70"
+          title={`${hidden} penanda lain: buka pasien untuk melihatnya`}
+        >
+          +{hidden} lagi
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** Flag-row cap: the 4th and later chips collapse into "+n" (distill pass). */
+const MAX_FLAGS = 3;
+
+/**
+ * What changed in the diagnosis list since the previous day's note.
+ *
+ * Spelled out, one change per line with its own word (2026-10-10). The
+ * first version was "Sejak kemarin: + X · − Y", which Avi found unreadable:
+ * nothing said it was about the DIAGNOSIS, and "+" and "−" next to medical
+ * terms read as positive and negative, not as added and dropped.
+ */
+const DX_KIND = {
+  added: { word: 'Baru', mark: '+' },
+  changed: { word: 'Diubah', mark: '✎' },
+  removed: { word: 'Dihapus', mark: '−' },
+} as const;
+function DxChangeLine({ card }: { card: BoardCard }): JSX.Element | null {
+  const changes = card.dxChanges;
+  if (!changes) return null;
+  const since = card.patient.prevPreviewDate;
+  const today = card.patient.previewDate;
+  const when =
+    since && today && daysBetween(since, today) === 1
+      ? 'kemarin'
+      : since
+        ? formatDmy(since).slice(0, 5)
+        : 'catatan sebelumnya';
+  const rows: Array<{ kind: keyof typeof DX_KIND; text: string }> = [
+    ...changes.added.map((text) => ({ kind: 'added' as const, text })),
+    ...changes.changed.map((change) => ({ kind: 'changed' as const, text: change.to })),
+    ...changes.removed.map((text) => ({ kind: 'removed' as const, text })),
+  ];
+  const full = rows.map((row) => `${DX_KIND[row.kind].word}: ${row.text}`).join('\n');
+  // One line, in words (not "+2 −1": that read as positive/negative, see above).
+  // The spelled-out rows live in the title and on the patient page.
+  const summary = [
+    changes.added.length ? `${changes.added.length} baru` : '',
+    changes.changed.length ? `${changes.changed.length} diubah` : '',
+    changes.removed.length ? `${changes.removed.length} dihapus` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <p
+      className="mb-1 truncate rounded-md bg-black/10 px-1.5 py-1 text-[11px] font-semibold leading-snug dark:bg-white/10"
+      title={full}
+    >
+      Diagnosis berubah dari {when}: {summary}
+    </p>
+  );
+}
+
+/**
+ * The horizontal swipe on a phone card (2026-10-10).
+ *
+ * Touch only, and only when clearly sideways (|dx| > 2|dy|), so a vertical
+ * scroll never turns into a tick. The card follows the finger; past 96 px it
+ * commits on release. A swipe swallows the click that follows it, so it never
+ * also opens the patient.
+ */
+const SWIPE_COMMIT = 96;
+function useSwipe({
+  enabled,
+  onStart,
+  onRight,
+  onLeft,
+}: {
+  enabled: boolean;
+  onStart: () => void;
+  onRight: () => void;
+  onLeft: (() => void) | null;
+}): {
+  handlers: React.HTMLAttributes<HTMLDivElement>;
+  style: React.CSSProperties | undefined;
+  hint: 'left' | 'right' | null;
+} {
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const horizontal = useRef(false);
+  const swallow = useRef(false);
+  const [dx, setDx] = useState(0);
+  if (!enabled) return { handlers: {}, style: undefined, hint: null };
+  const clamp = (value: number): number => (value < 0 && !onLeft ? 0 : Math.max(-140, Math.min(140, value)));
+  return {
+    handlers: {
+      onTouchStart: (event) => {
+        const touch = event.touches[0];
+        if (!touch || event.touches.length > 1) return;
+        start.current = { x: touch.clientX, y: touch.clientY };
+        horizontal.current = false;
+      },
+      onTouchMove: (event) => {
+        const from = start.current;
+        const touch = event.touches[0];
+        if (!from || !touch) return;
+        const moveX = touch.clientX - from.x;
+        const moveY = touch.clientY - from.y;
+        if (!horizontal.current) {
+          if (Math.abs(moveY) > 12 && Math.abs(moveY) > Math.abs(moveX)) {
+            start.current = null;
+            return;
+          }
+          if (Math.abs(moveX) > 12 && Math.abs(moveX) > 2 * Math.abs(moveY)) {
+            horizontal.current = true;
+            onStart();
+          } else return;
+        }
+        setDx(clamp(moveX));
+      },
+      onTouchEnd: () => {
+        const was = horizontal.current;
+        start.current = null;
+        horizontal.current = false;
+        if (!was) return;
+        swallow.current = true;
+        window.setTimeout(() => (swallow.current = false), 400);
+        if (dx >= SWIPE_COMMIT) onRight();
+        else if (dx <= -SWIPE_COMMIT && onLeft) onLeft();
+        setDx(0);
+      },
+      onTouchCancel: () => {
+        start.current = null;
+        horizontal.current = false;
+        setDx(0);
+      },
+      onClickCapture: (event) => {
+        if (!swallow.current) return;
+        swallow.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      },
+    },
+    style: {
+      touchAction: 'pan-y',
+      transform: dx ? `translateX(${dx}px)` : undefined,
+      transition: dx ? 'none' : 'transform 150ms ease-out',
+    },
+    hint: dx >= SWIPE_COMMIT ? 'right' : dx <= -SWIPE_COMMIT ? 'left' : null,
+  };
+}
+
+/** Memoised: the board redraws on every filter, selection and drag change. */
+export const PatientCard = memo(PatientCardView);

@@ -1,0 +1,745 @@
+import { DEFAULT_REMINDER_KINDS, activeReminders, type ActiveReminder, type ReminderKind } from './reminders';
+import { reorderWithinVisible } from './reorder';
+import { checklistProgress, resolveCardColor, type ChecklistStates } from './checklist';
+import { itemsForPatientDay } from './checklistDay';
+import { hariRawat } from './clinicalDate';
+import { displayName, redactName } from './identity';
+import { dpjpById, type Dpjp } from './dpjp';
+import { canonicalWard, visitIndex } from './denahPlan';
+import { dischargeStage, migrateLegacyDischarge, usulDays, usulOpen, type DischargeStage } from './discharge';
+import type {
+  ChecklistItemDef,
+  ClinicalDate,
+  ChecklistTickState,
+  Patient,
+} from './types';
+
+/**
+ * SPEC F2 / F10 — everything the board decides, with no React and no Firebase
+ * in scope so it can be tested directly.
+ */
+
+/** Titles a resident writes before a name; they carry no identifying value. */
+const HONORIFICS = new Set([
+  'tn', 'ny', 'nn', 'an', 'sdr', 'sdri', 'by', 'bp', 'ibu', 'bapak', 'tuan', 'nyonya',
+]);
+
+/**
+ * SPEC 18 — the board shows initials + bed by default because full names are
+ * stored and a ward computer is a shoulder-surfing environment.
+ */
+export function initials(name: string): string {
+  const words = name
+    .split(/\s+/)
+    .map((word) => word.replace(/[.,]/g, ''))
+    .filter(Boolean)
+    .filter((word) => !HONORIFICS.has(word.toLowerCase()));
+
+  const source = words.length > 0 ? words : name.split(/\s+/).filter(Boolean);
+  const letters = source.slice(0, 3).map((word) => word.charAt(0).toUpperCase());
+  return letters.length > 0 ? letters.join('.') : '—';
+}
+
+/**
+ * A patient with no typed name is titled by the first line of their note
+ * (see identity.ts). Initials-only mode applies to the derived title too —
+ * a privacy setting that hid the name field while leaking the note's opening
+ * line would be worse than no setting.
+ */
+export function cardTitle(
+  patient: Patient,
+  showInitialsOnly: boolean,
+  /**
+   * Append the bed. On by default for the places where the title is the only
+   * "where" — the folded card, the archive rows. Off for the full board card,
+   * whose location line directly underneath already ends in the bed: the same
+   * number twice, one line apart, is noise on the one line that has to be
+   * read at a glance.
+   */
+  withBed = true,
+): string {
+  const name = displayName(patient);
+  const bed = withBed ? patient.bed : undefined;
+  if (!name) return bed ? `Catatan baru · ${bed}` : 'Catatan baru';
+
+  const label = showInitialsOnly ? initials(name) : name;
+  return bed ? `${label} · ${bed}` : label;
+}
+
+/**
+ * Reads the denormalised board cache, ignoring it when it belongs to a
+ * previous clinical day. That check is what makes the midnight reset work on
+ * the board with no job and no network: a stale date simply reads as
+ * "nothing ticked yet".
+ */
+export function boardTickStates(
+  patient: Patient,
+  items: readonly ChecklistItemDef[],
+  today: ClinicalDate,
+): ChecklistStates {
+  const cache = patient.boardChecklist;
+  const fresh = cache && cache.date === today ? cache.done : {};
+  const states: Record<string, ChecklistTickState> = {};
+  for (const item of items) {
+    states[item.id] = { done: fresh[item.id] === true, at: null, by: null };
+  }
+  return states;
+}
+
+export interface BoardCard {
+  /** Derived from the planned date, so it is right every morning by itself. */
+  discharge: DischargeStage | null;
+  /** Days an "usul H-1" has been open (0 = marked today), null when none is. */
+  usulDays: number | null;
+  patient: Patient;
+  /** Name with the bed — for the folded card, which has no location line. */
+  title: string;
+  /** Name alone — for the full card, whose location line carries the bed. */
+  name: string;
+  /**
+   * The medical record number for the tap-to-copy chip, or null.
+   *
+   * `mrnHidden` in initials-only mode: the chip still copies, but does not
+   * print the digits. An RM number identifies a patient as surely as a name,
+   * and hiding one while showing the other is not the privacy the mode
+   * promises (SPEC 18).
+   */
+  mrn: string | null;
+  mrnHidden: boolean;
+  colorToken: string;
+  hariRawat: number;
+  /** Under closer watch; drawn as a marker on the card. */
+  pemantauan: boolean;
+  /**
+   * Whether this patient needs a tracing today, and why.
+   *
+   * `'harian'` — standing order, every day.
+   * `'hari-ini'` — marked for today only; the mark stops matching tomorrow.
+   * `null` — no tracing due.
+   *
+   * Resolved here rather than on the card so the expiry rule lives with the
+   * clinical date that decides it, and so the card cannot accidentally render
+   * yesterday's mark by comparing the wrong day.
+   */
+  ekg: 'harian' | 'hari-ini' | null;
+  /** Daily reminders due today, with their tick; see `domain/reminders`. */
+  reminders: ActiveReminder[];
+  progress: ReturnType<typeof checklistProgress>;
+  /** Consultant detected from the note, for the card badge. */
+  dpjp: Dpjp | null;
+  /**
+   * Joint care, and WHICH SIDE of it we are on.
+   *
+   * `null`      — not a KJS patient.
+   * `'kardio'`  — the patient belongs to another service and we are the
+   *               cardiology consultant on them.
+   * `'ts'`      — the patient is ours, co-managed with another service.
+   *
+   * The direction matters more than the fact on a board: on a `kardio` patient
+   * the plan is a recommendation someone else decides to follow, and the
+   * discharge, the orders and the primary DPJP are not ours. Reading a card
+   * without knowing which of those two you are looking at is the difference
+   * between writing an instruction and writing an opinion.
+   */
+  kjs: KjsRole | null;
+  /** Chief on duty, shown on the card. */
+  chief: string | null;
+  preview: string;
+  previewIsStale: boolean;
+  /**
+   * What the diagnosis list gained and lost since the previous day's note
+   * (2026-10-10). Null when there is nothing to compare: no note today, or no
+   * earlier one kept.
+   */
+  dxChanges: DxChanges | null;
+  /** "Periksa lagi" findings on today's note; null when not known for today. */
+  checkCount: number | null;
+}
+
+export interface DxChanges {
+  /** Diagnoses that are new today. */
+  added: string[];
+  /** The same diagnosis, reworded or with a new value: `Hyponatremia (121) → (123)`. */
+  changed: Array<{ from: string; to: string }>;
+  /** Diagnoses no longer in today's list. */
+  removed: string[];
+}
+
+/**
+ * The diagnosis lines that differ between two previews, ignoring bullets,
+ * case and spacing.
+ *
+ * A line whose NAME is unchanged but whose bracket or qualifier is
+ * ("Hyponatremia (121)" → "Hyponatremia (121 → 123)") is one CHANGED
+ * diagnosis, not one removed and one added: shown as two it read as a
+ * diagnosis dropped and another invented (Avi, 10.6 screenshot).
+ */
+export function previewDiff(previous: string, current: string): DxChanges {
+  const clean = (line: string): string => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').replace(/\s+/g, ' ').trim();
+  const key = (line: string): string => clean(line).toLowerCase();
+  /*
+    The NAME of a diagnosis: up to its first bracket, dash, comma, cause
+    ("ec", "dd", "on", "post"), or first word carrying a number or a roman
+    numeral ("TIMI 4/7", "NYHA III", "stage 3a"). Those are what change from
+    day to day; the name is what stays.
+  */
+  const name = (line: string): string => {
+    const head = key(line).split(/\s*[(\[,;]|\s+-\s+|\s+(?:dd\/?|ec\.?|e\.c\.?|on|post)\s/)[0] ?? '';
+    const words: string[] = [];
+    for (const word of head.split(' ')) {
+      if (/\d/.test(word) || /^(?:i{1,3}|iv|v|vi{0,3})$/.test(word)) break;
+      words.push(word);
+    }
+    return words.join(' ').trim();
+  };
+  // Same name, or one name is the other plus more words ("NSTEMI" → "NSTEMI TIMI").
+  const sameDiagnosis = (a: string, b: string): boolean =>
+    a.length >= 4 && b.length >= 4 && (a === b || a.startsWith(`${b} `) || b.startsWith(`${a} `));
+  const lines = (text: string): string[] =>
+    text
+      .replace(/…$/, '')
+      .split('\n')
+      .map(clean)
+      .filter((line) => line.length > 0 && !/^(?:mohon\s+i[zj]in|diagnos)/i.test(line));
+  const before = lines(previous);
+  const after = lines(current);
+  const had = new Set(before.map(key));
+  const has = new Set(after.map(key));
+  const added = after.filter((line) => !had.has(key(line)));
+  const removed = before.filter((line) => !has.has(key(line)));
+  const changed: DxChanges['changed'] = [];
+  for (const line of [...added]) {
+    const own = name(line);
+    const match = removed.find((old) => sameDiagnosis(name(old), own));
+    if (!match) continue;
+    changed.push({ from: match, to: line });
+    added.splice(added.indexOf(line), 1);
+    removed.splice(removed.indexOf(match), 1);
+  }
+  return { added, changed, removed };
+}
+
+export function buildCard(
+  patient: Patient,
+  items: readonly ChecklistItemDef[],
+  today: ClinicalDate,
+  showInitialsOnly: boolean,
+  reminderKinds: readonly ReminderKind[] = DEFAULT_REMINDER_KINDS,
+): BoardCard {
+  // Steps that do not apply today (Order obat on the discharge day) are
+  // inactive here, so progress and colour do not wait for them.
+  items = itemsForPatientDay(items, patient, today, today);
+  const states = boardTickStates(patient, items, today);
+  return {
+    patient,
+    title: cardTitle(patient, showInitialsOnly),
+    name: cardTitle(patient, showInitialsOnly, false),
+    mrn: patient.mrn?.trim() || null,
+    mrnHidden: showInitialsOnly,
+    colorToken: resolveCardColor(items, states, patient.colorOverride),
+    hariRawat: hariRawat(today, patient.admittedAt),
+    pemantauan: patient.pemantauan === true,
+    // Standing order wins the label when both are set: it is the stronger
+    // statement, and showing "hari ini" on a patient who needs one daily would
+    // understate it.
+    ekg: patient.ekgHarian === true ? 'harian' : patient.ekgFor === today ? 'hari-ini' : null,
+    reminders: activeReminders(patient, reminderKinds, today),
+    progress: checklistProgress(items, states),
+    // Redacted when the board is in initials-only mode. Reducing the title to
+    // initials while the preview under it spells the name out in full is not
+    // partial protection, it is none — and a stored preview written before this
+    // rule existed can still contain the name.
+    // Deliberately NOT folded into `colorToken`. The card colour tracks how far
+    // the round got; discharge is a different axis entirely, and overloading one
+    // colour to mean both makes neither readable.
+    // Derived rather than stored: a stage is a fact about today that goes
+    // stale overnight, a date does not.
+    discharge: dischargeStage(migrateLegacyDischarge(patient, today), today),
+    usulDays: usulOpen(patient) && patient.usulH1 ? usulDays(patient.usulH1, today) : null,
+    chief: patient.chief?.trim() || null,
+    dpjp: patient.dpjpId ? (dpjpById(patient.dpjpId) ?? null) : null,
+    // Read from the preview rather than a field: KJS is stated in the note's
+    // opening line, and a second place to record it is a second place for it
+    // to be wrong.
+    /*
+      The STORED role first, and the preview only as a fallback for patients
+      whose note has not been re-saved since this field existed.
+
+      Deriving it from `preview` was the bug: `preview` is the card's display
+      excerpt, which on almost every patient is the diagnosis block — the DPJP
+      lines that decide this are nowhere in it. `searchBlob` is worse: it is
+      built from name, MRN, bed, ward and diagnoses, and never contains a word
+      of the note body. So the badge fired only on the handful of patients
+      whose preview happened to start at the note header, and Ny. Nurhayati — a
+      KJS patient in every note she has — showed nothing at all.
+
+      It is computed once, at write time, from the WHOLE body, next to where
+      `dpjpId` is derived.
+    */
+    kjs: patient.kjs ?? kjsRole(patient.preview ?? ''),
+    preview: showInitialsOnly
+      ? redactName(patient.preview ?? '', patient.name ?? '')
+      : (patient.preview ?? ''),
+    // Falling back to an older day is fine, but the card says so rather than
+    // implying the note was written today.
+    previewIsStale: Boolean(patient.preview) && patient.previewDate !== today,
+    dxChanges:
+      patient.preview && patient.previewDate === today && patient.prevPreview && !showInitialsOnly
+        ? (() => {
+            const diff = previewDiff(patient.prevPreview, patient.preview);
+            return diff.added.length + diff.removed.length + diff.changed.length > 0 ? diff : null;
+          })()
+        : null,
+    checkCount: patient.checkDate === today && typeof patient.checkCount === 'number' ? patient.checkCount : null,
+  };
+}
+
+/**
+ * "Status" order (2026-10-10): what still needs doing first.
+ *   0 no note at all · 1 SOAP still yesterday's · 2 SOAP today, checklist open
+ *   · 3 everything done
+ * The board sorts by this, then by location, and heads each group.
+ */
+export function statusRank(card: Pick<BoardCard, 'preview' | 'previewIsStale' | 'progress'>): number {
+  const soap = soapState(card);
+  if (soap === 'none') return 0;
+  if (soap === 'stale') return 1;
+  return card.progress.complete ? 3 : 2;
+}
+
+export const STATUS_LABEL = ['Belum ada SOAP', 'SOAP belum diperbarui', 'SOAP hari ini · checklist belum selesai', 'Selesai'] as const;
+
+/** First N lines of the preview, for the card body. */
+export function previewLines(preview: string, max = 4): string[] {
+  return preview
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, max);
+}
+
+/**
+ * The first diagnosis and how many there are, for the compact layouts. Headings
+ * ("Diagnosa Utama :") are not diagnoses, and the "Problem :" block that follows
+ * them is not counted. Display only: the stored text is not touched.
+ */
+export function diagnosisSummary(preview: string): { first: string; count: number } {
+  const lines = previewLines(preview, Number.POSITIVE_INFINITY);
+  const problems = lines.findIndex((line, at) => at > 0 && /^problem\b.*:\s*$/i.test(line));
+  const items = (problems > 0 ? lines.slice(0, problems) : lines)
+    .filter((line) => !/:\s*$/.test(line))
+    .map((line) => line.replace(/^(?:[-*•]|\d+[.)])\s+/, ''));
+  return { first: items[0] ?? '', count: items.length };
+}
+
+export interface BoardFilters {
+  query: string;
+  wards: string[];
+  labels: string[];
+  /** Checklist item ids that must still be UNDONE today ("belum …" chips). */
+  pendingItemIds: string[];
+}
+
+export const EMPTY_FILTERS: BoardFilters = {
+  query: '',
+  wards: [],
+  labels: [],
+  pendingItemIds: [],
+};
+
+/**
+ * SPEC F10 — client-side, offline, over `searchBlob`.
+ *
+ * All tokens must match, in any order, as substrings. Substring rather than
+ * prefix because a resident searching "melati" for a ward or "3b" for a bed
+ * is matching mid-string, and requiring word starts would silently return
+ * nothing.
+ */
+export function matchesQuery(patient: Patient, query: string): boolean {
+  // "bed 5" and "kamar 407" are one thing: split, the 5 would match any RM with a 5.
+  const tokens = query.trim().toLowerCase().match(/(?:bed|kamar)\s+\S+|\S+/g) ?? [];
+  if (tokens.length === 0) return true;
+  const haystack = patientHaystack(patient);
+  return tokens.every((token) => haystack.includes(token));
+}
+
+/**
+ * Everything a patient is searched by WITHOUT opening their notes: name, RM,
+ * bed, ward, diagnoses, the card preview and the consultant. Lowercase.
+ */
+export function patientHaystack(patient: Patient): string {
+  // The preview is included because a patient with no typed name is titled by
+  // their note — searching for the words on the card must find the card.
+  const dpjp = patient.dpjpId ? dpjpById(patient.dpjpId) : undefined;
+  const room = patient.room?.trim() ?? '';
+  const bed = patient.bed?.trim() ?? '';
+
+  return [
+    patient.searchBlob,
+    patient.name ?? '',
+    patient.preview ?? '',
+    // Built here, not in `searchBlob`, so patients saved before this are found
+    // too. Every way a resident says a place: "407", "kamar 407", "bed 5", "407/5".
+    room ? `kamar ${room}` : '',
+    // Lowercased below with the rest, so a bed "3B" is found as "bed 3b".
+    bed ? `bed ${bed}` : '',
+    room && bed ? `${room}/${bed}` : '',
+    // The note written when the patient was archived ("catatan arsip").
+    patient.archive?.note ?? '',
+    // Searchable by consultant, by full name or by initials: "AHN" and
+    // "nashar" both find his patients.
+    dpjp ? `${dpjp.name} ${dpjp.initials} ${dpjp.match.join(' ')}` : '',
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
+export function filterPatients(
+  patients: readonly Patient[],
+  filters: BoardFilters,
+  items: readonly ChecklistItemDef[],
+  today: ClinicalDate,
+): Patient[] {
+  return patients.filter((patient) => {
+    if (!matchesQuery(patient, filters.query)) return false;
+    if (filters.wards.length > 0 && !filters.wards.includes(patient.ward ?? '')) return false;
+    if (
+      filters.labels.length > 0 &&
+      !filters.labels.some((label) => patient.labels.includes(label))
+    ) {
+      return false;
+    }
+    if (filters.pendingItemIds.length > 0) {
+      const dayItems = itemsForPatientDay(items, patient, today, today);
+      const states = boardTickStates(patient, dayItems, today);
+      const active = new Set(dayItems.filter((item) => item.active).map((item) => item.id));
+      // A step that does not apply today is not "belum" either.
+      const allPending = filters.pendingItemIds.every(
+        (itemId) => active.has(itemId) && !states[itemId]?.done,
+      );
+      if (!allPending) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Pinned first, then most recently updated.
+ *
+ * The Firestore query already orders this way, but the offline cache can serve
+ * a partially-reconciled set, so the client sorts again rather than trusting
+ * arrival order.
+ */
+/**
+ * Pinned first, otherwise the query's own order (newest note first).
+ *
+ * This used to re-sort by `updatedAt`, which meant every keystroke moved the
+ * card being typed into to the top of the board and pushed everything else
+ * down. On a round that is unusable: you look away, look back, and the card
+ * you were reading is somewhere else. Position is now stable for the whole
+ * session — only pinning moves anything.
+ */
+export function sortPatients(patients: readonly Patient[]): Patient[] {
+  const pinned = patients.filter((patient) => patient.pinned);
+  const rest = patients.filter((patient) => !patient.pinned);
+  return [...pinned, ...rest];
+}
+
+/** Distinct ward values present on the board, for the filter chips. */
+export function availableWards(patients: readonly Patient[]): string[] {
+  return [...new Set(patients.map((patient) => patient.ward).filter(Boolean))].sort() as string[];
+}
+
+export function availableLabels(patients: readonly Patient[]): string[] {
+  return [...new Set(patients.flatMap((patient) => patient.labels))].sort();
+}
+
+export function hasActiveFilters(filters: BoardFilters): boolean {
+  return (
+    filters.query.trim().length > 0 ||
+    filters.wards.length > 0 ||
+    filters.labels.length > 0 ||
+    filters.pendingItemIds.length > 0
+  );
+}
+
+/**
+ * Sort by physical location, the way the denah is laid out.
+ *
+ * Rounds walk the ward in room order, so a board in that order is a board you
+ * can work down without hunting. This is the same information the denah
+ * encodes — ward, then room, then bed — read from the fields already parsed out
+ * of each note.
+ *
+ * Room and bed are compared NUMERICALLY where they look like numbers. A string
+ * sort puts 410 between 41 and 42, and orders 1, 10, 2 — which on a ward with
+ * rooms 401–421 is worse than no sorting at all, because it looks deliberate.
+ * Anything non-numeric (`VIP`, `Super VIP`) falls back to a text compare and
+ * sorts after the numbered rooms.
+ */
+function locationKey(value: string | undefined): [number, string] {
+  const text = (value ?? '').trim();
+  if (!text) return [Number.MAX_SAFE_INTEGER, ''];
+
+  const digits = /^(\d+)/.exec(text);
+  return digits?.[1]
+    ? [Number(digits[1]), text.toLowerCase()]
+    : [Number.MAX_SAFE_INTEGER - 1, text.toLowerCase()];
+}
+
+function compareLocation(a: Patient, b: Patient): number {
+  // Ward first, alphabetically: a ward is a place you walk to, not a number.
+  const wardDiff = (a.ward ?? '').localeCompare(b.ward ?? '', 'id');
+  if (wardDiff !== 0) return wardDiff;
+
+  const [aRoom, aRoomText] = locationKey(a.room);
+  const [bRoom, bRoomText] = locationKey(b.room);
+  if (aRoom !== bRoom) return aRoom - bRoom;
+  if (aRoomText !== bRoomText) return aRoomText.localeCompare(bRoomText, 'id');
+
+  const [aBed, aBedText] = locationKey(a.bed);
+  const [bBed, bBedText] = locationKey(b.bed);
+  if (aBed !== bBed) return aBed - bBed;
+  return aBedText.localeCompare(bBedText, 'id');
+}
+
+export type BoardOrder = 'recent' | 'location' | 'visite' | 'dpjp' | 'status' | 'custom';
+
+/**
+ * "Urutan visite": the order the round walks, from the ward's visit route
+ * (`denahPlan.ts`), beds ascending inside a room. Patients in a room off the
+ * route, or in a ward without one, follow in plain location order; patients
+ * with no location last.
+ */
+function compareVisit(a: Patient, b: Patient): number {
+  const aWard = canonicalWard(a.ward ?? '');
+  const bWard = canonicalWard(b.ward ?? '');
+  if (aWard !== bWard) return compareLocation(a, b);
+  const aAt = visitIndex(a.ward, a.room);
+  const bAt = visitIndex(b.ward, b.room);
+  if (aAt !== null && bAt !== null && aAt !== bAt) return aAt - bAt;
+  if ((aAt === null) !== (bAt === null)) return aAt === null ? 1 : -1;
+  return compareLocation(a, b);
+}
+
+/**
+ * Apply a hand-made order.
+ *
+ * The order is a list of patient IDS held in settings, not a rank field on
+ * each patient. Dragging one card would otherwise write to every patient
+ * between the old position and the new one — N documents for one gesture, on
+ * ward wifi, with a merge conflict available at each of them.
+ *
+ * Patients MISSING from the list come first, in whatever order they arrived.
+ * A patient admitted after the last reorder has no place in the list, and
+ * putting the unknown ones last would file every new admission at the bottom
+ * of a long board — out of sight, which for a ward list is the one failure
+ * that matters. Appearing at the top is noticeable and easily corrected; being
+ * hidden is neither.
+ */
+function applyCustomOrder(patients: readonly Patient[], ids: readonly string[]): Patient[] {
+  const rank = new Map(ids.map((id, index) => [id, index]));
+  const known: Patient[] = [];
+  const unknown: Patient[] = [];
+
+  for (const patient of patients) {
+    (rank.has(patient.id) ? known : unknown).push(patient);
+  }
+
+  known.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  return [...unknown, ...known];
+}
+
+/**
+ * Move one id to sit where another currently is.
+ *
+ * Returns the FULL list including ids that were not in the stored order yet,
+ * so the result is a complete order rather than a patch that has to be merged
+ * with the old one — the stored list can then be replaced outright.
+ *
+ * `hidden` carries the rest of the board: the stored order and every patient
+ * id. Without it the result held only the cards ON SCREEN, and the board
+ * saved it as the whole order: a drag in Titipan, or during a search, wiped
+ * the hand-made order of Pasien saya (every patient "unknown", so all at the
+ * top). The same "stored list rebuilt from a filtered view" that
+ * `reorderWithinVisible` and `mergeLayouts` already guard against.
+ */
+export function reorderBoard(
+  current: readonly Patient[],
+  draggedId: string,
+  targetId: string,
+  hidden?: { stored: readonly string[]; all: readonly string[] },
+): string[] {
+  const ids = current.map((patient) => patient.id);
+  const from = ids.indexOf(draggedId);
+  const to = ids.indexOf(targetId);
+
+  if (hidden) {
+    const known = new Set(hidden.stored);
+    const everyone = new Set([...hidden.all, ...ids]);
+    // As displayed: ids not in the stored order first (see applyCustomOrder),
+    // then the stored order, minus patients no longer on the board.
+    const full = [
+      ...[...everyone].filter((id) => !known.has(id)),
+      ...hidden.stored.filter((id) => everyone.has(id)),
+    ];
+    if (from === -1 || to === -1 || from === to) return full;
+    return reorderWithinVisible(full, ids, (id) => id, draggedId, targetId);
+  }
+
+  // A card dropped on itself, or on something no longer on the board, is not a
+  // move — returning the list unchanged avoids writing a no-op order.
+  if (from === -1 || to === -1 || from === to) return ids;
+
+  const next = [...ids];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved!);
+  return next;
+}
+
+/**
+ * Patients with no location sort last, together.
+ *
+ * They are the ones just created and not yet filled in, and burying them among
+ * the located patients means the card you are about to write in is somewhere
+ * unpredictable. At the end they are exactly where you left them.
+ */
+export function orderPatients(
+  patients: readonly Patient[],
+  order: BoardOrder,
+  customIds: readonly string[] = [],
+): Patient[] {
+  const pinned = patients.filter((patient) => patient.pinned);
+  const rest = patients.filter((patient) => !patient.pinned);
+
+  if (order === 'recent') return [...pinned, ...rest];
+
+  /**
+   * Pinned cards stay above the hand-made order, as they do in every other
+   * order. Pinning says "this one first" regardless of how the rest is
+   * arranged, and having one mode where it stopped meaning that would make it
+   * untrustworthy in all of them.
+   */
+  if (order === 'custom') return [...pinned, ...applyCustomOrder(rest, customIds)];
+
+  const sorted = [...rest].sort((a, b) => {
+    if (order === 'dpjp') {
+      // Unassigned last, then by initials, then by location within a consultant
+      // — a DPJP's list is still walked in room order.
+      const aDpjp = a.dpjpId ? (dpjpById(a.dpjpId)?.initials ?? '') : '';
+      const bDpjp = b.dpjpId ? (dpjpById(b.dpjpId)?.initials ?? '') : '';
+      if (aDpjp !== bDpjp) {
+        if (!aDpjp) return 1;
+        if (!bDpjp) return -1;
+        return aDpjp.localeCompare(bDpjp, 'id');
+      }
+      return compareLocation(a, b);
+    }
+
+    const aHas = Boolean(a.ward?.trim() || a.room?.trim() || a.bed?.trim());
+    const bHas = Boolean(b.ward?.trim() || b.room?.trim() || b.bed?.trim());
+    if (aHas !== bHas) return aHas ? -1 : 1;
+
+    return order === 'visite' ? compareVisit(a, b) : compareLocation(a, b);
+  });
+
+  return [...pinned, ...sorted];
+}
+
+/** Heading a card belongs under, for the grouped board. */
+export function groupLabel(patient: Patient, order: BoardOrder): string {
+  if (order === 'location') {
+    const ward = patient.ward?.trim();
+    const room = patient.room?.trim();
+    if (!ward && !room) return 'Tanpa lokasi';
+    return [ward, room ? `Kamar ${room}` : null].filter(Boolean).join(' · ');
+  }
+
+  if (order === 'visite') {
+    const ward = patient.ward?.trim();
+    const room = patient.room?.trim();
+    if (!ward && !room) return 'Tanpa lokasi';
+    return ward ? canonicalWard(ward) : 'Tanpa bangsal';
+  }
+
+  if (order === 'dpjp') {
+    const dpjp = patient.dpjpId ? dpjpById(patient.dpjpId) : undefined;
+    return dpjp ? `${dpjp.initials} — ${dpjp.name}` : 'Tanpa DPJP';
+  }
+
+  return '';
+}
+
+
+export type KjsRole = 'kardio' | 'ts';
+
+/**
+ * Which side of a joint-care arrangement a note is written from.
+ *
+ * REWRITTEN 2026-09-11 against 190 real entries from the export, after the
+ * first version got it wrong in both directions.
+ *
+ * The first rule was "a `DPJP Kardio` line means we are the consultant". The
+ * corpus says otherwise: 19 notes carry that line while cardiology is the
+ * PRIMARY service — `_DPJP Kardio (Utama): dr. Zaenab Djafar_`, or a solitary
+ * `_DPJP Kardio : ..._` on an ordinary cardiology patient. Calling those
+ * "another service's patient" is the expensive mistake: it says the plan is
+ * only a recommendation and the discharge is not ours, on a patient who is
+ * entirely ours.
+ *
+ * What actually distinguishes the two is WHO IS MARKED `Utama`:
+ *
+ *   `_DPJP BTKV (Utama) : …_`  +  `_DPJP Kardio : …_`   → we are consulted
+ *   `_DPJP Kardio (Utama): …_` +  `_DPJP Orthopedi: …_` → the patient is ours
+ *
+ * So `kardio` requires a cardiology line AND a primary line that is not it.
+ * Absent that, the literal word `KJS` still marks joint care from our side —
+ * which is how `_DPJP KJS Anestesi: …_` on a patient whose Utama is a
+ * cardiologist reads correctly as ours.
+ *
+ * Everything else is `null`. A patient with several DPJP lines and no KJS
+ * anywhere is not silently promoted to joint care: multi-service is ordinary,
+ * and inventing a KJS badge for it would put a mark on half the board.
+ */
+export function kjsRole(text: string): KjsRole | null {
+  const lines = text.split('\n').filter((line) => /DPJP/i.test(line));
+
+  // `DPJP Kardio`, `DPJP Kardiologi`, `DPJP Kardio (Utama)`, `DPJP (Bagian)
+  // Kardio` — and never `\b` before DPJP, because these lines are written
+  // inside `_…_` and `_` is a word character, which is the trap that hid
+  // `hari ke-9` from the day-marker matcher.
+  const kardio = lines.findIndex((line) => /DPJP\s*(?:\([^)]*\)\s*)?Kardio/i.test(line));
+  const utama = lines.findIndex((line) => /utama/i.test(line));
+
+  if (kardio !== -1 && utama !== -1 && utama !== kardio) return 'kardio';
+  if (/\bKJS\b/i.test(text)) return 'ts';
+  return null;
+}
+
+/**
+ * Is today's SOAP written? (2026-10-10, the card's status rail.)
+ *
+ *   today  the board preview is from today's note
+ *   stale  the newest note is from an earlier day (carried forward, not yet updated)
+ *   none   no note at all
+ *
+ * Read from what the card already holds (`preview`, `previewIsStale`), so the
+ * board does not have to load a single note body to answer it.
+ */
+export type SoapState = 'today' | 'stale' | 'none';
+
+export function soapState(card: Pick<BoardCard, 'preview' | 'previewIsStale'>): SoapState {
+  if (!card.preview.trim()) return 'none';
+  return card.previewIsStale ? 'stale' : 'today';
+}
+
+/**
+ * The next checklist step, short enough for one line of a card:
+ * "Visite pasien + TTV + EKG sesuai kebutuhan" → "Visite pasien".
+ * The full label stays on the patient page and in the quick checklist.
+ */
+export function shortStepLabel(label: string | null): string {
+  if (!label) return '';
+  const first = label.split(/\s+\+\s+|\s*[,;(]\s*/)[0]?.trim() ?? label;
+  return first.length > 28 ? `${first.slice(0, 27).trimEnd()}…` : first;
+}

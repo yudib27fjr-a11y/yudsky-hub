@@ -1,0 +1,328 @@
+/**
+ * Optional AI assists, on the USER'S OWN API key.
+ *
+ * WHY BRING-YOUR-OWN-KEY
+ *
+ * Plano is shared. A key baked into the build is a key every user spends, and
+ * a key in a GitHub Pages bundle is a key anyone can read out of it — a public
+ * static site has no server to hide a secret behind. So each user brings their
+ * own, or the AI features simply are not there for them.
+ *
+ * WHERE IT IS KEPT
+ *
+ * localStorage on the device is the working copy. Since 12.6 the ACCOUNT
+ * holds it too (`users/{uid}/private/ai`, owner-only, its own document —
+ * not the profile, not the export), by Avi's choice (2026-10-12): pasting
+ * it on every device and after every sign-out cost more than it protected.
+ * The trade-off, accepted: any device signed in to the account can read the
+ * key. Sign-out still clears the device copy and the offline cache.
+ *
+ * WHAT LEAVES THE DEVICE
+ *
+ * Every AI call sends the text it is given to Anthropic. That text is clinical.
+ * The features are therefore off unless a key is present AND the feature is
+ * switched on (both follow the account since 12.6), and each call site says what it is about to
+ * send. This is a hospital-policy question as much as a technical one, which
+ * is why nothing here is on by default.
+ */
+
+const KEY = 'visite.ai.key';
+const FLAGS = 'visite.ai.flags';
+
+export interface AiFlags {
+  /** Suggest a structured lab line from pasted text. */
+  lab: boolean;
+  /** Suggest a tidied SOAP body. Never applied automatically. */
+  soap: boolean;
+  /**
+   * A second pass over the note, looking for what the six deterministic rules
+   * cannot express.
+   *
+   * Additive only. The rules keep running and their findings are listed
+   * first — this never replaces them, because a checker whose findings vary
+   * between identical runs is one that stops being trusted.
+   */
+  check: boolean;
+  /**
+   * Summarise a whole admission for presenting to a consultant.
+   *
+   * The one AI feature here with no deterministic equivalent: the task is
+   * deciding which three weeks of daily notes matter, not transforming text.
+   * It also writes nothing back, so its worst outcome is a summary somebody
+   * reads and corrects.
+   */
+  summary: boolean;
+  /**
+   * Ward census verification (Helper, WIP): the DENAH and LIST PASIEN PDFs
+   * are sent to the model to be transcribed.
+   *
+   * Its own switch, not folded into another, because it is the one feature
+   * that sends WHOLE documents — every patient's name, RM and date of birth
+   * on the ward — rather than one note someone is looking at. That is a
+   * different decision and it gets its own yes.
+   */
+  census: boolean;
+  /** Sensus maker: extract one DPJP's patients from the pasted lists. */
+  sensus: boolean;
+}
+
+const OFF: AiFlags = { lab: false, soap: false, check: false, summary: false, census: false, sensus: false };
+
+/**
+ * Does this look like an Anthropic key, at a glance?
+ *
+ * Not a validity check — only the API can say that. This exists for one
+ * narrow purpose: to warn when the stored value almost certainly is NOT a
+ * key at all, which happens when a password manager fills its own saved
+ * credential into the field instead. `sk-ant-` is Anthropic's own prefix and
+ * has been stable across every key format they have issued.
+ */
+export function looksLikeApiKey(value: string): boolean {
+  return value.startsWith('sk-ant-');
+}
+
+export function readApiKey(): string {
+  try {
+    return localStorage.getItem(KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function writeApiKey(value: string): void {
+  try {
+    if (value.trim()) localStorage.setItem(KEY, value.trim());
+    else localStorage.removeItem(KEY);
+  } catch (error) {
+    console.warn('[ai] key not saved', error);
+  }
+}
+
+export function readAiFlags(): AiFlags {
+  try {
+    const raw = localStorage.getItem(FLAGS);
+    if (!raw) return OFF;
+    const parsed = JSON.parse(raw) as Partial<AiFlags>;
+    return {
+      lab: parsed.lab === true,
+      soap: parsed.soap === true,
+      check: parsed.check === true,
+      summary: parsed.summary === true,
+      // Absent on every flag set saved before this existed, which reads as
+      // off: a stored "yes" to other features is not a yes to this one.
+      census: parsed.census === true,
+      sensus: parsed.sensus === true,
+    };
+  } catch {
+    return OFF;
+  }
+}
+
+export function writeAiFlags(flags: AiFlags): void {
+  try {
+    localStorage.setItem(FLAGS, JSON.stringify(flags));
+  } catch (error) {
+    console.warn('[ai] flags not saved', error);
+  }
+}
+
+/** A feature is available only with a key AND its own switch on. */
+export function aiEnabled(feature: keyof AiFlags): boolean {
+  return readApiKey().length > 0 && readAiFlags()[feature];
+}
+
+export class AiError extends Error {
+  /**
+   * True for a 429: the key's per-minute quota is full, not a broken request.
+   * A caller running calls side by side can retry these one at a time.
+   */
+  readonly rateLimited: boolean;
+  constructor(message: string, rateLimited = false) {
+    super(message);
+    this.rateLimited = rateLimited;
+  }
+}
+
+/**
+ * One call to the Anthropic messages API, from the browser.
+ *
+ * `anthropic-dangerous-direct-browser-access` is required for a browser
+ * origin. The name is fair: it means the key is in the page, which is exactly
+ * why it has to be the user's own and why it never syncs.
+ *
+ * Errors are translated rather than surfaced raw. A 401 here means one thing
+ * to the person holding it — the key is wrong — and a stack trace does not say
+ * that.
+ */
+export async function askClaude(
+  prompt: string,
+  options: { system?: string; maxTokens?: number } = {},
+): Promise<string> {
+  const data = await postMessages({
+    model: DEFAULT_MODEL,
+    max_tokens: options.maxTokens ?? 1500,
+    ...(options.system ? { system: options.system } : {}),
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const text = (data.content ?? [])
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
+    .join('\n')
+    .trim();
+
+  if (!text) throw new AiError('AI tidak mengembalikan teks.');
+  return text;
+}
+
+/**
+ * One forced tool call with a PDF attached — the shape the census extraction
+ * needs, and the only caller of it.
+ *
+ * Separate from `askClaude` rather than an option on it: that one returns
+ * text and every existing caller relies on that, while this returns the
+ * tool's INPUT as data.
+ *
+ * A forced tool and a schema keep the output's SHAPE fixed; the content is
+ * checked on this device (`selfCheckProblems`) and by the person reading it.
+ * No sampling parameter is sent — see `postMessages`.
+ */
+export async function askClaudeTool(options: {
+  model: string;
+  system: string;
+  tool: { name: string; description: string; input_schema: unknown };
+  pdfBase64: string;
+  instruction: string;
+  maxTokens: number;
+}): Promise<{ input: unknown; truncated: boolean }> {
+  const data = await postMessages({
+    model: options.model,
+    max_tokens: options.maxTokens,
+    system: options.system,
+    tools: [options.tool],
+    tool_choice: { type: 'tool', name: options.tool.name },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: options.pdfBase64 } },
+          { type: 'text', text: options.instruction },
+        ],
+      },
+    ],
+  });
+  return toolInput(data, 'AI tidak mengembalikan hasil transkripsi.');
+}
+
+/**
+ * One forced tool call on TEXT: the shape every checker that must return
+ * structured, verifiable findings needs. Same contract as `askClaudeTool`.
+ */
+export async function askClaudeStructured(options: {
+  system: string;
+  tool: { name: string; description: string; input_schema: unknown };
+  prompt: string;
+  maxTokens: number;
+  model?: string;
+}): Promise<{ input: unknown; truncated: boolean }> {
+  const data = await postMessages({
+    model: options.model ?? DEFAULT_MODEL,
+    max_tokens: options.maxTokens,
+    system: options.system,
+    tools: [options.tool],
+    tool_choice: { type: 'tool', name: options.tool.name },
+    messages: [{ role: 'user', content: options.prompt }],
+  });
+  return toolInput(data, 'AI tidak mengembalikan hasil pemeriksaan.');
+}
+
+const DEFAULT_MODEL = 'claude-sonnet-4-5';
+
+/**
+ * The request body Plano is allowed to send. Deliberately has NO sampling
+ * fields (`temperature`, `top_p`, `top_k`): the type itself refuses them.
+ *
+ * WHY (2026-10-11): census transcription failed with "400 —
+ * invalid_request_error: `temperature` is deprecated for this model". Each of
+ * the three callers built its own body by hand, and two hard-coded
+ * `temperature: 0` for "determinism" — a parameter whose support is the
+ * MODEL'S to decide, so the call broke the moment a caller moved to a newer
+ * model. Temperature 0 never guaranteed identical output anyway; what makes
+ * these results trustworthy is the forced tool, the schema, the on-device
+ * self-check and the person checking the result.
+ */
+interface MessagesRequest {
+  model: string;
+  max_tokens: number;
+  system?: string;
+  tools?: unknown[];
+  tool_choice?: { type: 'tool'; name: string };
+  messages: Array<{ role: 'user'; content: unknown }>;
+}
+
+interface MessagesResponse {
+  stop_reason?: string;
+  content?: Array<{ type?: string; text?: string; input?: unknown }>;
+}
+
+/**
+ * The ONE place a request leaves for the API: headers, offline and error
+ * translation live here once, so a fix to any of them reaches every feature.
+ *
+ * `anthropic-dangerous-direct-browser-access` is required for a browser
+ * origin. The name is fair: it means the key is in the page, which is exactly
+ * why it has to be the user's own and why it never syncs.
+ */
+async function postMessages(body: MessagesRequest): Promise<MessagesResponse> {
+  const key = readApiKey();
+  if (!key) throw new AiError('Belum ada API key.');
+
+  let response: Response;
+  try {
+    response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // Offline is the normal case on a ward, not an exception. Named as itself
+    // so nobody goes looking for a broken key.
+    throw new AiError('Tidak ada koneksi ke server AI.');
+  }
+
+  if (response.status === 401) throw new AiError('API key ditolak. Periksa kembali key-nya.');
+  if (response.status === 429) throw new AiError('Kuota API sedang penuh. Coba lagi nanti.', true);
+  if (response.status === 413) throw new AiError('Dokumen terlalu besar untuk dikirim.');
+  if (!response.ok) throw await failure(response);
+  return (await response.json()) as MessagesResponse;
+}
+
+function toolInput(data: MessagesResponse, missing: string): { input: unknown; truncated: boolean } {
+  const block = (data.content ?? []).find((candidate) => candidate.type === 'tool_use');
+  if (!block) throw new AiError(missing);
+  return { input: block.input, truncated: data.stop_reason === 'max_tokens' };
+}
+
+/**
+ * A failed call, with the API's OWN reason (2026-10-11).
+ *
+ * "Gagal memanggil AI (400)" told nobody anything: a 400 is a wrong model
+ * name, an unsupported parameter, a PDF over the page limit — each fixed
+ * differently, and the body that says which was thrown away. The message is
+ * the API's text (it never contains the key), cut to a readable length.
+ */
+async function failure(response: Response): Promise<AiError> {
+  let reason = '';
+  try {
+    const body = (await response.json()) as { error?: { type?: string; message?: string } };
+    reason = [body.error?.type, body.error?.message].filter(Boolean).join(': ');
+  } catch {
+    // Not JSON: the status is all there is.
+  }
+  const short = reason.length > 240 ? `${reason.slice(0, 240)}…` : reason;
+  return new AiError(`Gagal memanggil AI (${String(response.status)})${short ? ` — ${short}` : ''}.`);
+}

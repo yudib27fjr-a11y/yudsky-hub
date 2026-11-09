@@ -1,0 +1,925 @@
+import { describe, expect, it } from 'vitest';
+
+import { frozenRanges } from './frozenText';
+import { checkSoap, readLabs, readVitals } from './soapCheck';
+
+const VITALS = [
+  'Tekanan Darah : 121/82 mmHg',
+  'Nadi : 86 kali/menit, reguler',
+  'Pernapasan : 18 kali/menit',
+  'Suhu : 36.6 derajat Celcius',
+  'SpO2 : 98 % on room air',
+].join('\n');
+
+const kinds = (body: string, previous?: string): string[] =>
+  checkSoap({ body, previous }).map((finding) => finding.kind);
+
+describe('readVitals', () => {
+  it('reads the block the corpus actually writes', () => {
+    expect(readVitals(VITALS)).toEqual({
+      'Tekanan darah': '121/82',
+      Nadi: '86',
+      Pernapasan: '18',
+      Suhu: '36.6',
+      SpO2: '98',
+    });
+  });
+
+  it('normalises the decimal comma, which appears in half the notes', () => {
+    expect(readVitals('Suhu : 36,8 derajat Celcius')['Suhu']).toBe('36.8');
+  });
+});
+
+describe('readLabs', () => {
+  it('reads Na/K/Cl as three values from one line', () => {
+    expect(readLabs('Na/K/Cl 136/3.6/103')).toMatchObject({ Na: 136, K: 3.6, Cl: 103 });
+  });
+
+  it('reads the spaced and colonned variant too', () => {
+    expect(readLabs('Na/K/Cl : 129/4.3/103')).toMatchObject({ Na: 129, K: 4.3 });
+  });
+
+  it('reads haemoglobin under either spelling', () => {
+    expect(readLabs('HGB 11.9')['Hb']).toBe(11.9);
+    expect(readLabs('Hb: 14.4')['Hb']).toBe(14.4);
+  });
+});
+
+describe('vitals', () => {
+  it('says nothing when the vitals changed', () => {
+    const before = 'Tekanan Darah : 130/80\nNadi : 70\nSuhu : 36.5\nSpO2 : 98';
+    expect(kinds(VITALS, before)).not.toContain('vitals-unchanged');
+  });
+
+  it('flags a block copied forward unedited', () => {
+    expect(kinds(VITALS, VITALS)).toContain('vitals-unchanged');
+  });
+
+  it('does not flag one repeated vital', () => {
+    // A temperature genuinely the same two days running is ordinary; the whole
+    // block repeating is a copy nobody edited.
+    const before = 'Tekanan Darah : 130/80\nNadi : 70\nPernapasan : 20\nSuhu : 36.6\nSpO2 : 95';
+    expect(kinds(VITALS, before)).not.toContain('vitals-unchanged');
+  });
+
+  it('flags a note with no vitals at all', () => {
+    expect(kinds('A:\n- CHF NYHA III')).toContain('vitals-missing');
+  });
+});
+
+describe('stale numbers', () => {
+  it('flags a diagnosis quoting a potassium the lab has moved past', () => {
+    const body = `${VITALS}\nNa/K/Cl 136/3.7/103\nA:\n- Hypokalemia (2.9)`;
+    expect(kinds(body)).toContain('diagnosis-value-stale');
+  });
+
+  it('accepts the arrow form, where the right-hand number is current', () => {
+    // `Hypokalemia (2.9 --> 3.7)` is how a correction in progress is written.
+    // Comparing the admission value would flag every improving patient daily.
+    const body = `${VITALS}\nNa/K/Cl 136/3.7/103\nA:\n- Hypokalemia (2.9 --> 3.7)`;
+    expect(kinds(body)).not.toContain('diagnosis-value-stale');
+  });
+
+  it('tolerates a trailing zero rather than calling it a mismatch', () => {
+    const body = `${VITALS}\nNa/K/Cl 136/3.60/103\nA:\n- Hypokalemia (3.6)`;
+    expect(kinds(body)).not.toContain('diagnosis-value-stale');
+  });
+
+  it('flags anemia with no haemoglobin anywhere in the note', () => {
+    expect(kinds(`${VITALS}\nA:\n- Anemia normositik normokrom`)).toContain('anemia-without-hb');
+  });
+
+  it('is quiet when the haemoglobin is there', () => {
+    expect(kinds(`${VITALS}\nHGB 9.1\nA:\n- Anemia`)).not.toContain('anemia-without-hb');
+  });
+});
+
+describe('plan versus result', () => {
+  it('flags a lab still planned after its result is in the note', () => {
+    const body = `${VITALS}\nNa/K/Cl 136/3.6/103\nP:\n- Cek elektrolit`;
+    expect(kinds(body)).toContain('lab-planned-but-resulted');
+  });
+
+  it('leaves a planned lab alone when nothing has resulted', () => {
+    expect(kinds(`${VITALS}\nP:\n- Cek darah rutin`)).not.toContain('lab-planned-but-resulted');
+  });
+});
+
+describe('day counters', () => {
+  it('flags a counter that did not move from yesterday', () => {
+    const body = `${VITALS}\nA:\n- post PPM H-2`;
+    expect(kinds(body, `${VITALS}\nA:\n- post PPM H-2`)).toContain('day-marker');
+  });
+
+  it('says nothing once it has been advanced', () => {
+    const body = `${VITALS}\nA:\n- post PPM H-3`;
+    expect(kinds(body, `${VITALS}\nA:\n- post PPM H-2`)).not.toContain('day-marker');
+  });
+
+  it('compares each counter with ITS OWN line yesterday, not with any counter of the same text', () => {
+    // Reported 2026-10-11: advancing "PPM Replacement H-1" to H-2 still
+    // flagged it, because yesterday's ceftriaxone read "(H-2)".
+    const yesterday = `${VITALS}\nA:\n- Symptomatic Bradycardia post PPM Replacement H-1\nTerapi:\n- Ceftriaxone 2gr/24jam/IV (H-2)`;
+    const advanced = `${VITALS}\nA:\n- Symptomatic Bradycardia post PPM Replacement H-2\nTerapi:\n- Ceftriaxone 2gr/24jam/IV (H-3)`;
+    expect(kinds(advanced, yesterday)).not.toContain('day-marker');
+    const half = `${VITALS}\nA:\n- Symptomatic Bradycardia post PPM Replacement H-2\nTerapi:\n- Ceftriaxone 2gr/24jam/IV (H-2)`;
+    const found = checkSoap({ body: half, previous: yesterday }).find((f) => f.kind === 'day-marker');
+    expect(found?.markers?.map((m) => m.text)).toEqual(['H-2']);
+    expect(half.slice(found!.at!, found!.at! + 20)).toBe('H-2)');
+  });
+
+  it('stays quiet once the banner has been dismissed by hand', () => {
+    const note = `${VITALS}\nA:\n- post PPM H-2`;
+    const findings = checkSoap({ body: note, previous: note, dayMarkersDismissed: true });
+    expect(findings.map((f) => f.kind)).not.toContain('day-marker');
+  });
+});
+
+describe('an empty note', () => {
+  it('produces nothing at all', () => {
+    // A blank day is a day not started, not a day with five problems.
+    expect(checkSoap({ body: '   ' })).toEqual([]);
+  });
+});
+
+describe('a second value on the diagnosis line', () => {
+  const body = [
+    'Tekanan Darah : 121/82',
+    'Nadi : 86',
+    'Suhu : 36.6',
+    'Na/K/Cl 136/3.6/103',
+    '*Mohon izin kami assess dengan:*',
+    '- Moderate Hyponatremia (131 -> 129 -> 136) Hipoosmolal (265)',
+  ].join('\n');
+
+  it('does not mistake the osmolality for the sodium', () => {
+    // Reported 12 September: the checker announced "diagnosis menyebut Na 265,
+    // lab terbaru 136" about a note that was entirely correct. Reading the
+    // last number on the LINE picks up whatever value happens to follow.
+    expect(checkSoap({ body }).map((f) => f.kind)).not.toContain('diagnosis-value-stale');
+  });
+
+  it('still reads the analyte’s own arrow chain', () => {
+    const stale = body.replace('131 -> 129 -> 136', '131 -> 129');
+    expect(checkSoap({ body: stale }).map((f) => f.kind)).toContain('diagnosis-value-stale');
+  });
+
+  it('is not confused by a trailing note in its own brackets', () => {
+    const withNote = 'Na/K/Cl 136/3.6/103\n- Hyponatremia (136) e.c. SIADH (suspek)';
+    expect(checkSoap({ body: `Nadi : 80\nSuhu : 36.5\nTekanan Darah : 120/80\n${withNote}` })
+      .map((f) => f.kind)).not.toContain('diagnosis-value-stale');
+  });
+});
+
+describe('a consult that answered but is not in the DPJP list', () => {
+  const base = 'Tekanan Darah : 120/80\nNadi : 80\nSuhu : 36.5';
+
+  it('flags a TS block whose service is missing from the header', () => {
+    // 49 entries in the 2026-09-11 export are in this state. The DPJP header
+    // is who the report is addressed from; a co-managing service missing from
+    // it simply does not get the note.
+    const body = `${base}\n_DPJP Utama : dr. Aussie_\n\n*TS Pulmo*\nA/ Pneumonia\nP/ Levofloxacin`;
+    expect(kinds(body)).toContain('consult-not-in-dpjp');
+  });
+
+  it('accepts a header that spells the service differently', () => {
+    // `TS Pulmo` in the block, `DPJP Pulmonologi` in the header — the same
+    // service, and the two lines rarely agree on the spelling.
+    const body = `${base}\n_DPJP Pulmonologi : dr. X_\n\n*TS Pulmo*\nA/ Pneumonia`;
+    expect(kinds(body)).not.toContain('consult-not-in-dpjp');
+  });
+
+  it('says nothing when there is no consult at all', () => {
+    expect(kinds(`${base}\n_DPJP Utama : dr. Aussie_`)).not.toContain('consult-not-in-dpjp');
+  });
+});
+
+describe('an electrolyte back in range', () => {
+  const body = [
+    'Tekanan Darah : 120/80',
+    'Nadi : 80',
+    'Suhu : 36.5',
+    'Na/K/Cl 136/4.1/103',
+    '- Hypokalemia (2.9 --> 4.1)',
+  ].join('\n');
+
+  const RANGES = { K: { low: 3.5, high: 5.1 } };
+
+  it('suggests marking it as perbaikan', () => {
+    const findings = checkSoap({ body, ranges: RANGES });
+    expect(findings.map((f) => f.kind)).toContain('electrolyte-corrected');
+  });
+
+  it('is SILENT with no range supplied', () => {
+    // Plano ships no reference ranges. Without one there is no honest way to
+    // call a number normal, and guessing would be hardcoding a range by
+    // another route.
+    expect(checkSoap({ body }).map((f) => f.kind)).not.toContain('electrolyte-corrected');
+  });
+
+  it('stops once the line already says perbaikan', () => {
+    const done = body.replace('(2.9 --> 4.1)', '(2.9 --> 4.1) perbaikan');
+    expect(checkSoap({ body: done, ranges: RANGES }).map((f) => f.kind)).not.toContain(
+      'electrolyte-corrected',
+    );
+  });
+
+  it('stays quiet while the value is still outside the range', () => {
+    const low = body.replace('136/4.1/103', '136/3.1/103').replace('--> 4.1', '--> 3.1');
+    expect(checkSoap({ body: low, ranges: RANGES }).map((f) => f.kind)).not.toContain(
+      'electrolyte-corrected',
+    );
+  });
+});
+
+describe('the day-marker rule’s default state', () => {
+  // Guards the wiring bug found on 13 September: the caller was passing
+  // `staleMarkers === null` as "dismissed", which is true on essentially every
+  // note, so this rule never fired at all. A check that finds nothing looks
+  // exactly like a check that is switched off — hence an explicit test that
+  // the DEFAULT is "not dismissed".
+  const note = 'Tekanan Darah : 120/80\nNadi : 80\nSuhu : 36.5\nA:\n- post PPM H-2';
+
+  it('fires when the flag is simply absent', () => {
+    expect(checkSoap({ body: note, previous: note }).map((f) => f.kind)).toContain('day-marker');
+  });
+
+  it('fires when the flag is explicitly false', () => {
+    expect(
+      checkSoap({ body: note, previous: note, dayMarkersDismissed: false }).map((f) => f.kind),
+    ).toContain('day-marker');
+  });
+
+  it('is suppressed only by an explicit true', () => {
+    expect(
+      checkSoap({ body: note, previous: note, dayMarkersDismissed: true }).map((f) => f.kind),
+    ).not.toContain('day-marker');
+  });
+});
+
+describe('urine and balance', () => {
+  const base = 'Tekanan Darah : 120/80\nNadi : 80\nSuhu : 36.5';
+  const yesterday = `${base}\nUrine 1900 cc/24 jam/60 kg=1,3 cc/kgBB/jam\nBalance cairan +250 cc`;
+
+  it('flags a urine line copied forward unchanged', () => {
+    // Measured on the 2026-09-11 export: urine repeats in 13 of 41 consecutive
+    // pairs, balance in 12 of 30 — roughly a third of the time, against 5 of
+    // 94 for the whole vitals block.
+    expect(kinds(yesterday, yesterday)).toContain('urine-unchanged');
+    expect(kinds(yesterday, yesterday)).toContain('flow-unchanged');
+  });
+
+  it('says nothing once the number changed', () => {
+    const today = yesterday.replace('1900 cc', '2100 cc').replace('+250 cc', '+180 cc');
+    expect(kinds(today, yesterday)).not.toContain('flow-unchanged');
+  });
+
+  it('says nothing when yesterday had none to compare against', () => {
+    expect(kinds(yesterday, base)).not.toContain('flow-unchanged');
+  });
+
+  it('does not flag an echo or a chest film repeated from yesterday', () => {
+    // Identical 80% of the time in the same corpus, and correctly so: the
+    // study was not repeated. The test is whether the number is measured
+    // every day, not whether it changed.
+    const withEcho = `${base}\nEchocardiography (08-09-2026)\n- EF 48.3% (TEICH)`;
+    expect(kinds(withEcho, withEcho)).not.toContain('flow-unchanged');
+  });
+});
+
+/**
+ * A complete note in the shape the templates produce, filled in properly.
+ * The checker's first duty is to say NOTHING about it: a checker that fires on
+ * a good note is one people stop reading.
+ */
+const GOOD_YESTERDAY = [
+  '*S:*',
+  '- Sesak berkurang, nyeri dada tidak ada.',
+  '- Pasien saat ini hari perawatan ke 4 hari',
+  // On furosemide, so a complete note says how urine is collected (2026-10-07).
+  '- BAK per kateter kesan normal',
+  '',
+  '*O:*',
+  'Compos Mentis GCS (E4V5M6)',
+  'Tekanan Darah : 118/76 mmHg',
+  'Nadi : 84 kali/menit, reguler',
+  'Pernapasan : 20 kali/menit',
+  'Suhu : 36.6 derajat Celcius',
+  'SpO2 : 97 % on room air',
+  // On furosemide, so the urine is measured every day (2026-10-10).
+  'Urine output 1400 cc/24 jam',
+  '',
+  '*A:*',
+  '- ADHF ec CAD',
+  '',
+  '*P:*',
+  '- Furosemid 40 mg iv tiap 12 jam',
+  '- Cek elektrolit ulang besok',
+].join('\n');
+
+const GOOD_TODAY = GOOD_YESTERDAY
+  .replace('Sesak berkurang, nyeri dada tidak ada.', 'Sesak tidak ada, bisa tidur telentang.')
+  .replace('hari perawatan ke 4', 'hari perawatan ke 5')
+  .replace('118/76', '112/70')
+  .replace('Nadi : 84', 'Nadi : 78')
+  .replace('1400 cc', '1650 cc');
+
+describe('a good note', () => {
+  it('produces no findings at all', () => {
+    expect(checkSoap({ body: GOOD_TODAY, previous: GOOD_YESTERDAY })).toEqual([]);
+  });
+});
+
+describe('vitals written the ward’s way', () => {
+  it('reads TD / N / RR / Saturasi and the one-line form, so no false "Tidak ada TTV"', () => {
+    expect(kinds('*O:*\nTD 120/80 mmHg, N 88x/m, RR 20x/m, S 36.5, SpO2 98%')).not.toContain('vitals-missing');
+    expect(readVitals('*O/*\nGCS E4V5M6; Tensi : 150/90 mmHg; Nafas : 22 x/m; Saturasi : 95% on room air')).toMatchObject({
+      'Tekanan darah': '150/90',
+      Pernapasan: '22',
+      SpO2: '95',
+    });
+  });
+
+  it('names the vitals left blank, as carry-forward leaves them', () => {
+    const findings = checkSoap({ body: '*O:*\nTekanan Darah :  mmHg\nNadi :  kali/menit, reguler\nSuhu : 36.5 derajat' });
+    const blank = findings.find((finding) => finding.kind === 'vitals-blank');
+    expect(blank?.message).toBe('TTV belum diisi: Tekanan darah, Nadi.');
+    expect(blank?.level).toBe('isi');
+    expect(findings.map((finding) => finding.kind)).not.toContain('vitals-missing');
+  });
+
+  it('does not take heart sounds or lung findings for vitals', () => {
+    expect(readVitals('*O:*\nBJ S1 S2 tunggal\nPulmo: pernapasan vesikuler')).toEqual({});
+  });
+});
+
+describe('empty sections', () => {
+  it('flags an S emptied by carry-forward and never refilled', () => {
+    expect(kinds(GOOD_TODAY.replace(/\*S:\*\n- Sesak[^\n]*\n- Pasien[^\n]*\n- BAK[^\n]*/, '*S:*\n- '))).toContain('section-empty');
+  });
+
+  it('treats P and Terapi together: one filled is a plan', () => {
+    const body = '*S:*\n- sesak\n*O:*\nTD 120/80\n*A:*\n- CHF\n*P:*\n- \nTerapi:\n- Furosemid 40 mg';
+    expect(checkSoap({ body }).filter((finding) => finding.kind === 'section-empty')).toEqual([]);
+  });
+});
+
+describe('copied from yesterday', () => {
+  it('flags S identical to yesterday’s', () => {
+    const today = GOOD_TODAY.replace('Sesak tidak ada, bisa tidur telentang.', 'Sesak berkurang, nyeri dada tidak ada.').replace('hari perawatan ke 5', 'hari perawatan ke 4');
+    const found = checkSoap({ body: today, previous: GOOD_YESTERDAY }).map((finding) => finding.kind);
+    expect(found).toContain('subjective-unchanged');
+    expect(found).toContain('hari-rawat');
+  });
+
+  it('says how the hari perawatan disagrees with yesterday', () => {
+    const skipped = GOOD_TODAY.replace('hari perawatan ke 5', 'hari perawatan ke 7');
+    const finding = checkSoap({ body: skipped, previous: GOOD_YESTERDAY }).find((f) => f.kind === 'hari-rawat');
+    expect(finding?.message).toBe('Hari perawatan ke-7, kemarin ke-4.');
+  });
+});
+
+describe('template holes', () => {
+  it('finds each shape a template leaves unfilled', () => {
+    const body = [
+      '*S:*',
+      '- Pasien saat ini hari perawatan ke  hari,',
+      '- ',
+      '*O:*',
+      'TD 120/80',
+      'TB :  cm',
+      '_Post Tindakan :  ()_',
+      '*A:*',
+      '- CHF, EF xx %',
+      '*P:*',
+      '- Furosemid',
+    ].join('\n');
+    const messages = checkSoap({ body }).filter((f) => f.kind === 'unfilled' || f.kind === 'placeholder').map((f) => f.message);
+    expect(messages).toEqual([
+      'Hari perawatan belum diisi.',
+      'TB belum diisi.',
+      'Ada kurung kosong “()”.',
+      'Ada 1 butir “-” kosong.',
+      'Masih ada penanda sementara “xx”.',
+    ]);
+  });
+
+  it('points at the right place, not the first matching text', () => {
+    const body = '*S:*\n- sesak\n- \n*O:*\nTD 120/80\n*A:*\n- CHF\n*P:*\n- lasix';
+    const bullet = checkSoap({ body }).find((f) => f.kind === 'unfilled');
+    expect(body.slice(bullet!.at!, bullet!.at! + 2)).toBe('- ');
+    expect(bullet!.at).toBe(body.indexOf('- \n'));
+  });
+});
+
+describe('plans and duplicates', () => {
+  const RESULTED = 'Na/K/Cl 136/3.6/103';
+
+  it('flags a one-off lab plan once the result is in', () => {
+    expect(kinds(`*O:*\nTD 120/80\n${RESULTED}\n*P:*\n- Cek elektrolit`)).toContain('lab-planned-but-resulted');
+  });
+
+  it('leaves a plan for the NEXT result alone', () => {
+    for (const plan of ['- Cek elektrolit ulang besok', '- Cek lab serial', '- Cek elektrolit per 12 jam']) {
+      expect(kinds(`*O:*\nTD 120/80\n${RESULTED}\n*P:*\n${plan}`)).not.toContain('lab-planned-but-resulted');
+    }
+  });
+
+  it('flags the same line pasted twice in one section', () => {
+    const body = '*P:*\n- Furosemid 40 mg iv tiap 12 jam\n- Spironolakton 25 mg\n- Furosemid 40 mg iv tiap 12 jam';
+    expect(kinds(body)).toContain('duplicate-line');
+  });
+});
+
+describe('order', () => {
+  it('lists what to fill first, then what was copied, then what to check', () => {
+    const body = GOOD_TODAY.replace('hari perawatan ke 5', 'hari perawatan ke 4').replace('- Furosemid 40 mg iv tiap 12 jam', '- Furosemid 40 mg iv tiap 12 jam\n- Furosemid 40 mg iv tiap 12 jam\n- ');
+    const levels = checkSoap({ body, previous: GOOD_YESTERDAY }).map((finding) => finding.level);
+    expect(levels).toEqual([...levels].sort((a, b) => ['isi', 'kemarin', 'cek'].indexOf(a) - ['isi', 'kemarin', 'cek'].indexOf(b)));
+    expect(levels[0]).toBe('isi');
+  });
+});
+
+/**
+ * Reported 29 September: "Lab sudah ada hasilnya tapi masih tertulis di Plan"
+ * on a patient with no lab plan, and "Tampilkan" jumped to "Planimetry" in
+ * the echo. The rule read every line of the note, and its anchor was the bare
+ * word `Plan`.
+ */
+describe('lab planned but resulted — only the plan counts, and it points at the line', () => {
+  const NOTE = [
+    '*S:*',
+    '- Periksa lab di puskesmas 1 minggu lalu, Hb 9',
+    '*O:*',
+    'TD 110/70',
+    '*Echocardiography (27 Sep)*',
+    'MS severe, MVA planimetry 0.8 cm2',
+    '*Laboratorium (28 Sep)*',
+    'Na/K/Cl 136/3.6/103',
+    '*A:*',
+    '- Severe MS',
+    '*P:*',
+    '- Rencana PTMC',
+  ].join('\n');
+
+  it('is silent when no plan line asks for a lab', () => {
+    expect(kinds(NOTE)).not.toContain('lab-planned-but-resulted');
+  });
+
+  it('when it fires, quotes and points at the plan line itself', () => {
+    const body = NOTE.replace('- Rencana PTMC', '- Rencana PTMC\n- Cek elektrolit');
+    const finding = checkSoap({ body }).find((f) => f.kind === 'lab-planned-but-resulted')!;
+    expect(finding.message).toBe('Lab sudah ada hasilnya, tapi Plan masih menulis “Cek elektrolit”.');
+    expect(body.slice(finding.at!, finding.at! + finding.anchor!.length)).toBe('- Cek elektrolit');
+  });
+
+  it('reads the plan’s sub-blocks too (Plan Monitoring, Terapi)', () => {
+    const body = NOTE.replace('- Rencana PTMC', '- Rencana PTMC\nPlan Monitoring:\n- Cek DL');
+    expect(kinds(body)).toContain('lab-planned-but-resulted');
+  });
+});
+
+describe('every finding points at its own text', () => {
+  it('a stale diagnosis value points at the diagnosis, not the first letter K in the note', () => {
+    const body = '*O:*\nTD 120/80, Kesadaran baik\nNa/K/Cl 136/3.9/103\n*A:*\n- Hypokalemia (2.9)\n*P:*\n- KSR';
+    const finding = checkSoap({ body }).find((f) => f.kind === 'diagnosis-value-stale')!;
+    expect(body.slice(finding.at!).startsWith('Hypokalemia')).toBe(true);
+  });
+
+  it('no finding ever anchors on a bare word it did not match', () => {
+    const body = GOOD_TODAY.replace('- ADHF ec CAD', '- ADHF ec CAD\n- Anemia ringan').replace('hari perawatan ke 5', 'hari perawatan ke 5\nPlanimetry');
+    for (const finding of checkSoap({ body, previous: GOOD_YESTERDAY })) {
+      if (finding.anchor === undefined) continue;
+      expect(finding.at).toBeDefined();
+      expect(body.slice(finding.at!, finding.at! + finding.anchor.length).toLowerCase()).toBe(finding.anchor.toLowerCase());
+    }
+  });
+});
+
+describe('readVitals ignores investigations', () => {
+  it('does not take the EKG HR as the pulse', () => {
+    const body = '*O:*\nTekanan Darah : 120/80 mmHg\n\n*EKG (29-09-2026)*\nSR, HR 70 bpm\n\n*A:*\n- x';
+    expect(readVitals(body)['Nadi']).toBeUndefined();
+    expect(readVitals(body)['Tekanan darah']).toBe('120/80');
+  });
+});
+
+describe('urine output unchanged, written any usual way (2026-09-30)', () => {
+  const base = 'Tekanan Darah : 120/80\nNadi : 80\nSuhu : 36.5';
+  it.each([
+    'UO 1500 ml/24 jam',
+    'Urin : 1200 cc/24 jam',
+    '- Produksi urin 800 mL / 12 jam',
+    'Diuresis 2000cc/24jam = 1,2 cc/kgBB/jam',
+    'BAK 900 cc',
+  ])('flags "%s" copied unchanged, and not once the number changes', (line) => {
+    const note = `${base}\n${line}`;
+    expect(kinds(note, note)).toContain('urine-unchanged');
+    const changed = note.replace(/(\d+)(\s*(?:cc|ml|mL))/, (_, n: string, unit: string) => `${String(Number(n) + 100)}${unit}`);
+    expect(kinds(changed, note)).not.toContain('urine-unchanged');
+  });
+
+  it('points Tampilkan at the urine line', async () => {
+    const { checkSoap } = await import('./soapCheck');
+    const note = `${base}\nUO 1500 ml/24 jam`;
+    const finding = checkSoap({ body: note, previous: note }).find((f) => f.kind === 'urine-unchanged');
+    expect(note.slice(finding!.at!, finding!.at! + 2)).toBe('UO');
+  });
+});
+
+describe('consults on the 6 October note (Gizi Klinik, Rehab, Neuro)', () => {
+  it('flags only the service the header really lacks', () => {
+    const body = [
+      '_DPJP Utama: dr. Konsulen A, Sp.JP, Subsp.Eko(K)_',
+      '_DPJP Gizi : dr. Konsulen C, Sp. GK (K)_',
+      '_DPJP HOM : dr. Konsulen D, Sp. PD, KHOM_',
+      '_DPJP KFR : dr. Konsulen E, Sp.KFR.Ped(K)_',
+      '_DPJP Derven : dr. Konsulen F, Sp.D.V.E_',
+      '',
+      '*S:*',
+      '- keluhan',
+      '',
+      '*TS Neuro*',
+      'A/',
+      'Post loss of consciousness',
+      '',
+      '*TS Gizi Klinik*',
+      'A/',
+      'Malnutrisi',
+      '',
+      '*TS HOM*',
+      'A/',
+      'Leukositosis',
+      '',
+      '*TS Rehab*',
+      'A/',
+      'Immobilization',
+      '',
+      '*TS Derven*',
+      'A/',
+      'Miliaria',
+    ].join('\n');
+    const messages = checkSoap({ body })
+      .filter((finding) => finding.kind === 'consult-not-in-dpjp')
+      .map((finding) => finding.message);
+    expect(messages).toEqual(['TS Neuro sudah menjawab tapi belum ada di daftar DPJP.']);
+  });
+});
+
+describe('Foley reminder: a diuretic or a balance without a catheter (2026-10-07)', () => {
+  const note = (terapi: string, plan: string, extra = '') =>
+    `*S:*\n- sesak berkurang${extra}\n\n*Mohon izin kami terapi dengan:*\n${terapi}\n\n*Plan:*\n${plan}`;
+  const reminder = (body: string) => checkSoap({ body }).filter((finding) => finding.kind === 'balance-without-catheter');
+
+  it('furosemide with no catheter written: remind, pointing at the drug', () => {
+    const found = reminder(note('- Furosemide 40 mg/8 jam/IV', '- Monitoring tanda vital'));
+    expect(found).toHaveLength(1);
+    expect(found[0]?.message).toMatch(/^Furosemide diberikan, tapi kateter urin \(Foley\) belum tercatat\. Tulis "BAK per kateter"/);
+    expect(found[0]?.anchor).toBe('- Furosemide 40 mg/8 jam/IV');
+  });
+
+  it('a balance in the plan with no catheter: remind', () => {
+    const found = reminder(note('- Aspilet 80 mg/24 jam/oral', '- Monitoring urine output dan balance cairan'));
+    expect(found[0]?.message).toMatch(/^Plan memantau balance cairan/);
+  });
+
+  it('a catheter anywhere silences it ("BAK per kateter")', () => {
+    expect(reminder(note('- Furosemide 40 mg/8 jam/IV', '- Balance cairan', '\n- BAK per kateter kesan normal'))).toEqual([]);
+    expect(reminder(note('- Lasix 2 amp/IV', '- Monitoring', '\n- Terpasang DC'))).toEqual([]);
+  });
+
+  it('a stopped furosemide, or one only in the history, does not count', () => {
+    expect(reminder(note('- Furosemide (stop)', '- Monitoring tanda vital'))).toEqual([]);
+    expect(reminder(note('- Aspilet 80 mg', '- Monitoring', ', riwayat furosemide di RS asal'))).toEqual([]);
+  });
+});
+
+describe('the note against the patient record (2026-10-08)', () => {
+  const FOLLOW_UP =
+    'Assalamualaikum Dokter. Tabe dokter, mohon izin melaporkan follow up pasien di *PJT Lt. 4 Kamar 420 bed 2* atas nama :\n\n*S:*\n- sesak berkurang';
+  const BARU =
+    'Tabe dokter, mohon izin melaporkan pasien baru dari *Poli Kardio* di *PJT Lt. 4 Kamar 420 Bed 2* atas nama :\n\n*S:*\n- sesak';
+  const PLACE = { ward: 'PJT Lt. 4', room: '420', bed: '2' };
+  const found = (body: string, context: Parameters<typeof checkSoap>[0]['context']) =>
+    checkSoap({ body, context }).filter((finding) => ['opening-kind', 'opening-place', 'trio-6mwt'].includes(finding.kind));
+
+  it('a follow-up opening on the first day', () => {
+    const [finding] = found(FOLLOW_UP, { hariRawat: 1 });
+    expect(finding?.message).toBe('Pembuka "follow up", padahal ini hari pertama pasien. Ganti ke pembuka pasien baru?');
+    expect(FOLLOW_UP.slice(finding!.at!, finding!.at! + finding!.anchor!.length)).toBe('follow up');
+  });
+
+  it('"pasien baru" carried into day 3', () => {
+    expect(found(BARU, { hariRawat: 3 })[0]?.message).toBe(
+      'Pembuka masih "pasien baru", padahal ini hari rawat ke-3. Ganti ke follow up?',
+    );
+  });
+
+  it('the right opening for the day says nothing', () => {
+    expect(found(FOLLOW_UP, { hariRawat: 5, place: PLACE })).toEqual([]);
+    expect(found(BARU, { hariRawat: 1, place: PLACE })).toEqual([]);
+  });
+
+  it('konsul and perpindahan openings are not judged by day', () => {
+    const konsul = 'Tabe dokter, mohon izin melaporkan konsul pasien dari *TS Interna* di *PJT Lt. 4 Kamar 420 Bed 2* atas nama :';
+    expect(found(konsul, { hariRawat: 1 })).toEqual([]);
+  });
+
+  it('a bed that differs from the record', () => {
+    const [finding] = found(FOLLOW_UP, { hariRawat: 5, place: { ...PLACE, bed: '3' } });
+    expect(finding?.message).toBe('Ruangan di pembuka (Lt. 4 · Kamar 420 · Bed 2) beda dengan data pasien (Lt. 4 · Kamar 420 · Bed 3).');
+  });
+
+  it('a floor that differs, written as "Lantai" in the record', () => {
+    expect(found(FOLLOW_UP, { hariRawat: 5, place: { ward: 'PJT Lantai 3', room: '420', bed: '2' } })[0]?.kind).toBe('opening-place');
+  });
+
+  it('only what both sides have is compared', () => {
+    expect(found(FOLLOW_UP, { hariRawat: 5, place: { ward: 'PJT', room: '' } })).toEqual([]);
+  });
+
+  it('a perpindahan is checked against the destination', () => {
+    const move =
+      'Tabe dokter mohon izin melaporkan follow up perpindahan pasien dari *CVCU Bed 3* ke *PJT Lt. 4 Kamar 420 Bed 2* pasien atas nama :';
+    expect(found(move, { hariRawat: 4, place: PLACE })).toEqual([]);
+    expect(found(move, { hariRawat: 4, place: { ...PLACE, room: '421' } })[0]?.kind).toBe('opening-place');
+  });
+
+  it('a trio patient from H-1 with no 6MWT in the note', () => {
+    expect(found(FOLLOW_UP, { trio: 'AFG', dischargeInDays: 1 })[0]?.message).toBe(
+      'Pasien AFG pulang besok (H-1): 6MWT belum ada di catatan.',
+    );
+    expect(found(FOLLOW_UP, { trio: 'ZD', dischargeInDays: 0 })[0]?.message).toMatch(/pulang hari ini/);
+  });
+
+  it('quiet when 6MWT is written, when not trio, or further from discharge', () => {
+    expect(found(`${FOLLOW_UP}\n\n*Plan:*\n- 6MWT besok pagi`, { trio: 'AFG', dischargeInDays: 1 })).toEqual([]);
+    expect(found(FOLLOW_UP, { trio: null, dischargeInDays: 1 })).toEqual([]);
+    expect(found(FOLLOW_UP, { trio: 'AFM', dischargeInDays: 3 })).toEqual([]);
+  });
+});
+
+/*
+  From a real follow-up note (2026-10-12), names removed. Paced patient: the
+  same EKG reading on two days is two tracings, not a pasted line.
+*/
+const PACED = [
+  'Tabe dokter, mohon izin melaporkan follow up pasien di *PJT Lt 4 Kamar 421 Bed 4* atas nama :',
+  '',
+  '*Ny. Contoh / 31-12-1957 / 68 tahun / RM 8000001*',
+  '',
+  '_DJPJP Utama : dr. Utama, SpPD, SpJP_',
+  '_DPJP Aritmia : Prof. Aritmia, Sp.JP(K)_',
+  '_DPJP HOM : Prof. Hemato, Sp. PD, KHOM_',
+  '',
+  '*O:*',
+  'Compos Mentis',
+  '',
+  '*EKG PJT LT 4 (12-10-2026)*',
+  'Pacing rhythm, HR 63 bpm, reguler, normoaxis, LBBB pattern.',
+  '',
+  '*EKG PJT LT 4 (11-10-2026)*',
+  'Pacing rhythm, HR 63 bpm, reguler, normoaxis, LBBB pattern.',
+  '',
+  'EKG PJT Lt. 4 (09-10-2026; 05.25)',
+  'AV disosiasi, atrial rate 70 bpm, ventricular rate 40 bpm.',
+  '',
+  'EKG PJT Lt. 4 (09-10-2026; 04.40)',
+  'AV disosiasi, atrial rate 70 bpm, ventricular rate 40 bpm.',
+  '',
+  'Analisis Gas Darah PJT (09-10-2026)',
+  'PH : 7.483 , PO2 : 194.2, pCO2 : 28.1',
+  '',
+  'Analisis Gas Darah PJT (09-10-2026)',
+  'PH : 7.335, PO2 : 202.2, pCO2 : 37.2',
+  '',
+  '*Mohon izin kami assess dengan :*',
+  '- Symptomatic Bradycardia ec TAVB post PPM Replacement H-3',
+  '',
+  '*Mohon izin kami terapi dengan :*',
+  '- KCl 25 mEq dalam NaCl 0,9% 500 cc habis dalam 12 jam (pemberian kedua)',
+  '- Clopidogrel 75mg/24jam/oral',
+  '',
+  'Selesai :',
+  '- KCl 25 mEq dalam NaCl 0,9% 500 cc habis dalam 12 jam (I)',
+  '- Ceftriaxone 2gr/24jam/IV (H-3)',
+  '',
+  '*Plan :*',
+  '- EKG/hari',
+  '',
+  '*TS Divisi Aritmia*',
+  'A/',
+  '- Symptomatic Bradycardia',
+  '',
+  '*TS HOM*',
+  'A/',
+  '- Anemia normositik normokrom',
+].join('\n');
+
+describe('duplicates (2026-10-12)', () => {
+  it('does not call the same reading under two dated headings a duplicate line', () => {
+    expect(kinds(PACED)).not.toContain('duplicate-line');
+    // Not even when the dated headings are plain text, not bold.
+    const plain = 'Compos Mentis\n\nEKG PJT (11-10-2026)\nPacing rhythm, HR 63 bpm, reguler.\n\nEKG PJT (12-10-2026)\nPacing rhythm, HR 63 bpm, reguler.';
+    expect(kinds(`*O:*\n${plain}`)).not.toContain('duplicate-line');
+  });
+
+  it('still catches a line pasted twice inside one block', () => {
+    const body = '*O:*\n*EKG PJT (12-10-2026)*\nPacing rhythm, HR 63 bpm, reguler.\nPacing rhythm, HR 63 bpm, reguler.';
+    expect(kinds(body)).toContain('duplicate-line');
+  });
+
+  it('flags the same dated heading written twice', () => {
+    const found = checkSoap({ body: PACED }).find((finding) => finding.kind === 'duplicate-heading');
+    expect(found?.message).toBe('Judul ganda: “Analisis Gas Darah PJT (09-10-2026)” muncul dua kali. Gabungkan, atau tulis jam pada masing-masing.');
+    // Every place it is written, in order, for "Tampilkan" to step through.
+    expect(found?.occurrences?.map((o) => o.at)).toEqual([
+      PACED.indexOf('Analisis Gas Darah PJT (09-10-2026)'),
+      PACED.lastIndexOf('Analisis Gas Darah PJT (09-10-2026)'),
+    ]);
+    expect(found?.at).toBe(found?.occurrences?.[0]?.at);
+  });
+
+  it('two tracings with their times are not a duplicate heading', () => {
+    expect(checkSoap({ body: PACED }).filter((f) => f.kind === 'duplicate-heading')).toHaveLength(1);
+  });
+});
+
+describe('a therapy line in Terapi and under Selesai (2026-10-12)', () => {
+  it('a drug given again after a finished course is NOT a double (Avi)', () => {
+    // KCl (pemberian kedua) running, KCl (I) finished: a new order.
+    expect(kinds(PACED)).not.toContain('therapy-also-finished');
+  });
+
+  it('the same line in both is pointed out, with both places', () => {
+    const body = PACED.replace('- Clopidogrel 75mg/24jam/oral', '- Clopidogrel 75mg/24jam/oral\n- Ceftriaxone 2gr/24jam/IV (H-3)');
+    const found = checkSoap({ body }).find((finding) => finding.kind === 'therapy-also-finished');
+    expect(found?.message).toBe('“Ceftriaxone 2gr/24jam/IV (H-3)” tertulis sama di Terapi dan di Selesai. Hapus salah satunya.');
+    expect(found?.occurrences?.map((o) => o.at)).toEqual([
+      body.indexOf('- Ceftriaxone 2gr/24jam/IV (H-3)'),
+      body.lastIndexOf('- Ceftriaxone 2gr/24jam/IV (H-3)'),
+    ]);
+  });
+});
+
+describe('EKG reminder ticked but not written (2026-10-12)', () => {
+  const run = (body: string, date: string, ekgDone: boolean): string[] =>
+    checkSoap({ body, context: { date, ekgDone } }).map((finding) => finding.kind);
+
+  it('reminds when today has no EKG in the note', () => {
+    const withoutToday = PACED.replace('*EKG PJT LT 4 (12-10-2026)*', '*EKG PJT LT 4 (10-10-2026)*');
+    expect(run(withoutToday, '2026-10-12', true)).toContain('ekg-ticked-missing');
+    const found = checkSoap({ body: withoutToday, context: { date: '2026-10-12', ekgDone: true } }).find((f) => f.kind === 'ekg-ticked-missing');
+    expect(found?.message).toBe('EKG hari ini sudah dicentang, tapi belum ada EKG tanggal 12-10-2026 di catatan.');
+  });
+
+  it('is silent when today’s EKG is there, in any date spelling', () => {
+    expect(run(PACED, '2026-10-12', true)).not.toContain('ekg-ticked-missing');
+    expect(run('*EKG di PJT Lt 4 2-10-2026*\nSinus', '2026-10-02', true)).not.toContain('ekg-ticked-missing');
+  });
+
+  it('is silent when the reminder is not ticked', () => {
+    expect(run('*O:*\nCompos Mentis', '2026-10-12', false)).not.toContain('ekg-ticked-missing');
+  });
+});
+
+describe('Windows line endings (2026-10-12)', () => {
+  it('read the same as the editor’s', () => {
+    // With "\r\n" no DPJP line matched, so both TS services "were not in the
+    // DPJP list", and the dated headings were not seen as headings.
+    const crlf = PACED.replace(/\n/g, '\r\n');
+    expect(kinds(crlf).sort()).toEqual(kinds(PACED).sort());
+    expect(kinds(crlf)).not.toContain('consult-not-in-dpjp');
+  });
+});
+
+describe('anticoagulant monitoring (12.12)', () => {
+  const note = (terapi: string, plan: string) => `*S:*\n- baik\n\n*Mohon izin kami terapi dengan:*\n${terapi}\n\n*Plan:*\n${plan}`;
+  const kinds = (body: string) => checkSoap({ body }).map((finding) => finding.kind);
+
+  it('heparin without APTT and warfarin without INR: remind, pointing at the drug', () => {
+    const found = checkSoap({ body: note('- Heparin 1000 IU/jam/SP\n- Warfarin 2 mg/24 jam/oral', '- Monitoring tanda vital') });
+    const heparin = found.find((f) => f.kind === 'heparin-without-aptt');
+    expect(heparin?.message).toMatch(/Cek APTT\/hari/);
+    expect(heparin?.anchor).toBe('- Heparin 1000 IU/jam/SP');
+    expect(found.find((f) => f.kind === 'warfarin-without-inr')?.message).toMatch(/Cek INR\/3 hari/);
+  });
+
+  it('silent once the monitoring is written, for LMWH / flush, a stopped drug, or one under Selesai', () => {
+    expect(kinds(note('- Heparin 1000 IU/jam/SP', '- Cek APTT/hari'))).not.toContain('heparin-without-aptt');
+    expect(kinds(note('- Simarc 2 mg/24 jam/oral', '- Cek INR/3 hari'))).not.toContain('warfarin-without-inr');
+    expect(kinds(note('- Low molecular weight heparin 0,6 cc/12 jam/SC', '- Monitoring'))).not.toContain('heparin-without-aptt');
+    expect(kinds(note('- Heparin stop', '- Monitoring'))).not.toContain('heparin-without-aptt');
+    expect(kinds(note('- Aspilet 80 mg/24 jam/oral\nSelesai :\n- Heparin 1000 IU/jam/SP', '- Monitoring'))).not.toContain('heparin-without-aptt');
+  });
+});
+
+describe('frozen counters: Selesai, stopped drugs and TS blocks (12.12)', () => {
+  const note = (ours: number) =>
+    [
+      '*S:*',
+      '- baik',
+      '',
+      '*Mohon izin kami assess dengan :*',
+      `- Symptomatic Bradycardia post PPM Replacement H-${ours}`,
+      '',
+      '*Mohon izin kami terapi dengan :*',
+      '- Clopidogrel 75mg/24jam/oral',
+      '',
+      'Selesai :',
+      '- Ceftriaxone 2gr/24jam/IV (H-3)',
+      '',
+      '*Plan :*',
+      '- EKG/hari',
+      '',
+      '*TS Divisi Aritmia*',
+      'A/',
+      'Symptomatic Bradycardia Post PPM Replacement H-3',
+      'I/',
+      '- Ceftriaxone 2 gr/24 jam/IV (H-3) --> STOP',
+      '',
+      '*TS HOM*',
+      'A/',
+      '- Anemia (H-2)',
+    ].join('\n');
+  const markers = (today: string, yesterday: string) =>
+    checkSoap({ body: today, previous: yesterday }).find((f) => f.kind === 'day-marker')?.markers?.map((m) => m.text) ?? [];
+
+  it('only our own counter is checked', () => {
+    expect(markers(note(3), note(3))).toEqual(['H-3']);
+    expect(markers(note(4), note(3))).toEqual([]);
+  });
+
+  it('frozenRanges marks Selesai, the stopped line and both TS blocks', () => {
+    const body = note(4);
+    const whys = frozenRanges(body).map((r) => [r.why, body.slice(r.start, r.end).split('\n')[0]]);
+    expect(whys).toEqual([
+      ['selesai', 'Selesai :'],
+      ['stop', '- Ceftriaxone 2 gr/24 jam/IV (H-3) --> STOP'],
+      ['ts', '*TS Divisi Aritmia*'],
+    ]);
+    expect(body.slice(frozenRanges(body).at(-1)!.start)).toContain('TS HOM');
+  });
+});
+
+describe('post-PCI labs (22 Oct 2026)', () => {
+  const note = (plan: string[], extra = ''): string =>
+    ['*S:*', '- tidak ada keluhan', '*O:*', 'TD 120/80', extra, '*Mohon izin kami assess dengan:*', '- CCS', '*Plan:*', ...plan].join('\n');
+  const finding = (body: string) => checkSoap({ body }).find((f) => f.kind === 'post-pci-labs');
+
+  it('asks for DR, Ur, Cr and HbA1c when a PCI is planned and none is in the Plan', () => {
+    const f = finding(note(['- Monitoring tanda vital', '- Rencana tindakan : Advance PCI (Selasa, 20 Oktober 2026)']));
+    expect(f?.message).toMatch(/DR, Ur, Cr, HbA1c/);
+    expect(f?.anchor).toMatch(/Advance PCI/);
+  });
+
+  it('is silent when DR and Ur/Cr are planned and HbA1c is already resulted', () => {
+    expect(
+      finding(note(['- Rencana tindakan : Advance PCI (20-10-2026)', '- Cek DR, Ur/Cr 24 jam post tindakan'], 'HbA1c 6.5')),
+    ).toBeUndefined();
+  });
+
+  it('names only what is missing', () => {
+    expect(finding(note(['- PCI di LAD (besok)', '- Cek DR, Ureum, Kreatinin post PCI']))?.message).toMatch(/cek HbA1c\.$/);
+  });
+
+  it('fires on a recent "post PCI H-1" too', () => {
+    expect(finding(note(['- Monitoring tanda vital'], 'Diagnosis: Post PCI 1 DES di LAD H-1'))).toBeDefined();
+  });
+
+  it('ignores an old PCI in the history and a refused PCI', () => {
+    expect(finding(note(['- Monitoring tanda vital'], '- CAD 2VD post PCI di LAD (2022)'))).toBeUndefined();
+    expect(finding(note(['- Rencana PCI (pasien menolak)']))).toBeUndefined();
+  });
+});
+
+describe('sapaan against the DPJP (2026-11-05)', () => {
+  const body = (greeting: string, closing: string) =>
+    `${greeting}, mohon izin melaporkan follow up pasien di *PJT Lt. 4 Kamar 420 bed 2* atas nama :\n\n*S:*\n- sesak berkurang\n\nTerima kasih ${closing}.`;
+  const address = (text: string, dpjpIsProf: boolean | null) =>
+    checkSoap({ body: text, context: { dpjpIsProf } }).filter((finding) => finding.kind === 'address');
+
+  it('names the part and the right sapaan when a Prof is addressed as dokter', () => {
+    const [finding] = address(body('Tabe dokter', 'dokter'), true);
+    expect(finding?.message).toBe('Sapaan di pembuka dan penutup “dokter”, padahal DPJP-nya Prof. Seharusnya “Prof”.');
+    expect(finding?.occurrences).toHaveLength(2);
+  });
+
+  it('flags a dr. DPJP addressed as Prof, only in the part that is wrong', () => {
+    const text = body('Tabe dokter', 'Prof');
+    const [finding] = address(text, false);
+    expect(finding?.message).toMatch(/^Sapaan di penutup “Prof”/);
+    expect(text.slice(finding!.at!, finding!.at! + 4)).toBe('Prof');
+  });
+
+  it('matching sapaan, an unknown DPJP and a konsul opening are silent', () => {
+    expect(address(body('Tabe Prof', 'Prof'), true)).toEqual([]);
+    expect(address(body('Tabe dokter', 'dokter'), false)).toEqual([]);
+    expect(address(body('Tabe dokter', 'Prof'), null)).toEqual([]);
+    expect(address(body('Tabe dokter', 'Prof').replace('follow up', 'konsul'), false)).toEqual([]);
+  });
+
+  it('a Prof named as a title in the opening is not a sapaan', () => {
+    expect(address('Tabe dokter, mohon izin melaporkan pasien Prof. dr. Peter Kabo atas nama :\n\n*S:*\n- sesak', false)).toEqual([]);
+  });
+});

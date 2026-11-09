@@ -1,0 +1,297 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  diffSegments,
+  diffSegmentsByLine,
+  diffStats,
+  isAutomatic,
+  keepBoth,
+  mergeThreeWay,
+} from './threeWayMerge';
+
+const BASE = [
+  'S: sesak berkurang',
+  'O:',
+  'TTV: TD 130/80, N 92',
+  'A: Pneumonia komunitas',
+  'P:',
+  '- Lanjut O2 3 lpm',
+].join('\n');
+
+describe('trivial outcomes', () => {
+  it('reports unchanged when both sides agree', () => {
+    const result = mergeThreeWay(BASE, BASE, BASE);
+    expect(result.kind).toBe('unchanged');
+    expect(isAutomatic(result)).toBe(true);
+  });
+
+  it('reports local-only when the other device did nothing', () => {
+    const local = `${BASE}\n- Cek DPL besok`;
+    const result = mergeThreeWay(BASE, local, BASE);
+    expect(result).toEqual({ kind: 'local-only', body: local });
+  });
+
+  it('reports remote-only when this device did nothing', () => {
+    const remote = `${BASE}\n- Konsul TS Jantung`;
+    const result = mergeThreeWay(BASE, BASE, remote);
+    expect(result).toEqual({ kind: 'remote-only', body: remote });
+  });
+
+  it('reports unchanged when both devices made the identical edit', () => {
+    const same = BASE.replace('N 92', 'N 88');
+    expect(mergeThreeWay(BASE, same, same).kind).toBe('unchanged');
+  });
+});
+
+describe('disjoint edits merge automatically', () => {
+  it('merges an edit in S with an edit in P', () => {
+    const local = BASE.replace('S: sesak berkurang', 'S: sesak jauh berkurang, batuk (+)');
+    const remote = BASE.replace('- Lanjut O2 3 lpm', '- Lanjut O2 3 lpm\n- Cek AGD');
+
+    const result = mergeThreeWay(BASE, local, remote);
+    expect(result.kind).toBe('merged');
+    expect(result.body).toContain('sesak jauh berkurang, batuk (+)');
+    expect(result.body).toContain('- Cek AGD');
+  });
+
+  it('merges appends made at opposite ends', () => {
+    const local = `Tn. B, 52th\n${BASE}`;
+    const remote = `${BASE}\nTh/ Ceftriaxone 2x1`;
+
+    const result = mergeThreeWay(BASE, local, remote);
+    expect(result.kind).toBe('merged');
+    expect(result.body).toContain('Tn. B, 52th');
+    expect(result.body).toContain('Th/ Ceftriaxone 2x1');
+  });
+
+  it('loses nothing when merging: both unique insertions survive', () => {
+    const local = BASE.replace('A: Pneumonia komunitas', 'A: Pneumonia komunitas, AKI stage 1');
+    const remote = BASE.replace('TTV: TD 130/80, N 92', 'TTV: TD 120/70, N 88, RR 20');
+
+    const result = mergeThreeWay(BASE, local, remote);
+    expect(result.kind).toBe('merged');
+    expect(result.body).toContain('AKI stage 1');
+    expect(result.body).toContain('RR 20');
+  });
+
+  it('merges a new section added on one side only', () => {
+    const local = `${BASE}\nPenunjang: Hb 10.2`;
+    const remote = BASE.replace('S: sesak berkurang', 'S: sesak minimal');
+
+    const result = mergeThreeWay(BASE, local, remote);
+    expect(result.kind).toBe('merged');
+    expect(result.body).toContain('Penunjang: Hb 10.2');
+    expect(result.body).toContain('sesak minimal');
+  });
+});
+
+describe('overlapping edits raise a conflict rather than guessing', () => {
+  it('flags two different rewrites of the same line', () => {
+    const local = BASE.replace('A: Pneumonia komunitas', 'A: Pneumonia komunitas, sepsis');
+    const remote = BASE.replace('A: Pneumonia komunitas', 'A: Pneumonia aspirasi');
+
+    const result = mergeThreeWay(BASE, local, remote);
+    expect(result.kind).toBe('conflict');
+    expect(isAutomatic(result)).toBe(false);
+  });
+
+  it('hands the caller both versions and the base, intact', () => {
+    const local = `${BASE} LOCAL`;
+    const remote = `${BASE} REMOTE`;
+    const result = mergeThreeWay(BASE, local, remote);
+
+    if (result.kind !== 'conflict') throw new Error('expected a conflict');
+    expect(result.local).toBe(local);
+    expect(result.remote).toBe(remote);
+    expect(result.base).toBe(BASE);
+  });
+
+  it('conflicts when there is no common ancestor', () => {
+    const result = mergeThreeWay(null, 'catatan saya', 'catatan perangkat lain');
+    expect(result.kind).toBe('conflict');
+    if (result.kind !== 'conflict') return;
+    expect(result.base).toBeNull();
+    expect(result.remote).toBe('catatan perangkat lain');
+  });
+
+  it('does not conflict with no ancestor when both sides are identical', () => {
+    expect(mergeThreeWay(null, 'sama', 'sama').kind).toBe('unchanged');
+  });
+
+  it('treats a wholesale rewrite against an edit as a conflict', () => {
+    const local = 'Catatan ditulis ulang total oleh perangkat ini.';
+    const remote = BASE.replace('N 92', 'N 88');
+    expect(mergeThreeWay(BASE, local, remote).kind).toBe('conflict');
+  });
+});
+
+describe('inputs are never mutated', () => {
+  it('leaves base, local and remote byte-identical', () => {
+    const base = String(BASE);
+    const local = `${BASE}\n- Cek DPL`;
+    const remote = `${BASE}\n- Konsul`;
+    const localCopy = String(local);
+    const remoteCopy = String(remote);
+
+    mergeThreeWay(base, local, remote);
+
+    expect(base).toBe(BASE);
+    expect(local).toBe(localCopy);
+    expect(remote).toBe(remoteCopy);
+  });
+});
+
+describe('keepBoth', () => {
+  it('retains every character of both versions', () => {
+    const local = 'S: sesak berat';
+    const remote = 'S: sesak ringan';
+    const combined = keepBoth(local, remote, 'iPad');
+
+    expect(combined).toContain(local);
+    expect(combined).toContain(remote);
+    expect(combined).toContain('Versi iPad');
+  });
+});
+
+describe('diff view', () => {
+  it('marks insertions and deletions', () => {
+    const segments = diffSegments('N 92', 'N 88');
+    expect(segments.some((segment) => segment.type === 'insert')).toBe(true);
+    expect(segments.some((segment) => segment.type === 'delete')).toBe(true);
+  });
+
+  it('reconstructs the original from equal + delete segments', () => {
+    const before = 'S: sesak berkurang\nA: pneumonia';
+    const after = 'S: sesak minimal\nA: pneumonia, sepsis';
+    const rebuilt = diffSegments(before, after)
+      .filter((segment) => segment.type !== 'insert')
+      .map((segment) => segment.text)
+      .join('');
+    expect(rebuilt).toBe(before);
+  });
+
+  it('reconstructs the new text from equal + insert segments', () => {
+    const before = 'S: sesak berkurang';
+    const after = 'S: sesak minimal, batuk (+)';
+    const rebuilt = diffSegments(before, after)
+      .filter((segment) => segment.type !== 'delete')
+      .map((segment) => segment.text)
+      .join('');
+    expect(rebuilt).toBe(after);
+  });
+
+  it('counts added and removed characters', () => {
+    const stats = diffStats('abc', 'abcdef');
+    expect(stats.added).toBe(3);
+    expect(stats.removed).toBe(0);
+  });
+});
+
+describe('the echo race that broke typing', () => {
+  /**
+   * Reproduces the exact state the editor reached between saving and the write
+   * echoing back, when the base was advanced optimistically:
+   *
+   *   base       = what the user just typed   (advanced too early)
+   *   local      = what the user just typed
+   *   remote     = the body still on the server (the echo has not arrived)
+   *
+   * `local === base`, so the merge reads it as "only the other device changed"
+   * and returns the OLD body — silently undoing the keystroke.
+   */
+  it('would adopt the stale server body when the base is advanced too early', () => {
+    const typed = 'S: sesak berkurang, batuk (+)';
+    const stillOnServer = 'S: sesak berkurang, batuk (';
+
+    const result = mergeThreeWay(typed, typed, stillOnServer);
+
+    expect(result.kind).toBe('remote-only');
+    expect(result.body).toBe(stillOnServer);
+  });
+
+  /**
+   * With the base left where it belongs — the last body the server actually
+   * confirmed — the same moment merges to the typed text instead.
+   */
+  it('keeps the typed text when the base is the last confirmed body', () => {
+    const confirmed = 'S: sesak berkurang, batuk (';
+    const typed = 'S: sesak berkurang, batuk (+)';
+
+    const result = mergeThreeWay(confirmed, typed, confirmed);
+
+    expect(result.kind).toBe('local-only');
+    expect(result.body).toBe(typed);
+  });
+
+  it('is a no-op once the echo lands', () => {
+    const typed = 'S: sesak berkurang, batuk (+)';
+    expect(mergeThreeWay('S: sesak', typed, typed).kind).toBe('unchanged');
+  });
+});
+
+describe('the empty-server race that wiped a note after sign-in', () => {
+  /**
+   * A redirect sign-in reloads the page and lands back on the note. Until the
+   * entry snapshot arrives, the editor's server text is '' — and a merge run in
+   * that window sees the real body as a deletion.
+   */
+  it('reads a loaded body against an empty one as a full deletion', () => {
+    const real = 'S: sesak berkurang\nO:\nTD 130/80\nA: pneumonia';
+
+    // base '' (nothing known yet), local '' (blank editor), remote = the real
+    // note arriving. Adopting remote is correct — the danger is the reverse.
+    const arriving = mergeThreeWay('', '', real);
+    expect(arriving.kind).toBe('remote-only');
+    expect(arriving.body).toBe(real);
+  });
+
+  it('does not silently prefer the blank when both sides moved', () => {
+    const real = 'S: sesak berkurang\nA: pneumonia';
+    const typedIntoBlank = 'x';
+
+    // If a keystroke lands before the entry loads, this is the state. It must
+    // NOT resolve automatically to the keystroke — the editor being locked
+    // while loading is what prevents reaching here at all.
+    const result = mergeThreeWay('', typedIntoBlank, real);
+    expect(result.kind).toBe('conflict');
+    if (result.kind !== 'conflict') return;
+    expect(result.remote).toBe(real);
+  });
+});
+
+describe('diffSegmentsByLine', () => {
+  it('marks only the inserted line when one is added above others', () => {
+    // The reported complaint: a detail that is still present, pushed down by a
+    // new one above it, being shown as removed.
+    const before = ['- Furosemide 40mg', '- Candesartan 8mg'].join('\n');
+    const after = ['- Amiodarone 200mg', '- Furosemide 40mg', '- Candesartan 8mg'].join('\n');
+    const segments = diffSegmentsByLine(before, after);
+    expect(segments.filter((segment) => segment.type === 'delete')).toEqual([]);
+    expect(segments.filter((segment) => segment.type === 'insert')).toHaveLength(1);
+  });
+
+  it('never splits a line into part-changed fragments', () => {
+    // Character diffing finds coincidental matches between unrelated lines, so
+    // a therapy list edit came back shredded into inserts and deletes that read
+    // as changes nobody made. Whole lines are the unit a reader compares.
+    const before = '- Spironolakton 25 mg/24 jam/oral';
+    const after = '- Spironolakton 50 mg/24 jam/oral';
+    for (const segment of diffSegmentsByLine(before, after)) {
+      if (segment.type === 'equal') continue;
+      expect(segment.text).toContain('Spironolakton');
+    }
+  });
+
+  it('reports a removed line as removed', () => {
+    const before = ['- satu', '- dua', '- tiga'].join('\n');
+    const after = ['- satu', '- tiga'].join('\n');
+    const removed = diffSegmentsByLine(before, after).filter((s) => s.type === 'delete');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]?.text).toContain('dua');
+  });
+
+  it('reports no change between identical notes', () => {
+    const note = ['*S:*', '- sesak berkurang'].join('\n');
+    expect(diffSegmentsByLine(note, note).every((s) => s.type === 'equal')).toBe(true);
+  });
+});

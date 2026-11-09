@@ -1,0 +1,223 @@
+import { describe, expect, it } from 'vitest';
+
+import { wardPlan } from '@/domain/denahPlan';
+import { placeBeds } from './beds';
+import { buildDenahDocx, buildListDocx, denahDocumentXml, floorFileName, kjsReferenceRuns, listDocumentXml, patientRuns } from './docx';
+import { DEFAULT_PRINT, forPrint } from './printSettings';
+import type { FloorPatient } from './report';
+
+function patient(over: Partial<FloorPatient>): FloorPatient {
+  return {
+    key: 'rm:1', rm: '1', name: 'Tn. Contoh', identity: 'Tn. Contoh / RM 1111111', room: '417', bed: '4', floor: '4',
+    dpjpId: 'ks', kjsDpjpIds: [], btkv: false, body: '', full: '', chief: 'Kepala', junior: 'Muda',
+    senderNick: '', sender: '', sentAt: '2026-10-12T07:00', index: 0, discharge: null, ...over,
+  };
+}
+
+describe('placeBeds', () => {
+  it('puts each patient in their bed, fills free slots, keeps the overflow', () => {
+    const slot = { room: '417', beds: 2 };
+    const a = patient({ key: 'a', bed: '2' });
+    const b = patient({ key: 'b', bed: '' });
+    const c = patient({ key: 'c', bed: '2' });
+    const placed = placeBeds(slot, [a, b, c]);
+    expect(placed.beds.map((p) => p?.key)).toEqual(['b', 'a']);
+    expect(placed.loose.map((p) => p.key)).toEqual(['c']);
+    expect(placeBeds({ room: '409', beds: 1 }, [patient({ bed: '7' })]).beds[0]?.bed).toBe('7');
+  });
+
+  it('a new patient on a taken bed replaces the old one; nobody shifts to another bed', () => {
+    const slot = { room: '417', beds: 3 };
+    const old1 = patient({ key: 'old1', bed: '1', sentAt: '2026-10-27T07:00' });
+    const two = patient({ key: 'two', bed: '2', sentAt: '2026-10-28T07:00' });
+    const new1 = patient({ key: 'new1', bed: '1', sentAt: '2026-10-29T07:00' });
+    const placed = placeBeds(slot, [old1, two, new1]);
+    expect(placed.beds.map((p) => p?.key ?? null)).toEqual(['new1', 'two', null]);
+    expect(placed.loose.map((p) => p.key)).toEqual(['old1']);
+  });
+});
+
+describe('patientRuns', () => {
+  it('colours H-1 red and pulang green, residents bold black, pediatri code amber', () => {
+    const red = patientRuns(patient({ discharge: 'tomorrow', btkv: true }), { number: 1 });
+    expect(red.map((r) => r.text).join('')).toBe('1. 417 Bed 4/KS/Tn. Contoh / RM 1111111 (KJS BTKV) - dr. Muda / dr. Kepala');
+    expect(red[0]!.color).toBe('FF0000');
+    expect(red.at(-1)).toEqual({ text: ' - dr. Muda / dr. Kepala', bold: true });
+    expect(patientRuns(patient({ discharge: 'today' }))[0]!.color).toBe('00B050');
+    const pedi = patientRuns(forPrint([patient({ dpjpId: 'aau' })], DEFAULT_PRINT.denah)[0]!);
+    expect(pedi.find((r) => r.text === 'AAU')?.color).toBe('FFC000');
+    // MAA is yellow too (28 Oct 2026); KS is not.
+    expect(patientRuns(forPrint([patient({ dpjpId: 'maa' })], DEFAULT_PRINT.denah)[0]!).find((r) => r.text === 'MAA')?.color).toBe('FFC000');
+    expect(patientRuns(forPrint([patient({})], DEFAULT_PRINT.denah)[0]!).find((r) => r.text === 'KS')?.color).toBeUndefined();
+  });
+});
+
+describe('List docx', () => {
+  it('landscape, four columns, bold from *…*, emoji kept', () => {
+    const xml = listDocumentXml('Tabe dokter *List Pasien*\n🫀 dr. KS : 1 pasien\n\n*1. 417 Bed 4/KS/Tn. A*');
+    expect(xml).toContain('<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>');
+    expect(xml).toContain('<w:cols w:num="4" w:space="425"/>');
+    expect(xml).toContain('<w:b/><w:bCs/></w:rPr><w:t xml:space="preserve">List Pasien</w:t>');
+    expect(xml).toContain('🫀 dr. KS : 1 pasien');
+    expect(xml).toContain('<w:p/>');
+  });
+
+  it('is a zip with the document, styles and footer', () => {
+    const bytes = buildListDocx('x');
+    expect([bytes[0], bytes[1]]).toEqual([0x50, 0x4b]);
+    const text = new TextDecoder().decode(bytes);
+    for (const part of ['word/document.xml', 'word/styles.xml', 'word/footer1.xml', '[Content_Types].xml']) expect(text).toContain(part);
+  });
+});
+
+describe('Denah docx', () => {
+  const patients = [
+    patient({ key: 'a', room: '417', bed: '4', discharge: 'today' }),
+    patient({ key: 'b', room: '420', bed: '2', dpjpId: 'zd', kjsDpjpIds: ['mz'] }),
+    patient({ key: 'c', room: '599', bed: '', dpjpId: 'zd', junior: '' }),
+  ];
+  const xml = denahDocumentXml({ ward: 'PJT Lantai 4', date: '2026-10-12', plan: wardPlan('PJT Lantai 4'), patients });
+
+  it('titles the floor and date, draws every room and the nurse station', () => {
+    expect(xml).toContain('DENAH PASIEN LANTAI 4 (12/10/2026)');
+    for (const room of ['420', '421', '401', '410', '411', '412', '419']) expect(xml).toContain(`KAMAR ${room}`);
+    expect(xml).toContain('NURSE STATION');
+    expect(xml).toContain('w:fill="FFC000"');
+  });
+
+  it('every vertical merge continues one that was started above it', () => {
+    const table = xml.slice(xml.indexOf('<w:tbl>'), xml.indexOf('</w:tbl>'));
+    const rows = table.split('<w:tr>').slice(1);
+    // Per grid column, a "continue" must follow a "restart" or another "continue".
+    const open = new Map<number, boolean>();
+    for (const row of rows) {
+      let col = 0;
+      for (const cell of row.split('<w:tc>').slice(1)) {
+        const span = Number(/w:gridSpan w:val="(\d+)"/.exec(cell)?.[1] ?? '1');
+        if (/<w:vMerge\/>/.test(cell)) expect(open.get(col)).toBe(true);
+        open.set(col, /<w:vMerge w:val="restart"\/>/.test(cell) || (/<w:vMerge\/>/.test(cell) && open.get(col) === true));
+        col += span;
+      }
+    }
+  });
+
+  it('green for pulang, DPJP tables with KJS, strays listed, residents after the DPJP boxes with the hand-filled blocks', () => {
+    expect(xml).toContain('w:color w:val="00B050"');
+    expect(xml).toContain('Prof. MZ');
+    expect(xml).toContain('KJS:');
+    expect(xml).toContain('Di luar denah:');
+    // Not on a page of their own unless asked (2026-10-16): no empty page 2.
+    expect(xml).not.toContain('<w:pageBreakBefore/>');
+    // Residents: a table, one cell per junior with the count (13.7).
+    const residents = xml.slice(xml.indexOf('dr. Kepala'));
+    expect(residents).toContain('<w:tbl>');
+    expect(residents).toContain('Muda (');
+    expect(residents).toContain('Tidak di-FU (');
+    expect(xml).toContain('Operkan ke Tmn Lain:');
+    expect(xml).toContain('Ganti Chief:');
+    expect(xml).toContain('dr. Kepala  3');
+  });
+
+  it('the footer carries the legend', () => {
+    const text = new TextDecoder().decode(buildDenahDocx({ ward: 'PJT Lantai 4', date: '2026-10-12', plan: null, patients }));
+    expect(text).toContain('Pulang Hari ini.');
+    expect(text).toContain('Pasien PJT Lantai 4:');
+  });
+
+  it('a tag prints after the line in its own Word colour (the line keeps red/green) and joins the legend', () => {
+    const marked = [{ ...patients[0]!, discharge: 'tomorrow' as const, tags: [{ label: 'Pre-op', color: 'purple' as const }] }];
+    const runs = patientRuns(marked[0]!);
+    expect(runs.at(-1)).toEqual({ text: ' [Pre-op]', bold: true, color: '7030A0' });
+    expect(runs.find((r) => r.text.includes('RM'))?.color).toBe('FF0000');
+    const text = new TextDecoder().decode(buildDenahDocx({ ward: 'PJT Lantai 4', date: '2026-10-12', plan: null, patients: marked }));
+    expect(text).toContain('Pre-op');
+  });
+
+  it('usul H-1 prints as an amber [usul] run only when the setup asks (26 Oct 2026)', () => {
+    const open = [{ ...patients[2]!, usul: true }];
+    expect(patientRuns(open[0]!).at(-1)).toEqual({ text: ' [usul]', bold: true, color: 'FFC000' });
+    expect(patientRuns(open[0]!).find((r) => r.text.includes('RM'))?.color).toBeUndefined();
+    const input = { ward: 'PJT Lantai 4', date: '2026-10-12', plan: null, patients: open };
+    const off = new TextDecoder().decode(buildDenahDocx(input));
+    expect(off).not.toContain('[usul]');
+    expect(denahDocumentXml(input)).not.toContain('[usul]');
+    const asked = { ...DEFAULT_PRINT.denah, usulMarker: true };
+    expect(denahDocumentXml(input, asked)).toContain('[usul]');
+    // Renamed and recoloured: the word and the colour follow the setup (26 Oct 2026).
+    const styled = { ...asked, usulLabel: 'Tunggu DPJP', usulColor: 'purple' as const };
+    const xml = denahDocumentXml(input, styled);
+    expect(xml).toContain('[Tunggu DPJP]');
+    expect(xml).toContain('7030A0');
+    expect(xml).not.toContain('[usul]');
+    const legend = new TextDecoder().decode(buildDenahDocx(input, asked));
+    expect(legend).toContain('Usul H-1 (belum disetujui)');
+    expect(new TextDecoder().decode(buildDenahDocx({ ...input, patients: [patients[0]!] }, asked))).not.toContain('Usul H-1');
+  });
+
+  it('residents are numbered; a division patient gets its own cell and no chief count', () => {
+    const held = { ...patients[0]!, key: 'rm:9', junior: '', chief: '', division: 'Aritmia' };
+    const out = denahDocumentXml({ ward: 'PJT Lantai 4', date: '2026-10-12', plan: null, patients: [...patients, held] });
+    const residents = out.slice(out.indexOf('dr. Kepala'));
+    expect(residents).toContain('Divisi Aritmia (1, tidak di-FU)');
+    expect(residents).toMatch(/<w:t xml:space="preserve">1\. /);
+    expect(residents).toContain('dr. Kepala  3');
+  });
+
+  it('a KJS patient filed under another DPJP is a short grey reference in the KJS box', () => {
+    expect(kjsReferenceRuns({ ...patients[0]!, room: '420', bed: '2', name: 'Tn. Contoh', dpjpId: 'zd' }, 1)).toEqual([
+      { text: '1. 420 Bed 2/Tn. Contoh → ZD', color: '7F7F7F' },
+    ]);
+  });
+
+  it('handover notes fill the "Operkan" and "Ganti Chief" boxes; holders printed larger (13.14)', () => {
+    const noted = [{ ...patients[0]!, room: '420', bed: '2', name: 'Tn. Contoh', operkan: 'Bima', gantiChief: 'dr. Kirana' }];
+    const out = denahDocumentXml({ ward: 'PJT Lantai 4', date: '2026-10-12', plan: null, patients: noted });
+    expect(out).toContain('1. 420 Bed 2/Tn. Contoh → dr. Bima');
+    expect(out).toContain('1. 420 Bed 2/Tn. Contoh → dr. Kirana');
+    expect(out).toContain('<w:sz w:val="20"/>');
+  });
+
+  it('file names are Windows-safe', () => {
+    expect(floorFileName('Denah', 'PJT Lantai 4/5', '2026-10-12')).toBe('Denah PJT Lantai 4 5 2026-10-12.docx');
+  });
+
+  it('follows the print setup: residents on a new page, landscape, font size (2026-10-16)', () => {
+    const own = denahDocumentXml(
+      { ward: 'PJT Lantai 4', date: '2026-10-12', plan: wardPlan('PJT Lantai 4'), patients },
+      { landscape: true, fontPt: 9, residentsNewPage: true, residentsList: false, usulMarker: false, usulLabel: 'usul', usulColor: 'amber', amberDpjps: ['aau', 'yp', 'maa'] },
+    );
+    expect(own).toContain('<w:pageBreakBefore/>');
+    expect(own.slice(own.indexOf('<w:pageBreakBefore/>'))).toContain('dr. Kepala  3');
+    expect(own).toContain('w:orient="landscape"');
+    // Holders 2.5 pt above the text: 9 pt → 11.5 pt = 23 half-points.
+    expect(own).toContain('<w:sz w:val="23"/>');
+    const file = new TextDecoder().decode(buildDenahDocx({ ward: 'PJT Lantai 4', date: '2026-10-12', plan: null, patients }, { ...DEFAULT_PRINT.denah, fontPt: 9 }));
+    expect(file).toContain('<w:sz w:val="18"/>');
+  });
+
+  it('the list follows the print setup: portrait, two columns', () => {
+    const own = listDocumentXml('*Judul*\nisi', { landscape: false, columns: 2, fontPt: 8 });
+    expect(own).toContain('<w:pgSz w:w="11906" w:h="16838"/>');
+    expect(own).toContain('<w:cols w:num="2" w:space="425"/>');
+    const file = new TextDecoder().decode(buildListDocx('isi', { landscape: false, columns: 1, fontPt: 8 }));
+    expect(file).toContain('<w:sz w:val="16"/>');
+    expect(file).not.toContain('<w:cols');
+  });
+});
+
+describe('Residen as a list in Word (20 Oct 2026)', () => {
+  const two = [
+    { key: 'a', rm: '1', name: 'Tn. A', identity: 'Tn. A', room: '417', bed: '1', dpjpId: 'ks', kjsDpjpIds: [], btkv: false, junior: 'Bima', chief: 'Kepala', discharge: null },
+    { key: 'b', rm: '2', name: 'Tn. B', identity: 'Tn. B', room: '418', bed: '1', dpjpId: 'ks', kjsDpjpIds: [], btkv: false, junior: 'Kirana', chief: 'Kepala', discharge: null },
+  ] as unknown as FloorPatient[];
+  const residents = (xml: string): string => xml.slice(xml.indexOf('Bima ('));
+  it('one column when the residents are a list', () => {
+    const xml = denahDocumentXml({ ward: 'PJT Lantai 4', date: '2026-10-20', plan: null, patients: two }, { ...DEFAULT_PRINT.denah, residentsList: true });
+    // Bima and Kirana are in different rows: a row ends between them.
+    expect(residents(xml).slice(0, residents(xml).indexOf('Kirana ('))).toContain('</w:tr>');
+  });
+  it('three columns by default', () => {
+    const xml = denahDocumentXml({ ward: 'PJT Lantai 4', date: '2026-10-20', plan: null, patients: two });
+    expect(residents(xml).slice(0, residents(xml).indexOf('Kirana ('))).not.toContain('</w:tr>');
+  });
+});

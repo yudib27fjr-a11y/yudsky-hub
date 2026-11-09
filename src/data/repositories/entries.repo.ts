@@ -1,0 +1,985 @@
+import {
+  addDoc,
+  deleteDoc,
+  deleteField,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  type DocumentData,
+  type Unsubscribe,
+  getCountFromServer,
+  getDocsFromCache,
+  documentId,
+  type QueryDocumentSnapshot,
+} from 'firebase/firestore';
+
+import { getDeviceId } from '../deviceId';
+import { PRUNABLE_REASONS, prunableRevisions, REVISION_CAP } from '@/domain/revisionPrune';
+import { entriesCol, entryDoc, revisionsCol } from '../paths';
+import { touchEntryMeta } from './patients.repo';
+import { addDays, compareEntryDates, isIgdEntry } from '@/domain/clinicalDate';
+import {
+  clearOutbox,
+  forgetSentBody,
+  getMergeBase,
+  noteSentBody,
+  peekMergeBase,
+  peekMergeHash,
+  peekSentBody,
+  putMergeBase,
+  putOutbox,
+} from '../localBase';
+import { trackWrite } from '../syncStatus';
+import { bodyHash } from '@/domain/hash';
+import { isVersion, noteLabel } from '@/domain/shiftNotes';
+import { expectedBaseHash } from '@/domain/merge/lateWrite';
+import type { ClinicalDate, DailyEntry, EntryRevision, ShiftNote } from '@/domain/types';
+
+
+export interface EntrySnapshot {
+  entry: DailyEntry | null;
+  exists: boolean;
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+}
+
+/**
+ * Subscribes to one clinical day.
+ *
+ * `includeMetadataChanges` is required, not cosmetic: SPEC 7.2 step 4 says the
+ * merge base is persisted on *write confirmation*, and the only signal for
+ * that is a metadata-only snapshot flipping `hasPendingWrites` to false.
+ * Without it the base would never advance and every reconnect would look like
+ * a conflict.
+ */
+export function subscribeEntry(
+  patientId: string,
+  date: ClinicalDate,
+  callback: (snapshot: EntrySnapshot) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  /*
+    Warm the in-memory base from IndexedDB as the day opens, so the first
+    write after a reload already knows what the server last confirmed. Without
+    it, that write carries no base and cannot be checked — which is precisely
+    the write most likely to be made offline.
+  */
+  void getMergeBase(patientId, date);
+
+  return onSnapshot(
+    entryDoc(patientId, date),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      const entry = snapshot.exists() ? (snapshot.data() as DailyEntry) : null;
+
+      // Confirmed server state → this is now the common ancestor for merge.
+      if (entry && !snapshot.metadata.hasPendingWrites && !snapshot.metadata.fromCache) {
+        void putMergeBase({
+          patientId,
+          date,
+          body: entry.body,
+          rev: entry.rev,
+          // The server's own field, which is what a later write sends back.
+          ...(typeof entry.bodyHash === 'string' ? { bodyHash: entry.bodyHash } : {}),
+        });
+      }
+
+      callback({
+        entry,
+        exists: snapshot.exists(),
+        fromCache: snapshot.metadata.fromCache,
+        hasPendingWrites: snapshot.metadata.hasPendingWrites,
+      });
+    },
+    onError,
+  );
+}
+
+/**
+ * One-shot read of every day, for the copy sheet's range options.
+ *
+ * `getDocs` serves from the persistent cache when offline, so "salin 3 hari
+ * terakhir" works with no signal — which is the only reason this is a fetch
+ * rather than a subscription.
+ */
+export async function fetchEntryBodies(
+  patientId: string,
+): Promise<Array<{ date: ClinicalDate; body: string }>> {
+  /**
+   * No `orderBy('date')`. Sorted below, on the document ID.
+   *
+   * Firestore does not return documents that lack the field being ordered on
+   * — they are absent from the result, not sorted last. Four writes in this
+   * file could create an entry without a `date` field (all fixed now), and any
+   * such document was permanently invisible to this query while remaining
+   * perfectly readable by id. Ordering on a field that is a copy of the ID is
+   * a dependency with nothing to gain: the ID sorts identically and always
+   * exists.
+   */
+  const snapshot = await getDocs(query(entriesCol(patientId)));
+  return toBodies(snapshot.docs);
+}
+
+/**
+ * One day's SOAP, read by id: one document (the cached copy when offline, if
+ * this device has it). `null` when the day has no note or was deleted.
+ */
+export async function fetchEntryBody(patientId: string, date: ClinicalDate): Promise<string | null> {
+  const snapshot = await getDoc(entryDoc(patientId, date));
+  const entry = snapshot.exists() ? (snapshot.data() as DailyEntry) : null;
+  if (!entry || entry.deletedAt) return null;
+  return entry.body?.trim() ? entry.body : null;
+}
+
+/** How many days back from today `fetchLatestEntryBody` reads before it falls back to all of them. */
+const LATEST_WINDOW_DAYS = 3;
+
+/**
+ * Today's note, else the newest one with content: what the board's peek
+ * window and Visite sheet show.
+ *
+ * Both used `fetchEntryBodies`, a server read of EVERY day of the admission
+ * for one note, and Visite re-ran it on every board snapshot (every autosave
+ * anywhere on the board touches a patient doc). This reads only the days from
+ * three days ago onward (a weekend gap still fits): the id is the date, and the range is open upwards, so
+ * every day newer than any it misses is in it. Exact whenever one of them is a
+ * dated day with text; otherwise it reads them all, as before. An ascending
+ * id range, because Firestore refuses a descending key scan.
+ */
+export async function fetchLatestEntryBody(
+  patientId: string,
+  today: ClinicalDate,
+): Promise<{ date: ClinicalDate; body: string } | null> {
+  const recent = await getDocs(
+    query(entriesCol(patientId), where(documentId(), '>=', addDays(today, -LATEST_WINDOW_DAYS))),
+  );
+  let days = toBodies(recent.docs);
+  // `igd` sorts after the digits, so it is always in the range, and it is the
+  // OLDEST note: dated days before the range would come before it.
+  if (!days.some((day) => !isIgdEntry(day.date))) {
+    days = await fetchEntryBodies(patientId);
+  }
+  return days.find((day) => day.date === today) ?? days[0] ?? null;
+}
+
+function toBodies(docs: readonly QueryDocumentSnapshot[]): Array<{ date: ClinicalDate; body: string }> {
+  return docs
+    // The ID, not `data().date`. They are the same string whenever the field
+    // exists, and the ID is the one that always does.
+    .map((entry) => ({ ...(entry.data() as DailyEntry), date: entry.id }))
+    // `!entry.deletedAt`, not `=== null`. Only the creation path sets the field
+    // explicitly; a document first materialised by a merge write — locking an
+    // untouched day does exactly that — has it `undefined`. The strict
+    // comparison discarded every one of those, which is why "salin dari hari
+    // sebelumnya" reported that there was nothing to copy.
+    .filter((entry) => !entry.deletedAt)
+    /**
+     * `body ?? ''`, and body-less days dropped.
+     *
+     * An entry document can legitimately exist with no `body` field at all:
+     * `writeShiftNotes` materialises one when a jaga note is added to a day
+     * that has no SOAP yet, and locking an untouched day does the same. This
+     * function used to hand those straight on as `{ date, body: undefined }`,
+     * and every consumer assumed a string — `composeCopy` called `body.trim()`
+     * and threw, so Salin rendered EMPTY for a day the editor was visibly
+     * showing text for.
+     *
+     * Dropping them also settles a disagreement. `subscribeEntryDates` already
+     * filters on a non-empty body, so the rail knew such a day had no note
+     * while `resolveRange` here matched it on date alone and returned it as
+     * the day to copy. Two code paths held different answers to "which days
+     * have a note", and the copy path had the wrong one.
+     */
+    .map((entry) => ({ date: entry.date, body: entry.body ?? '' }))
+    .filter((entry) => entry.body.trim().length > 0)
+    // Sorted here, now that the query does not order. NEWEST FIRST, with the
+    // admission note (`igd`) as the oldest: see `compareEntryDates`.
+    .sort((a, b) => compareEntryDates(b.date, a.date));
+}
+
+/**
+ * Dates that actually have a note.
+ *
+ * A document existing is not the same as a day having content: locking an
+ * untouched day, or opening one and typing nothing, both leave an empty
+ * document behind. Listing those put dates on the rail that lead to a blank
+ * page, which is exactly what the rail is supposed to save you from.
+ */
+export interface EntryDatesSnapshot {
+  /**
+   * Days the rail should OFFER: a non-empty body, or at least one jaga note.
+   *
+   * This used to be "days with a non-empty body" alone, and the rail is built
+   * from it — so a day whose only content was a jaga note did not appear at
+   * all. `writeShiftNotes` creates exactly that: adding a shift note to a day
+   * before its SOAP is written leaves an entry with notes and no body. The day
+   * was real, held the note, and was reachable through "Tanggal lain", but the
+   * rail never drew it, so the note looked as though it had moved to whichever
+   * day was drawn beside it.
+   */
+  dates: ClinicalDate[];
+  /**
+   * Days with a non-empty BODY, for the dot that marks a written note.
+   *
+   * Separate from `dates` on purpose. "Offer this day" and "this day has a
+   * note in it" were the same question only while a body was the only thing a
+   * day could hold. Collapsing them again would either hide jaga-only days or
+   * put a written-note dot on a day with no note.
+   */
+  datesWithBody: ClinicalDate[];
+  /**
+   * Shift notes per day, for the rail's half-height entries.
+   *
+   * Carried by this subscription rather than a second one: it already reads
+   * every entry document in the patient, so the notes are in hand and a
+   * parallel query would be a second live listener for data already on the
+   * wire.
+   *
+   * A day appears here whether or not its BODY has content — a jaga complaint
+   * can be the first thing written against a date, and a shift note that
+   * existed but did not show because nobody had written the day's SOAP yet
+   * would look exactly like a lost note.
+   */
+  shiftNotesByDate: Record<ClinicalDate, ShiftNote[]>;
+}
+
+/** Days from today backwards that the date rail listens to live; older days are read once per session. */
+export const ENTRY_DATES_LIVE_DAYS = 4;
+
+/** Patients whose older days this session has already read from the server. */
+const olderDaysRead = new Set<string>();
+
+/**
+ * The date rail (and every day's SOAP jaga) for one patient.
+ *
+ * It listened to EVERY entry of the admission, bodies included: one read per
+ * day on each open after 30 min away, and one more on every autosave of the
+ * open day (2026-11-01, read-cost fix B). Now only the last
+ * `ENTRY_DATES_LIVE_DAYS` days (and `igd`, which sorts after the digits) are
+ * live. Older days are taken from this device's cache at once and read from
+ * the server once per session, so a day written on another device before the
+ * window still appears; an edit to such an old day made on another device
+ * during this session shows on the next session. The real entries are always
+ * what is read: no summary is kept anywhere that an older app version could
+ * fail to update.
+ *
+ * The first answer waits for the live part, so "the latest written day" is
+ * never decided from older days alone.
+ */
+export function subscribeEntryDates(
+  patientId: string,
+  today: ClinicalDate,
+  callback: (snapshot: EntryDatesSnapshot) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  // No `orderBy('date')` — see `fetchEntryBodies`. The id is the date; a
+  // document missing the `date` field still has one.
+  const since = addDays(today, -ENTRY_DATES_LIVE_DAYS);
+  const recentQuery = query(entriesCol(patientId), where(documentId(), '>=', since));
+  const olderQuery = query(entriesCol(patientId), where(documentId(), '<', since));
+  let recent: EntryDay[] | null = null;
+  let older: EntryDay[] = [];
+  let stopped = false;
+  const emit = (): void => {
+    if (!stopped && recent) callback(summarizeEntryDays([...older, ...recent]));
+  };
+  const take = (docs: readonly QueryDocumentSnapshot[]): EntryDay[] =>
+    docs.map((entry) => ({ id: entry.id, data: entry.data() as DailyEntry }));
+
+  const stop = onSnapshot(
+    recentQuery,
+    (snapshot) => {
+      recent = take(snapshot.docs);
+      emit();
+    },
+    onError,
+  );
+  void getDocsFromCache(olderQuery)
+    .then((snapshot) => {
+      if (older.length === 0) older = take(snapshot.docs);
+      emit();
+    })
+    .catch(() => undefined);
+  if (!olderDaysRead.has(patientId)) {
+    void getDocs(olderQuery)
+      .then((snapshot) => {
+        if (!snapshot.metadata.fromCache) olderDaysRead.add(patientId);
+        older = take(snapshot.docs);
+        emit();
+      })
+      .catch((error: unknown) => console.error('[entry] older days', error));
+  }
+  return () => {
+    stopped = true;
+    stop();
+  };
+}
+
+export interface EntryDay {
+  id: string;
+  data: DailyEntry;
+}
+
+/** The rail's three lists from entry documents (unchanged rules; a later copy of a day wins). */
+export function summarizeEntryDays(days: readonly EntryDay[]): EntryDatesSnapshot {
+  const byId = new Map<string, DailyEntry>();
+  for (const day of days) byId.set(day.id, day.data);
+  const dates: ClinicalDate[] = [];
+  const datesWithBody: ClinicalDate[] = [];
+  const shiftNotesByDate: Record<ClinicalDate, ShiftNote[]> = {};
+
+  for (const [id, data] of byId) {
+    if (data.deletedAt) continue;
+
+    const hasBody = (data.body ?? '').trim().length > 0;
+    const live = (data.shiftNotes ?? []).filter((note) => note.clearedAt === null);
+
+    if (hasBody) datesWithBody.push(id);
+    // Either kind of content makes the day worth offering.
+    if (hasBody || live.length > 0) dates.push(id);
+    if (live.length > 0) shiftNotesByDate[id] = live;
+  }
+
+  return { dates, datesWithBody, shiftNotesByDate };
+}
+
+/**
+ * SPEC 7.2 step 3 — the single body write.
+ *
+ * `setDoc({ merge: true })` rather than `updateDoc` so that the first write of
+ * a new clinical day creates the document. The doc id IS the date, so this is
+ * an idempotent upsert: two devices creating "today" offline converge on one
+ * document instead of racing to produce duplicates.
+ *
+ * `rev` uses `increment(1)` so concurrent writers cannot both land on the same
+ * revision number, and `updatedAt` uses `serverTimestamp()` because a device
+ * clock must never order a conflict resolution (SPEC 7.4).
+ */
+export interface WriteBodyOptions {
+  /**
+   * True when the caller's live snapshot says this day does not exist yet.
+   * Creation-only fields are then included; on every subsequent write they are
+   * omitted so a keystroke flush can never resurrect a soft-deleted entry or
+   * silently unlock a locked one.
+   */
+  isNew: boolean;
+  /**
+   * The server's own `bodyHash` for the version this writer built on, sent
+   * back so the rules can compare it against the stored `bodyHash`: a write
+   * built on a version the server has since moved past is REFUSED rather than
+   * applied.
+   *
+   * The server's FIELD, never a hash computed here. Hashing the body locally
+   * assumes `bodyHash` still describes `body`, and one writer broke that
+   * assumption (`clearEntry`), which refused every later write on a cleared
+   * day — no note could be typed and carry-forward silently reverted.
+   *
+   * Omitted only by writers that do not carry a body (lock, presence, shift
+   * notes) and by the explicit clear, which is a deliberate act on the note in
+   * front of the user.
+   */
+  baseHash?: string;
+}
+
+export function writeBody(
+  patientId: string,
+  date: ClinicalDate,
+  body: string,
+  hariRawat: number,
+  options: WriteBodyOptions,
+): Promise<void> {
+  const payload: DocumentData = {
+    date,
+    hariRawat,
+    body,
+    bodyHash: bodyHash(body),
+    /*
+      ALWAYS written: the value, or deleted. The rules read the MERGED
+      document, and `baseHash` stays stored from the previous write. A write
+      that sent none was checked against that leftover (the hash the PREVIOUS
+      writer built on), which never equals the current `bodyHash`, so every
+      such write was refused. Deleting it is what "this write is unchecked"
+      has to look like to the rules.
+    */
+    baseHash: options.baseHash === undefined ? deleteField() : options.baseHash,
+    rev: increment(1),
+    updatedAt: serverTimestamp(),
+    updatedBy: getDeviceId(),
+  };
+
+  if (options.isNew) {
+    payload['createdAt'] = serverTimestamp();
+    payload['locked'] = false;
+    payload['editing'] = null;
+  }
+
+  /**
+   * A day with text in it is not a deleted day.
+   *
+   * `deletedAt` used to be cleared ONLY on `isNew`, so a day that had been
+   * cleared and then written into again stayed soft-deleted forever. The note
+   * was real and editable — `subscribeEntry` reads by id and does not filter —
+   * but every LIST filters `deletedAt`, so the day vanished from the rail
+   * while its note sat on screen. A real note reached rev 91 in that state.
+   *
+   * The original rule was that a keystroke flush must never resurrect a
+   * deleted entry, and the risk it guarded against is real: an autosave firing
+   * against a day someone just cleared would undo the clear. But it guarded
+   * with the wrong condition. What must not resurrect is an EMPTY write; a
+   * body with content in it is not an accident, it is someone typing a note
+   * into that day, and refusing to acknowledge the day they are typing into
+   * hides their work.
+   *
+   * So: content resurrects, emptiness does not. Clearing an entry writes
+   * `body: ''` together with `deletedAt`, and that path is untouched by this.
+   */
+  if (body.trim().length > 0) {
+    payload['deletedAt'] = null;
+  }
+
+  // Two writes, deliberately. The board reads the patient document only, so
+  // the preview has to travel with the body or the card goes stale. Both are
+  // optimistic and both queue offline, so this costs latency nowhere.
+  const written = trackWrite(setDoc(entryDoc(patientId, date), payload, { merge: true }));
+  void touchEntryMeta(patientId, date, body);
+  return written;
+}
+
+/**
+ * The body write every editor uses: recorded before it is sent, cleared when
+ * the server confirms it.
+ *
+ * `writeBody` above still exists for the replay itself, which supplies its own
+ * base and must not re-record what it is already reconciling.
+ *
+ * The base comes from `localBase`, which is written ONLY on confirmed
+ * snapshots. The live entry cannot be used: offline, Firestore's optimistic
+ * copy already contains this device's own unsent text, so the "base" would be
+ * our own edit and a later merge would decide we had changed nothing.
+ */
+export function writeBodyTracked(
+  patientId: string,
+  date: ClinicalDate,
+  body: string,
+  hariRawat: number,
+  options: { isNew: boolean },
+): Promise<void> {
+  /*
+    Read synchronously and send FIRST. A flush on `pagehide` has one tick
+    before the tab is gone; awaiting IndexedDB there would mean the write was
+    never handed to Firestore at all, losing the edit this path exists to
+    save. Recording it in the outbox is the safety net and can land late.
+
+    An unknown base (nothing confirmed on this device yet — a first write after
+    a reload while offline) sends no `baseHash`, so the write behaves exactly
+    as it did before this release rather than being refused.
+  */
+  const confirmed = peekMergeBase(patientId, date);
+
+  /*
+    What the server should hold when this arrives.
+
+    A body we sent ourselves but have not seen confirmed: its hash is one WE
+    computed and wrote, so hashing it here matches by construction. Otherwise
+    the server's own `bodyHash` field from the last confirmed snapshot —
+    never a hash of its body, which may not describe it.
+
+    Unknown either way: no `baseHash`, so the write is not checked rather than
+    refused. A day this device cannot verify must still be writable.
+  */
+  const expectedHash = expectedBaseHash({
+    sentBody: peekSentBody(patientId, date),
+    confirmedHash: peekMergeHash(patientId, date),
+  });
+
+  const written = writeBody(patientId, date, body, hariRawat, {
+    isNew: options.isNew,
+    ...(expectedHash === undefined ? {} : { baseHash: expectedHash }),
+  });
+  noteSentBody(patientId, date, body);
+
+  // Recorded against the CONFIRMED body, which is the only thing a later
+  // merge may treat as the common ancestor.
+  void putOutbox({ patientId, date, body, base: confirmed ?? '', at: Date.now() });
+
+  return written.then(
+    () => clearOutbox(patientId, date, body),
+    (error: unknown) => {
+      // Kept in the outbox on purpose, a refusal by the rules included: the
+      // reconciler merges it against whatever the note has become.
+      forgetSentBody(patientId, date);
+      /*
+        A REFUSAL also gets a record of its own (2026-10-01). The day's record
+        is replaced by the next write for that day, and after a refusal the
+        next write is usually built on the server's text — so the refused body
+        was overwritten before the reconciler ran, and "versi luring belum
+        digabung" held the other device's text instead of this one's.
+      */
+      if ((error as { code?: string } | null)?.code === 'permission-denied') {
+        void putOutbox({ patientId, date, body, base: confirmed ?? '', at: Date.now() }, { refused: true });
+      }
+      console.error('[entries] body write not confirmed', error);
+      /*
+        Ask for a reconcile NOW rather than at the next startup.
+
+        Without this, a refused write left the note looking unsaved until the
+        app was next opened — indistinguishable, at the keyboard, from the app
+        refusing to take the note at all. An event rather than a direct call:
+        the reconciler imports this module, and importing it back would be a
+        cycle.
+      */
+      window.dispatchEvent(new CustomEvent('plano:write-refused'));
+      throw error;
+    },
+  );
+}
+
+/** SPEC 7.5 — soft presence. A hint, never a lock. */
+export function heartbeatEditing(patientId: string, date: ClinicalDate): Promise<void> {
+  return trackWrite(
+    setDoc(
+      entryDoc(patientId, date),
+      // `date` included for the reason given on `setEntryLocked`. This one is
+      // the likeliest offender of the four: a heartbeat fires just from having
+      // a day open, so simply LOOKING at an untouched day could create an
+      // entry the rail would never show again.
+      { date, editing: { deviceId: getDeviceId(), at: serverTimestamp() } },
+      { merge: true },
+    ),
+  );
+}
+
+export function clearEditing(patientId: string, date: ClinicalDate): Promise<void> {
+  return trackWrite(
+    // `date` included for the reason given on `setEntryLocked`: a merge write
+    // without it can create an entry the date rail cannot see.
+    setDoc(entryDoc(patientId, date), { date, editing: null }, { merge: true }),
+  );
+}
+
+/**
+ * Lock or unlock a day.
+ *
+ * `setDoc(..., { merge: true })`, not `updateDoc`, because the document may not
+ * exist. Auto-lock is DERIVED from the date — a day older than 48 hours reads
+ * as locked whether or not anything was ever written to it. So "Buka kunci" on
+ * an empty old day was calling `updateDoc` on a non-existent document, which
+ * rejects with "No document to update", and the rejection was unhandled: the
+ * button did nothing at all, silently.
+ *
+ * Merging also means unlocking never touches `body` or `rev`.
+ */
+export function setEntryLocked(
+  patientId: string,
+  date: ClinicalDate,
+  locked: boolean,
+): Promise<void> {
+  return trackWrite(
+    setDoc(
+      entryDoc(patientId, date),
+      {
+        /**
+         * `date` on EVERY write that can create the document.
+         *
+         * `subscribeEntryDates` queries with `orderBy('date')`, and Firestore
+         * omits documents that lack the ordered field entirely — they are not
+         * sorted last, they are absent. A `setDoc(merge: true)` that leaves
+         * `date` out therefore creates an entry the date rail can never see,
+         * while `subscribeEntry` reads it perfectly well by id. That is the
+         * shape of the bug: a day missing from the rail whose note is right
+         * there when the day is opened directly.
+         *
+         * The doc id is already the date, so this is redundant data by
+         * definition. It is stored because a query cannot filter or sort on a
+         * document id the way it can on a field.
+         */
+        date,
+        locked,
+        updatedAt: serverTimestamp(),
+        updatedBy: getDeviceId(),
+      },
+      { merge: true },
+    ),
+  );
+}
+
+export function softDeleteEntry(patientId: string, date: ClinicalDate): Promise<void> {
+  return trackWrite(
+    updateDoc(entryDoc(patientId, date), {
+      deletedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      updatedBy: getDeviceId(),
+    }),
+  );
+}
+
+/**
+ * SPEC 7.4 — the revision trail. This is the last line of defence against
+ * losing text, so it is appended BEFORE any merge or conflict resolution, not
+ * after.
+ */
+export async function appendRevision(
+  patientId: string,
+  date: ClinicalDate,
+  revision: Pick<EntryRevision, 'body' | 'rev' | 'reason'> & { label?: string },
+): Promise<void> {
+  await trackWrite(
+    addDoc(revisionsCol(patientId, date), {
+      body: revision.body,
+      rev: revision.rev,
+      reason: revision.reason,
+      // Written only when present: an `undefined` field is a write error in
+      // Firestore, and an empty string would render as a blank label rather
+      // than as no label.
+      ...(revision.label ? { label: revision.label } : {}),
+      deviceId: getDeviceId(),
+      at: serverTimestamp(),
+    }),
+  );
+  await pruneRevisions(patientId, date);
+}
+
+/**
+ * Freeze the day's SOAP as a labelled version, and keep editing.
+ *
+ * The morning follow-up and the post-op update are the same day's note at two
+ * times, and until now the second one overwrote the first. This keeps the
+ * first.
+ *
+ * A FROZEN copy, deliberately, rather than a second editable body. Every
+ * subsystem downstream — three-way merge, the section parser, the tint layer,
+ * every copy format, carry-forward — reads exactly one `body` per day. N
+ * editable versions means N bodies to reconcile across devices, which is the
+ * problem that forced `diff-match-patch` into this codebase in the first
+ * place. A frozen version never merges, so none of them change.
+ *
+ * It also settles what "the day's SOAP" means without anyone having to decide:
+ * `body` is always the newest, so "salin dari hari sebelumnya" picks up the
+ * post-op update rather than the stale morning text as a consequence of the
+ * shape rather than as a rule someone has to maintain.
+ */
+export async function saveVersion(
+  patientId: string,
+  date: ClinicalDate,
+  body: string,
+  rev: number,
+  label: string,
+): Promise<void> {
+  await appendRevision(patientId, date, { body, rev, reason: 'version', label });
+}
+
+/**
+ * Delete a saved version.
+ *
+ * A hard delete, and the only one in this file a person can ask for.
+ *
+ * The prune above hard-deletes too, and its justification does not extend to
+ * here: those are derived safety copies the app took on its own, while this is
+ * a note somebody wrote and labelled. What justifies it instead is that the
+ * request is explicit and specific — a named version, chosen from a list,
+ * deleted on purpose. There is no ambiguity to protect the user from, and a
+ * soft-deleted version would sit in a trash nothing surfaces and nothing
+ * purges, which is a leak dressed up as caution.
+ *
+ * The day's `body` is untouched. Deleting the frozen copy of the morning SOAP
+ * cannot affect the note as it stands now — that is the whole reason freezing
+ * was the right shape for versions.
+ */
+export async function deleteVersion(
+  patientId: string,
+  date: ClinicalDate,
+  revisionId: string,
+): Promise<void> {
+  await trackWrite(deleteDoc(doc(revisionsCol(patientId, date), revisionId)));
+}
+
+async function pruneRevisions(patientId: string, date: ClinicalDate): Promise<void> {
+  try {
+    /*
+      Counted first (one read per 1,000 index entries), and pruned only when
+      PRUNE_SLACK over the cap (22 Oct 2026). It used to read up to 40
+      full-text snapshots after EVERY autosave to delete at most one.
+    */
+    const prunable = query(revisionsCol(patientId, date), where('reason', 'in', PRUNABLE_REASONS));
+    const count = (await getCountFromServer(prunable)).data().count;
+    if (count <= REVISION_CAP + PRUNE_SLACK) return;
+    const snapshot = await getDocs(query(prunable, orderBy('at', 'desc'), limit(count)));
+    const excess = prunableRevisions(
+      snapshot.docs.map((entry) => ({ ref: entry.ref, ...(entry.data() as EntryRevision) })),
+    );
+    await Promise.all(excess.map((entry) => deleteDoc(entry.ref)));
+  } catch (error) {
+    console.error('[entries] revision prune failed', error);
+  }
+}
+
+/** How far past the cap snapshots may run before a prune: one big read every 10 saves, not a read of 40 on each. */
+const PRUNE_SLACK = 10;
+
+export function subscribeRevisions(
+  patientId: string,
+  date: ClinicalDate,
+  callback: (revisions: EntryRevision[]) => void,
+  onError: (error: Error) => void,
+  /**
+   * The newest autosave snapshots too. Only while the trail is open (22 Oct
+   * 2026): every patient page used to read up to 30 full-text snapshots just
+   * to show the handful of saved versions.
+   */
+  withRecent = true,
+): Unsubscribe {
+  /**
+   * TWO subscriptions, because the two populations have different lifetimes.
+   *
+   * This was one query — the newest `REVISION_CAP` revisions by time — and it
+   * had a hole that made "saved versions are never pruned" untrue in the only
+   * sense the user can check. The version was never DELETED, but after thirty
+   * automatic snapshots it fell outside the newest-thirty window and stopped
+   * being fetched. It vanished from the trail and from the version chips on
+   * the SOAP page while still sitting in Firestore.
+   *
+   * A busy morning reaches thirty autosaves easily, so the "Pagi" version
+   * saved at 08:10 would routinely be gone from view by the afternoon — which
+   * is exactly the moment somebody wants to compare against it. Data that is
+   * present but unreachable is indistinguishable from data that was deleted.
+   *
+   * One time-ordered window cannot express "every version, plus the newest
+   * thirty snapshots", so it is not asked to. Versions are fetched by
+   * `reason` with no limit — there are only ever a handful — and sorted on the
+   * client, which needs no composite index.
+   */
+  let versions: EntryRevision[] = [];
+  let recent: EntryRevision[] = [];
+
+  const emit = (): void => {
+    const merged = new Map<string, EntryRevision>();
+    for (const revision of [...versions, ...recent]) merged.set(revision.id, revision);
+    callback(
+      [...merged.values()].sort((a, b) => (b.at?.toMillis() ?? 0) - (a.at?.toMillis() ?? 0)),
+    );
+  };
+
+  const stopVersions = onSnapshot(
+    query(revisionsCol(patientId, date), where('reason', '==', 'version')),
+    (snapshot) => {
+      versions = snapshot.docs.map(
+        (entry) => ({ id: entry.id, ...entry.data() }) as EntryRevision,
+      );
+      emit();
+    },
+    onError,
+  );
+
+  const stopRecent = !withRecent
+    ? () => undefined
+    : onSnapshot(
+    query(revisionsCol(patientId, date), orderBy('at', 'desc'), limit(REVISION_CAP)),
+    (snapshot) => {
+      recent = snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as EntryRevision);
+      emit();
+    },
+    onError,
+  );
+
+  return () => {
+    stopVersions();
+    stopRecent();
+  };
+}
+
+/**
+ * Clear a day's note.
+ *
+ * Soft, like everything else here: the entry document stays and its body is
+ * emptied, so the revision trail for that day survives and the text can be
+ * recovered from it. A hard delete would take the trail with it, and the trail
+ * is the only reason an accidental clear is not permanent.
+ *
+ * The `deletedAt` marker is what hides it from the rail and from
+ * "salin dari hari sebelumnya".
+ */
+export function clearEntry(patientId: string, date: ClinicalDate): Promise<void> {
+  return trackWrite(
+    setDoc(
+      entryDoc(patientId, date),
+      {
+        // See `setEntryLocked`.
+        date,
+        body: '',
+        /*
+          The hash goes with the body. It did not, and that left the day
+          storing a hash of text it no longer held — which the compare-and-set
+          on writes reads as "somebody else has changed this", refusing every
+          later write on a cleared day (see CHANGES.md).
+        */
+        bodyHash: bodyHash(''),
+        // An explicit clear is unchecked by design, and has to SAY so: a
+        // stored `baseHash` from the last typed write made the rules refuse
+        // every "Hapus catatan" on a day that had been typed in (see
+        // `writeBody`).
+        baseHash: deleteField(),
+        deletedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updatedBy: getDeviceId(),
+      },
+      { merge: true },
+    ),
+  );
+}
+
+/**
+ * Write the whole `shiftNotes` array.
+ *
+ * Whole-array, not per-element. Firestore has no "update element 2 of an
+ * array" — `arrayUnion` matches on deep equality, so editing a note's text
+ * would append a second copy rather than replace it. Writing the array back
+ * whole is the only correct option, and the reason `ShiftNote.id` exists is so
+ * the caller can rebuild it without depending on position.
+ *
+ * `rev` is NOT incremented and `bodyHash` is NOT touched. Both describe the
+ * SOAP body, which three-way merge operates on; a shift note is a sibling
+ * field, and bumping the body's revision because a shift note changed would
+ * make the merge think the body moved when it did not. Firestore merges these
+ * fields independently, which is the whole reason this is a field rather than
+ * text appended to the body.
+ *
+ * `merge: true` because the day may not exist yet — a jaga complaint can be
+ * the first thing written against a date. `updateDoc` with a dotted path fails
+ * silently on a missing document (§4), which is exactly the trap this avoids.
+ */
+export function writeShiftNotes(
+  patientId: string,
+  date: ClinicalDate,
+  hariRawat: number,
+  shiftNotes: ShiftNote[],
+): Promise<void> {
+  return trackWrite(
+    setDoc(
+      entryDoc(patientId, date),
+      {
+        date,
+        hariRawat,
+        shiftNotes,
+        /**
+         * `body` is deliberately NOT written here.
+         *
+         * A first attempt at fixing the empty-Salin bug added `body: ''` to
+         * this payload so the document would never exist without the field.
+         * That would have wiped the day's SOAP on every shift-note write:
+         * `merge: true` merges FIELDS, so `body: ''` is not "leave it alone if
+         * present", it is "set it to empty". Adding a jaga note to a day that
+         * already had a note would have deleted the note.
+         *
+         * The document genuinely can exist without a body — adding a jaga note
+         * to an untouched day creates exactly that — so the fix belongs in the
+         * readers, which must not assume the field is present. See
+         * `fetchEntryBodies`.
+         */
+        updatedAt: serverTimestamp(),
+        updatedBy: getDeviceId(),
+      },
+      { merge: true },
+    ),
+  );
+}
+
+/**
+ * One comparable item — a day's SOAP, or a single jaga note.
+ *
+ * Flat, not nested. A jaga note is NOT modelled as a child of the day's note
+ * here: for the purpose of "what changed", it is simply another piece of
+ * writing with a time on it. Nesting it would force the compare sheet to
+ * decide what comparing a parent means when only a child differs, which is a
+ * question the user never asked.
+ */
+export interface ComparableEntry {
+  /** Unique across both kinds — a date alone is not, once jaga notes exist. */
+  key: string;
+  date: ClinicalDate;
+  /** `HH.MM` for a jaga note or version; absent for the day's own SOAP. */
+  time?: string;
+  kind: 'harian' | 'jaga' | 'versi';
+  /** The note's name (`Versi dr. AHA`, `Jaga 21.40`); absent for the day's SOAP. */
+  label?: string;
+  body: string;
+}
+
+/**
+ * Everything on this patient that can be compared, newest first.
+ *
+ * Reads the same documents `fetchEntryBodies` does, and returns the jaga notes
+ * alongside the daily bodies rather than instead of them. Empty bodies are
+ * dropped on both kinds: an empty note has nothing to compare and would sit in
+ * the picker as a dead option.
+ */
+export async function fetchComparableEntries(
+  patientId: string,
+): Promise<ComparableEntry[]> {
+  /**
+   * No `orderBy('date')`. Sorted below, on the document ID.
+   *
+   * Firestore does not return documents that lack the field being ordered on
+   * — they are absent from the result, not sorted last. Four writes in this
+   * file could create an entry without a `date` field (all fixed now), and any
+   * such document was permanently invisible to this query while remaining
+   * perfectly readable by id. Ordering on a field that is a copy of the ID is
+   * a dependency with nothing to gain: the ID sorts identically and always
+   * exists.
+   */
+  const snapshot = await getDocs(query(entriesCol(patientId)));
+  const out: ComparableEntry[] = [];
+
+  for (const doc of snapshot.docs) {
+    const entry = doc.data() as DailyEntry;
+    if (entry.deletedAt) continue;
+
+    // `doc.id`, not `entry.date` — the field can be absent on a document
+    // created by a merge write, and an entry with `date: undefined` would sort
+    // and key unpredictably.
+    const date = doc.id;
+    const body = entry.body ?? '';
+    if (body.trim().length > 0) {
+      out.push({ key: date, date, kind: 'harian', body });
+    }
+
+    for (const note of entry.shiftNotes ?? []) {
+      if (note.clearedAt !== null) continue;
+      if (note.body.trim().length === 0) continue;
+      out.push({
+        key: `${date}#${note.id}`,
+        date,
+        time: note.time,
+        kind: isVersion(note) ? 'versi' : 'jaga',
+        label: noteLabel(note),
+        body: note.body,
+      });
+    }
+  }
+
+  /**
+   * Newest first, with a jaga note sorting AFTER the day it was written on.
+   *
+   * The day's SOAP is the morning round and the jaga note came later, so
+   * within one date the jaga note is the more recent writing. Sorting by date
+   * alone would leave their order down to document iteration, which is not
+   * something a reader should have to know about.
+   */
+  return out.sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    // The day's SOAP last within its date; its versions and jaga notes, which
+    // came after it, above it, newest first.
+    if ((a.kind === 'harian') === (b.kind === 'harian')) {
+      return (b.time ?? '').localeCompare(a.time ?? '');
+    }
+    return a.kind === 'harian' ? 1 : -1;
+  });
+}

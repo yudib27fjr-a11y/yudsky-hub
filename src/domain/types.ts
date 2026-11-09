@@ -1,0 +1,870 @@
+import type { Timestamp } from 'firebase/firestore';
+import type { StickyStyle } from './boardNotes';
+import type { CanvasBackground } from './boardBackground';
+import type { CardStyle, Density, TextSize } from './appearance';
+
+/**
+ * SPEC 6.2 — the domain model.
+ *
+ * These types are the contract every repository writes through. They are
+ * deliberately declared in `domain/`, not `data/`, because the merge, parser
+ * and formatter layers must be usable (and unit-testable) with no Firebase
+ * import in scope.
+ */
+
+/** "YYYY-MM-DD" in the user's clinical timezone. Never a Date. */
+export type ClinicalDate = string;
+
+export type SectionId =
+  | '_intro'
+  | 's'
+  | 'o'
+  | 'ttv'
+  | 'penunjang'
+  | 'a'
+  | 'p'
+  | 'terapi'
+  | `custom_${string}`;
+
+/** What shape of report a consultant expects (see dpjp.ts). */
+export type ReportFormat = 'harian' | 'diagnosis' | 'ringkas';
+
+/**
+ * A consultant's reporting preferences.
+ *
+ * More than a single enum, because the real requirements vary along axes that
+ * combine: the short PDF form goes to four consultants, but one wants a
+ * verification time on it and another wants it without the Chief/Junior lines
+ * because it goes to Telegram rather than the ward group. Encoding those as
+ * separate formats would need one variant per combination, and a fifth
+ * consultant with a new preference would need two more.
+ */
+export interface DpjpReportConfig {
+  format: ReportFormat;
+  /** `Chief :` / `Junior :` at the top. Off for reports sent to Telegram. */
+  staffing?: boolean;
+  /** `_Jam verifikasi HH.MM WITA_` before the closing sentence. */
+  verificationTime?: boolean;
+  /**
+   * Strip `*bold*` and `_italic_` from the output.
+   *
+   * Telegram does not render WhatsApp's markers, so a report pasted there
+   * arrives with the asterisks and underscores visible around every heading.
+   * Plain text is the correct output for that destination, not a degraded one.
+   */
+  plainText?: boolean;
+  /**
+   * Only the newest dated block of each investigation (dr. AHA). Applied to
+   * the copied text and offered when a version is made; the note itself keeps
+   * the whole stack. See `domain/penunjang`.
+   */
+  latestPenunjang?: boolean;
+  /** Free note shown alongside the reminder, e.g. "kirim via Telegram". */
+  hint?: string;
+}
+
+export type Sex = 'L' | 'P';
+/**
+ * `trashed` is a holding state before permanent destruction.
+ *
+ * Distinct from `archived`, which is where a discharged patient lives
+ * indefinitely and stays searchable. Trash is for records you intend to be
+ * gone: nothing lists them, and emptying the trash destroys them and their
+ * notes for real, so they stop occupying storage.
+ */
+export type PatientStatus = 'active' | 'archived' | 'trashed';
+export type ArchiveReason = 'pulang' | 'pindah' | 'meninggal' | 'lainnya';
+export type OutputFormat = 'whatsapp' | 'plain' | 'markdown';
+export interface ChecklistItemDef {
+  /** nanoid — STABLE FOREVER. Never reuse an id; history is keyed by it. */
+  id: string;
+  order: number;
+  label: string;
+  /** Key into styles/tokens.css. Never a raw hex (SPEC 9.3). */
+  colorToken: string;
+  /** Soft-disable. Deleting would orphan every historical tick. */
+  active: boolean;
+  /**
+   * Not needed on the day the patient goes home (e.g. "Order obat": the
+   * discharge prescription replaces the daily order). Hidden from that day's
+   * checklist, progress and card colour. Absent = the seed default; see
+   * `skipsOnDischargeDay`.
+   */
+  skipOnDischargeDay?: boolean;
+}
+
+export interface SectionAlias {
+  sectionId: SectionId;
+  label: string;
+  aliases: string[];
+  /** Output order when composing a section subset. */
+  order: number;
+}
+
+export interface CopyPreset {
+  id: string;
+  name: string;
+  format: OutputFormat;
+  sections: SectionId[] | 'all';
+  includeIdentity: boolean;
+  includeDateHeader: boolean;
+}
+
+export interface PrivacySettings {
+  /** DEFAULT true — full patient names are stored (SPEC 18). */
+  pinLockEnabled: boolean;
+  autoLockMinutes: number;
+  blurOnBackground: boolean;
+  /** DEFAULT true — board shows initials + bed only. */
+  boardShowInitialsOnly: boolean;
+}
+
+/**
+ * How the patient page arranges itself.
+ *
+ * `klasik` is what the page has always looked like: the sidebar's four blocks
+ * stacked open, the note beside them. `panel` puts the same four in cards that
+ * start closed, in the order they are actually reached for.
+ *
+ * A setting rather than a replacement: the classic layout suits a short stay
+ * where everything fits, and changing where someone's checklist lives without
+ * asking is not an improvement to them.
+ */
+export type SoapLayout = 'klasik' | 'panel' | 'tab' | 'rail';
+
+/**
+ * How the patient watermark is drawn.
+ *
+ * `ulang` tiles it down the note, so it is present wherever you scroll.
+ * `mengambang` keeps ONE mark in view, floating with the scroll: the same
+ * guarantee with a quarter of the ink.
+ */
+export type WatermarkMode = 'ulang' | 'mengambang';
+
+export interface UserSettings {
+  timezone: string;
+  /** DEFAULT `klasik`. Absent on profiles written before this existed. */
+  soapLayout?: SoapLayout;
+  /** Daily reminder kinds for the board. Absent: EKG and Urine output. */
+  reminderKinds?: import('./reminders').ReminderKind[];
+  /** DEFAULT 0 (midnight). Configurable — nothing may hardcode it (SPEC 9.1). */
+  dayRolloverHour: number;
+  checklistItems: ChecklistItemDef[];
+  sectionAliases: SectionAlias[];
+  carryForwardOnNewDay: boolean;
+  carryForwardClearSections: SectionId[];
+  /**
+   * Starting skeletons offered on an empty day. Data, not code: the formats
+   * differ per DPJP and per ward, and hardcoding them would mean a redeploy
+   * every time a consultant changes how they want a handover written.
+   */
+  noteTemplates: NoteTemplate[];
+  /**
+   * The seed snapshot these settings were last reconciled against.
+   *
+   * Optional because profiles written before seed reconciliation existed do
+   * not have one; `reconcileSeeds` records the current seeds on its first run
+   * for those, and merges properly from then on.
+   */
+  seedBaseline?: SeedBaseline;
+  /**
+   * Buat Sensus: the DPJP codes this resident is assigned ("ARB"). Each
+   * resident sends the census of their own consultant(s) only, so the page
+   * shows these first. Absent: every DPJP in the pasted lists.
+   */
+  sensusDpjps?: string[];
+  /**
+   * The "Junior :" line of Ringkas, remembered for the account (2026-10-10).
+   * Usually the same resident for every patient; the Chief is per patient
+   * (`Patient.chief`), because a chief covers only some of them.
+   */
+  ringkasJunior?: string;
+  /**
+   * DPJP Onsite IGD by weekday ('0' = Minggu), for the Formasi Jaga (12.5).
+   * Read through `onsiteSchedule`, which fills missing days from Avi's
+   * default; written one weekday leaf at a time.
+   */
+  onsiteIgd?: Record<string, import('./jaga/onsite').OnsiteDay>;
+  /** Salam presets — swapped on an existing note, per SPEC 14. */
+  greetings: string[];
+  /** Reporting-sentence presets ("mohon izin melaporkan …"). */
+  openingSentences: string[];
+  /**
+   * Closing-line presets.
+   *
+   * Six variants appear across the real reports — the Prof forms differ from
+   * the dokter forms, and getting that wrong in a message to a consultant is
+   * exactly the sort of small error that reads as carelessness.
+   */
+  closingSentences: string[];
+  /**
+   * Which report shape each DPJP expects, keyed by registry id.
+   *
+   * Configuration, not code: consultants change what they want, and a redeploy
+   * is the wrong unit of change for that. Unset means the standard daily
+   * handover, so the map only ever holds the exceptions.
+   */
+  dpjpFormats: Record<string, DpjpReportConfig>;
+  /**
+   * How bullets are written into WhatsApp output.
+   *
+   * `hyphen` is the default and the one that works: WhatsApp's compose box
+   * turns a line starting `- ` into its own bullet list, which is the rendering
+   * a handover is read with. The app's job is to hand WhatsApp something it
+   * recognises, not to produce the bullets itself.
+   *
+   * `guarded` suppresses that conversion with invisible characters, for anyone
+   * who wants literal hyphens to survive. `bullet` writes a `•` directly, which
+   * WhatsApp shows as a character rather than as a list.
+   */
+  whatsappBullet: 'hyphen' | 'guarded' | 'bullet';
+  /**
+   * Tint the section HEADERS in the editor.
+   *
+   * Off by default: it is a scanning aid, and an aid nobody asked for that
+   * changes how the note looks is an imposition. Anyone who wants it turns it
+   * on once.
+   */
+  sectionTint: boolean;
+  /**
+   * The patient name, MRN and date faintly behind the note.
+   *
+   * On by default: it is a wrong-patient guard, and a guard nobody has heard
+   * of protects nobody. Optional because it is drawn behind live text, and on
+   * a small dense screen a reader may reasonably decide it is one layer too
+   * many.
+   */
+  showWatermark: boolean;
+  /**
+   * Watermark opacity, 0.01–0.20.
+   *
+   * Adjustable because the right value is a property of the screen, not of the
+   * app: the same 0.045 that is barely visible on a ward tablet in daylight is
+   * a distraction on an OLED laptop at night. Capped well below the point where
+   * it would compete with the text it sits behind.
+   */
+  watermarkOpacity: number;
+  /** DEFAULT `ulang`. Absent on profiles written before this existed. */
+  watermarkMode?: WatermarkMode;
+  /**
+   * "Hari rawat ke-N" in the patient page header.
+   *
+   * Off by default. Every admission day is already visible from the date rail
+   * — counting entries is not information the header needs to state, and it
+   * duplicated the identity row's own admission count until that duplicate was
+   * removed. Reported as something that should be optional rather than gone
+   * outright, since a few consultants do ask for the count in a report.
+   */
+  showHariRawat: boolean;
+  /**
+   * The patient's catatan as a yellow strip under its board card. Off by
+   * default (30 Oct 2026, Avi): the Catatan pasien sticky shows it now.
+   * Absent on older profiles, which reads as off.
+   */
+  showCardNote?: boolean;
+  /**
+   * How a sticky note looks (3 Nov 2026): `postit`, `dipaku`, `bergaris`,
+   * `tenang`, or `klasik` (the card look it had before). Absent on older
+   * profiles, which reads as the default (`postit`); see `stickyStyleOf`.
+   */
+  stickyStyle?: StickyStyle;
+  /**
+   * The canvas board's background (3 Nov 2026): `titik` (default), `polos`,
+   * `papan`, `gabus`, `vinyet` or `denah`. Absent on older profiles, which
+   * reads as the default; see `canvasBackgroundOf`.
+   */
+  canvasBackground?: CanvasBackground;
+  /**
+   * Optional looks (4 Nov 2026), all in Pengaturan → Tema; absent reads as the
+   * default (`normal`, `normal`, `pastel`). See `appearance.ts`.
+   */
+  density?: Density;
+  textSize?: TextSize;
+  cardStyle?: CardStyle;
+  copyPresets: CopyPreset[];
+  privacy: PrivacySettings;
+  theme: 'system' | 'light' | 'dark' | 'senja';
+}
+
+export interface ScratchNote {
+  id: string;
+  title: string;
+  /**
+   * Archived rather than deleted.
+   *
+   * A note you have finished with is not a note you want gone — the whole point
+   * of writing it down was that you might need it again. Same reasoning as
+   * patients: nothing here is hard-deleted.
+   */
+  archived?: boolean;
+  /**
+   * Which shelf the note sits on.
+   *
+   * Optional, and absent means `umum`. Every note written before this field
+   * existed lacks it, and absence has to read as "the ordinary kind" rather
+   * than as a reason to write a default back over the document — the
+   * `seedSettingsIfMissing` failure recorded in the handoff.
+   *
+   * A field on the note rather than separate lists, because a note written on
+   * a jaga is sometimes still wanted afterwards, and moving it between shelves
+   * should not mean moving it between collections.
+   */
+  category?: ScratchNoteCategory;
+  /** Rich text, like the original single note. */
+  body: string;
+}
+
+/**
+ * `jaga` is a night-shift working list — things to do, things to hand over.
+ *
+ * Deliberately a small closed set rather than free-text tags. Two shelves can
+ * be a pair of buttons always on screen; arbitrary tags need a picker, a
+ * manager, and a decision about what happens to a tag nobody uses any more.
+ */
+export type ScratchNoteCategory = 'umum' | 'jaga';
+
+export interface SavedChecklist {
+  id: string;
+  title: string;
+  context?: string;
+  /** Caveats from the sheet, shown but not tickable. */
+  notes?: string[];
+  items: Array<{ id: string; label: string }>;
+  /** Item ids currently ticked. */
+  done: string[];
+}
+
+import type { SeedBaseline } from './seedSync';
+
+export interface NoteTemplate {
+  id: string;
+  name: string;
+  /** Markdown-lite, inserted verbatim into an empty day. */
+  body: string;
+  order: number;
+}
+
+export interface UserProfile {
+  /**
+   * The original single scratch note.
+   *
+   * Kept in the schema after tabs arrived so nothing written before the change
+   * is stranded: it is migrated into the first tab on read, and never written
+   * again. Removing the field would have meant a migration, and a migration
+   * that runs on a note someone is mid-sentence in is a way to lose it.
+   */
+  scratchNote?: string;
+  /**
+   * Named scratch notes, in tab order.
+   *
+   * A list, now that there is more than one — but still opening straight into
+   * the last one used, so the common case is unchanged: the tab opens and the
+   * cursor is where it was.
+   */
+  notes?: ScratchNote[];
+  /**
+   * Catatan, keyed by id, written one field at a time. Supersedes `notes`,
+   * which is still READ for anything not yet here and never written again.
+   * See `domain/notes/scratchNotes`.
+   */
+  notesById?: import('./notes/scratchNotes').NotesById;
+  /**
+   * Sticky notes on the patient board, keyed by id. A map written one field
+   * path at a time; see `domain/boardNotes`.
+   */
+  boardNotes?: import('./boardNotes').BoardNotes;
+  /**
+   * The board canvas as last arranged on a wide screen, for the phone to
+   * show. Untrusted shape: read through `parseSharedCanvas`.
+   */
+  boardCanvas?: unknown;
+  /** The phone's block grid; read through `sanitizePhoneGrid`. */
+  boardPhoneGrid?: unknown;
+  /**
+   * Reusable checklists and their current ticks.
+   *
+   * Ticks live with the list rather than per patient, because these are worked
+   * through once and reset — the state is "where am I in this procedure right
+   * now", not a record of anything. A per-patient history would imply these
+   * were evidence, which they are not.
+   */
+  checklists?: SavedChecklist[];
+  /**
+   * Ticks of the reusable checklists, by list id, each written as one atomic
+   * add/remove. See `domain/checklists/progress`.
+   */
+  checklistDone?: Record<string, string[]>;
+  /** Morning Report settings (Helper). See `domain/mr/morningReport`. */
+  morningReport?: import('./mr/morningReport').MrConfig;
+  /** Morning Report drafts by MR date, pruned after three weeks. */
+  mrDays?: Record<string, import('./mr/morningReport').MrDay>;
+  uid: string;
+  displayName: string;
+  email: string;
+  /** Public handle without '@' (see `domain/username`); absent until chosen. */
+  username?: string;
+  createdAt: Timestamp;
+  /** Bumped only by a real migration; read on boot to refuse newer schemas. */
+  schemaVersion: number;
+  settings: UserSettings;
+}
+
+export interface PatientArchiveInfo {
+  reason: ArchiveReason;
+  note?: string;
+  at: Timestamp;
+}
+
+export interface Patient {
+  id: string;
+  ownerId: string;
+  /** [ownerId] in v1 — the sharing seam (SPEC 6.1). */
+  memberIds: string[];
+  name: string;
+  mrn?: string;
+  age?: number;
+  sex?: Sex;
+  ward?: string;
+  /** Room number. Kept apart from `ward` so the two format independently. */
+  room?: string;
+  bed?: string;
+  dpjp?: string;
+  /**
+   * Registry id of the consultant detected from the note's DPJP lines.
+   *
+   * Denormalised for the same reason as `preview`: the board needs it for
+   * every card and cannot open every note to find it. Derived, never typed —
+   * refreshed on each body write, so correcting the DPJP line in the note is
+   * the only place it is ever edited.
+   */
+  dpjpId?: string;
+  /**
+   * Free-form note that belongs to the PATIENT, not to a day.
+   *
+   * Never carried, never cleared, never rolled over — it simply persists.
+   * Things like allergies, family contacts, access lines, or a reminder about
+   * which consultant wants what. Kept off the daily entry deliberately: a
+   * standing fact repeated into thirty days of SOAP is thirty places to
+   * correct it when it changes.
+   */
+  notes: string;
+  diagnoses: string[];
+  admittedAt: ClinicalDate;
+  status: PatientStatus;
+  archive?: PatientArchiveInfo;
+  labels: string[];
+  pinned: boolean;
+  /**
+   * Under closer watch than the rest of the round.
+   *
+   * A flag on the patient rather than a checklist item, because it is a state
+   * that persists across days — a checklist item is a task with a completion,
+   * and "pemantauan" is not finished at the end of a shift, it is simply true
+   * until it is not.
+   *
+   * Distinct from `pinned`, which is about where the card SITS. This is about
+   * the patient, and it survives whatever order the board is in.
+   */
+  pemantauan?: boolean;
+  /**
+   * Needs an ECG every day.
+   *
+   * A per-patient flag, not a checklist item and not a rule about everybody.
+   * The daily checklist item reads "EKG sesuai kebutuhan" precisely because
+   * most patients do not need one daily — an arrhythmia patient does, and the
+   * two are indistinguishable on a board unless the patient carries the fact.
+   *
+   * Not derived from the diagnosis text. "Arrhythmic" is a judgement rather
+   * than a keyword: `VES lown grade II` in a diagnosis list does not by itself
+   * mean daily tracing, and `AF` in a past-history line means nothing at all
+   * for today. Guessing it wrong in the safe direction spams the board with
+   * marks that get ignored, and in the unsafe direction quietly drops a
+   * tracing somebody was relying on. So it is set by hand, once.
+   */
+  /**
+   * Joint-care role, derived from the note body when it is written.
+   *
+   * Stored rather than recomputed on the board because the board only has the
+   * preview, and the lines that decide this live in the note header — see
+   * `kjsRole`.
+   */
+  kjs?: 'kardio' | 'ts';
+  ekgHarian?: boolean;
+  /**
+   * A tracing is needed on THIS day — the clinical date it applies to, not a
+   * boolean.
+   *
+   * A date because the mark has to expire on its own. A boolean would need
+   * something to come along and clear it, and the only thing that reliably
+   * runs on this app is the user: a flag nobody reset is a flag that says
+   * "EKG today" on a Thursday because someone set it on Monday, which is how
+   * a marker stops being read at all.
+   *
+   * Storing the day it was set for makes expiry a comparison rather than a
+   * chore. Nothing has to run at midnight; the card simply stops matching.
+   *
+   * Distinct from `ekgHarian`, which is a standing fact about an arrhythmia
+   * patient. This is one day's decision about anybody.
+   */
+  ekgFor?: ClinicalDate;
+  /**
+   * Bookmarked lines of the SOAP, by id; see `domain/bookmarks`. On the
+   * patient, not the day, so they follow the note through carry-forward.
+   * Written one leaf at a time (`setPatientBookmark`).
+   */
+  bookmarks?: Record<string, import('./bookmarks').LineBookmark>;
+  /** Daily reminders by kind id; see `domain/reminders`. */
+  reminders?: Record<string, import('./reminders').ReminderSetting>;
+  /** Which reminders were ticked, and for which clinical day. */
+  reminderDone?: { date: ClinicalDate; ids: string[] };
+  /**
+   * A handover in flight (see `domain/transfer`): the uid of the colleague
+   * this patient was sent to, or their lowercase email when they were not
+   * picked from a shared list. While set, that account can read this
+   * document (not its notes) and accept or decline. Accepting makes them the
+   * sole owner, so the patient leaves the sender's board.
+   */
+  transferTo?: string;
+  /** The recipient's name as the sender saw it, for "waiting for …". */
+  transferToName?: string;
+  /** Who sent it, shown to the recipient. Set together with `transferTo`. */
+  transferFrom?: { uid: string; name: string };
+  /**
+   * Held temporarily — someone else's patient, covered on a shift.
+   *
+   * A flag rather than a separate collection: they are ordinary patients with
+   * notes, checklists and a DPJP, and the only difference is that they are not
+   * yours to carry tomorrow. Splitting the storage would mean two of every
+   * query and a migration the day one becomes permanent.
+   */
+  temporary?: boolean;
+  /**
+   * Chief on duty for this patient.
+   *
+   * Per patient rather than per shift: a chief covers some of your patients and
+   * not others, and the one you need is the one who signs off THIS note.
+   */
+  chief?: string;
+  /**
+   * Where the patient is in discharge planning.
+   *
+   * A flag on the patient, not a checklist tick: it survives the day rollover,
+   * because "going home tomorrow" is true tomorrow morning too, and a checklist
+   * resets at midnight.
+   */
+  /**
+   * Legacy discharge stage. Superseded by `dischargePlannedFor` and read only
+   * for migration — see domain/discharge.ts.
+   */
+  discharge?: 'h1' | 'today';
+  /** The clinical date the patient is expected to go home. */
+  dischargePlannedFor?: ClinicalDate;
+  /**
+   * The day an "usul H-1" was marked: a proposal the DPJP has not decided
+   * (domain/discharge `usulOpen`). Cleared by any planned date or by cancelling.
+   */
+  usulH1?: ClinicalDate;
+  /**
+   * Date of a planned operation (BTKV), set from the reminder picker. Drives
+   * procedure reminders such as the H-1 ICU post-op consult; see
+   * `PROCEDURE_RULES` in `reminders.ts`.
+   */
+  operationFor?: ClinicalDate;
+  /**
+   * Every consultant named on the note's DPJP lines (Utama, Tindakan, BTKV…),
+   * derived on each body write like `dpjpId`. `dpjpId` is only the main one.
+   */
+  dpjpIds?: string[];
+  /**
+   * One-off checklist for this patient.
+   *
+   * Separate from the daily checklist, which is the same steps for everyone and
+   * resets each day, and from the Checklist tab, which is a reusable procedure.
+   * This is "things to remember for THIS admission" — and it persists across
+   * days, because that is what makes it worth writing down.
+   */
+  todos?: Array<{
+    id: string;
+    label: string;
+    done: boolean;
+    /**
+     * A step that comes round again — daily bloods, a drain check, updating a
+     * group chat — as opposed to a one-off like "confirm coding".
+     *
+     * Marked per item rather than per list, because an admission checklist is
+     * a mix of the two and splitting it into two lists would mean deciding, at
+     * the moment of writing something down, which list it belongs in. Ticking
+     * still records that it was done today; `repeat` only says the tick is
+     * expected to be cleared for tomorrow.
+     */
+    repeat?: boolean;
+    /**
+     * The clinical day a ONE-OFF item was ticked. Absent while it is open.
+     *
+     * Repeating items already have their history in `todoTicks`, keyed by
+     * date. One-off items stored only `done: true`, which says that something
+     * happened but not when, so the history had nothing to show for them.
+     * Items ticked before this field existed stay undated. The history lists
+     * them as such rather than guessing a day.
+     */
+    doneOn?: ClinicalDate;
+    /**
+     * The clinical day an item that HAD BEEN CHECKED was deleted.
+     *
+     * The ward workflow is: tick a step, then delete it so the list stays
+     * short. Removing the record lost the tick from the history, and with it
+     * the only record that the step was done. So a checked item is hidden
+     * rather than removed, and keeps its label for the history. An item
+     * that was never checked has no history to keep and is still removed
+     * outright.
+     */
+    removedOn?: ClinicalDate;
+    /**
+     * The title of the checklist this item was imported from ("Ambil dari
+     * checklist harian"). Absent on items the user typed.
+     *
+     * Kept so the list can SHOW the difference: a template's steps and your
+     * own reminders are different kinds of thing, and mixed in one run they
+     * read as one list someone wrote.
+     */
+    fromChecklist?: string;
+  }>;
+  /**
+   * Ticks on repeating checklist items, keyed by clinical date.
+   *
+   * The date is the key, so nothing has to reset: a new day simply has no
+   * record yet, and every previous day is still there to answer "did I do that
+   * yesterday". Same rule as the daily checklist, which resets by having the
+   * date as its document id rather than by a timer.
+   *
+   * On the patient rather than on each daily entry so that today and yesterday
+   * are both readable from a document the page already subscribes to.
+   */
+  todoTicks?: Record<string, string[]>;
+  colorOverride?: string | null;
+  lastEntryDate?: ClinicalDate;
+
+  /**
+   * DERIVED BOARD CACHES — never a source of truth.
+   *
+   * The board must paint one card per patient with today's colour and a text
+   * preview. Reading those from the entries and checklist subcollections costs
+   * two live listeners *per patient*; at 40 patients on ward wifi that is 80
+   * streams for a screen that shows four lines each.
+   *
+   * So both are denormalised onto the patient document, which the board
+   * already subscribes to as a single query. The subcollections remain
+   * authoritative: `preview` is truncated and read-only, and `boardChecklist`
+   * is rewritten wholesale from the caller's live state so it can never
+   * accumulate keys from a previous clinical day. If either drifts, the
+   * patient page still reads the real documents.
+   */
+  preview?: string;
+  previewDate?: ClinicalDate;
+  /**
+   * Dated lab lines from the plan of the latest day's note (`domain/labPlan`),
+   * written with `preview`. The board's "Lab hari ini" sticky shows those
+   * dated today; it cannot open every note to find them.
+   */
+  labPlans?: Array<import('./labPlan').LabPlan>;
+  /**
+   * The preview of the EARLIER day, kept when the preview moves to a new day
+   * (2026-10-10). The card compares the two to say what changed since
+   * yesterday ("+ Hipokalemia"), without reading either note.
+   */
+  prevPreview?: string;
+  prevPreviewDate?: ClinicalDate;
+  /**
+   * "Periksa lagi" findings on the latest day's note, written by the patient
+   * page whenever its checker's count changes. The board shows it only while
+   * `checkDate` is today; it cannot run the checker itself without loading
+   * every note.
+   */
+  checkCount?: number;
+  checkDate?: ClinicalDate;
+  boardChecklist?: { date: ClinicalDate; done: Record<string, boolean> };
+  /**
+   * The id this patient had in the account it was IMPORTED from. Set only by
+   * import; it is how a second import of the same file knows the patient is
+   * already here instead of creating a duplicate.
+   */
+  importedFrom?: string;
+  /** lowercase name + mrn + bed + ward + dx — powers offline search (F10). */
+  searchBlob: string;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  /** deviceId, not uid — used to attribute concurrent edits (SPEC 7). */
+  updatedBy: string;
+  deletedAt: Timestamp | null;
+}
+
+/** ONE free-form page per clinical day. No section fields, ever (SPEC 1.2.5). */
+/**
+ * A shift note — a complaint reviewed during jaga hours, written against a day
+ * that already has a SOAP.
+ *
+ * A CHILD of the day's entry, stored beside the body rather than inside it.
+ *
+ * Not appended into `body`, deliberately. The section parser is flat: a
+ * heading runs until the next heading with no containment, so a `*S:*` written
+ * inside a shift block is a SECOND OCCURRENCE of the day's S, not a nested
+ * one. Jumping and tinting survive that — both take the first occurrence — but
+ * `composeCopy` gathers every occurrence, so the morning complaint and the
+ * 21.40 complaint would merge into one S on the way to the chief. Wrong, and
+ * invisible, because the note still reads as complete.
+ *
+ * A separate field also restores what a single free-form body gives up:
+ * Firestore merges field by field, so editing a shift note on the phone at the
+ * bedside cannot collide with the body being edited on the laptop.
+ */
+export interface ShiftNote {
+  /** Stable across edits; the array is never reordered. */
+  id: string;
+  /** `HH.MM` when it was added. Dots, not colons — a colon reads as a heading
+   *  delimiter to the parser if this text is ever pasted back into a body. */
+  time: string;
+  body: string;
+  /**
+   * Cleared rather than removed, matching entries (§5: nothing is hard
+   * deleted). An emptied shift note keeps its slot and its timestamp, so the
+   * revision trail still shows that something was written at 21.40 and later
+   * withdrawn.
+   */
+  clearedAt: Timestamp | null;
+  createdAt: Timestamp;
+  /**
+   * What this note is. Absent on every note written before 2026-10-04, which
+   * were all jaga notes, so absent reads as `jaga`.
+   *
+   * `versi` is another version of the DAY'S SOAP: a copy made to be edited for
+   * one reader (dr. AHA wants only the newest penunjang) without touching the
+   * original. Same storage, editor, rail entry and Compare entry as a jaga
+   * note, because it is the same thing — a second SOAP on the same day — and
+   * a parallel structure would have needed all four built twice.
+   */
+  kind?: 'jaga' | 'versi';
+  /** Name given by the user. Absent → `Jaga 21.40` / `Versi`. */
+  title?: string;
+}
+
+export interface DailyEntry {
+  date: ClinicalDate;
+  hariRawat: number;
+  body: string;
+  /**
+   * Shift notes for this day, in the order added.
+   *
+   * Optional because every entry written before this field existed lacks it,
+   * and absence must read as "none" rather than as a reason to write a default
+   * back over the document (§4: `seedSettingsIfMissing` deep-merged defaults
+   * over real settings for exactly that reason).
+   */
+  shiftNotes?: ShiftNote[];
+  /** Monotonic. increment() on every body write; never a device clock. */
+  rev: number;
+  bodyHash: string;
+  locked: boolean;
+  editing?: { deviceId: string; at: Timestamp } | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  updatedBy: string;
+  deletedAt: Timestamp | null;
+}
+
+export interface EntryRevision {
+  id: string;
+  body: string;
+  rev: number;
+  deviceId: string;
+  at: Timestamp;
+  /**
+   * Why the snapshot was taken — shown in "Riwayat perubahan".
+   *
+   * `version` is the only one a person asks for. The rest are safety copies
+   * the app takes on its own, and the difference matters twice: a version is
+   * never pruned, and it carries a label the author chose.
+   */
+  reason: 'autosave' | 'pre-merge' | 'pre-conflict' | 'restore' | 'unlock' | 'version';
+  /**
+   * Set only on `version`. What this version of the day was — `Pagi`,
+   * `Post op`, or just the time it was frozen at.
+   *
+   * Optional rather than required because every revision written before
+   * versions existed has none, and absence has to read as "no label" rather
+   * than as a document to repair.
+   */
+  label?: string;
+}
+
+export interface ChecklistTickState {
+  done: boolean;
+  at: Timestamp | null;
+  by: string | null;
+}
+
+export interface DailyChecklist {
+  date: ClinicalDate;
+  /** Separate map keys per item — ticking item 3 never clobbers item 5. */
+  items: Record<string, ChecklistTickState>;
+}
+
+export interface AppDocument {
+  id: string;
+  title: string;
+  category: string;
+  body: string;
+  pinned: boolean;
+  /**
+   * Held temporarily — someone else's patient, covered on a shift.
+   *
+   * A flag rather than a separate collection: they are ordinary patients with
+   * notes, checklists and a DPJP, and the only difference is that they are not
+   * yours to carry tomorrow. Splitting the storage would mean two of every
+   * query and a migration the day one becomes permanent.
+   */
+  temporary?: boolean;
+  /**
+   * Chief on duty for this patient.
+   *
+   * Per patient rather than per shift: a chief covers some of your patients and
+   * not others, and the one you need is the one who signs off THIS note.
+   */
+  chief?: string;
+  /**
+   * Where the patient is in discharge planning.
+   *
+   * A flag on the patient, not a checklist tick: it survives the day rollover,
+   * because "going home tomorrow" is true tomorrow morning too, and a checklist
+   * resets at midnight.
+   */
+  /**
+   * Legacy discharge stage. Superseded by `dischargePlannedFor` and read only
+   * for migration — see domain/discharge.ts.
+   */
+  discharge?: 'h1' | 'today';
+  /** The clinical date the patient is expected to go home. */
+  dischargePlannedFor?: ClinicalDate;
+  /**
+   * The day an "usul H-1" was marked: a proposal the DPJP has not decided
+   * (domain/discharge `usulOpen`). Cleared by any planned date or by cancelling.
+   */
+  usulH1?: ClinicalDate;
+  /**
+   * One-off checklist for this patient.
+   *
+   * Separate from the daily checklist, which is the same steps for everyone and
+   * resets each day, and from the Checklist tab, which is a reusable procedure.
+   * This is "things to remember for THIS admission" — and it persists across
+   * days, because that is what makes it worth writing down.
+   */
+  todos?: Array<{ id: string; label: string; done: boolean }>;
+  order: number;
+  labels: string[];
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deletedAt: Timestamp | null;
+}
+
+
+/** Current schema generation. Bump only alongside a written migration. */
+export const SCHEMA_VERSION = 1;

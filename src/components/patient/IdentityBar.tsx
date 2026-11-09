@@ -1,0 +1,142 @@
+import { useState, type ReactNode } from 'react';
+
+import { useClipboardNote } from '@/store/useClipboardNote';
+import { copyText } from '@/lib/clipboard';
+import { formatLocation } from '@/domain/identity';
+import { initials } from '@/domain/board';
+import type { Patient } from '@/domain/types';
+
+/**
+ * The identity strip.
+ *
+ * Once the note is scrolled past its opening block there is nothing on screen
+ * saying which patient it belongs to — and the one mistake this app must not
+ * make easy is writing today's findings into the wrong chart.
+ *
+ * It carries NO `sticky` class of its own, deliberately. It is rendered as the
+ * second row of `PatientPage`'s sticky `<header>`, so it follows the scroll as
+ * part of that one bar. Two independently sticky bars stack, which previously
+ * cost a third of a phone screen and hid this text behind the header above it.
+ *
+ * This docblock used to say "Sticky identity strip … It stays put" while the
+ * class had no `sticky` on it and the component was rendered below the header
+ * in the scrolling column. If you are moving this component, the stickiness
+ * lives in the PARENT — check there before adding a class here.
+ *
+ * Deliberately minimal: name, RM, bed, day of admission. The full identity line
+ * is in the note itself and in the header form; repeating it here would take
+ * space from the text.
+ */
+export function IdentityBar({
+  patient,
+  showInitialsOnly,
+  onEdit,
+  action,
+}: {
+  patient: Patient;
+  showInitialsOnly: boolean;
+  onEdit: () => void;
+  /** A pending prompt for this row, e.g. "Isi RM" from the note (phone and up). */
+  action?: ReactNode;
+}): JSX.Element {
+  const name = patient.name?.trim();
+  const label = !name ? 'Tanpa nama' : showInitialsOnly ? initials(name) : name;
+  const location = formatLocation(patient);
+
+  return (
+    <div
+      className="flex w-full items-center border-b border-border"
+      style={{ backgroundColor: 'var(--sec-identitas)' }}
+    >
+    <button
+      type="button"
+      onClick={onEdit}
+      // Padding on every breakpoint. `xl:px-0` let the name sit flush against
+      // the column edge, which on desktop is the sidebar border — so the name
+      // read as if it were touching the navigation.
+      // Tinted and taller. This is the line that answers "am I in the right
+      // chart", and it was competing with the note for attention by looking
+      // exactly like it.
+      className="min-w-0 flex-1 px-4 py-0.5 text-left"
+    >
+      {/*
+        One line from `sm` up, two on a phone.
+
+        `Hari ke-N` is GONE from here. The row above already ends with
+        "· Hari rawat ke-2" — the same number, forty pixels away, in a bar whose
+        whole problem is height. One fact, one place.
+
+        Below `sm` the name still gets its own line: a name plus RM plus bed
+        truncates to uselessness at 360 px, and the identity row exists
+        precisely so that none of it has to be guessed at.
+      */}
+      <span className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-3">
+        <span className="min-w-0 truncate text-sm font-semibold sm:shrink-0 sm:text-[15px]">
+          {label}
+        </span>
+        {/* One line on a phone too (2026-10-08): wrapping put the bed on a
+            third line, and the bar sits in the sticky header, so every line
+            here is a line of note hidden on every screen of the scroll. The
+            location truncates last; RM never does. */}
+        <span className="flex min-w-0 items-baseline gap-x-2 text-xs text-fg-muted sm:flex-wrap sm:gap-x-3">
+          {patient.mrn ? (
+            <span className="whitespace-nowrap font-medium">RM {patient.mrn}</span>
+          ) : null}
+          {patient.age !== undefined ? <span className="whitespace-nowrap">{patient.age} th</span> : null}
+          {patient.sex ? <span className="whitespace-nowrap">{patient.sex}</span> : null}
+          {location ? <span className="min-w-0 truncate">{location}</span> : null}
+        </span>
+      </span>
+    </button>
+
+    {/*
+      Copying the RM number is its own control, outside the edit button.
+
+      It is the single most retyped thing in this app: every SIMGOS search,
+      every radiology request, every consult starts with it, and it is eight
+      digits that are wrong if one is. It used to be readable and not copyable,
+      which meant reading it off the screen and typing it back in — the exact
+      transcription this app exists to remove.
+
+      A sibling rather than a nested button, because the identity row is
+      already a button and a button inside a button is invalid HTML that
+      browsers resolve by dropping one of them.
+    */}
+    {patient.mrn ? <CopyMrn mrn={patient.mrn} patientId={patient.id} name={patient.name?.trim() ?? ''} /> : null}
+    {action ? <div className="mr-2 flex shrink-0 items-center">{action}</div> : null}
+    </div>
+  );
+}
+
+function CopyMrn({
+  mrn,
+  patientId,
+  name,
+}: {
+  mrn: string;
+  patientId: string;
+  name: string;
+}): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const remember = useClipboardNote((state) => state.remember);
+
+  return (
+    <button
+      type="button"
+      // The number alone, with no `RM ` prefix: it is going into a search box
+      // that wants the digits.
+      onClick={() => {
+        void copyText(mrn).then((ok) => {
+          if (ok) remember({ what: 'Nomor RM', patientId, patientName: name, mrn });
+        });
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      }}
+      title={`Salin nomor RM ${mrn}`}
+      aria-label={`Salin nomor RM ${mrn}`}
+      className="mr-2 min-h-tap shrink-0 rounded-lg border border-border bg-surface px-2 text-xs font-medium text-fg-muted"
+    >
+      {copied ? 'Tersalin' : 'Salin RM'}
+    </button>
+  );
+}

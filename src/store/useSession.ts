@@ -1,0 +1,522 @@
+import {
+  GoogleAuthProvider,
+  browserLocalPersistence,
+  browserPopupRedirectResolver,
+  getRedirectResult,
+  onAuthStateChanged,
+  setPersistence,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type Auth,
+  type User,
+} from 'firebase/auth';
+import {
+  clearIndexedDbPersistence,
+  terminate,
+  waitForPendingWrites,
+  type Firestore,
+} from 'firebase/firestore';
+import { create } from 'zustand';
+import { logSessionEvent } from '@/lib/sessionLog';
+import { bootReason, formatSeconds, reportWait } from '@/lib/loadTiming';
+import { installBootAuthCap, type BootAuthCap } from '@/data/bootAuthCap';
+
+import { initFirebase, services } from '@/data/firebase';
+import { clearLocalBase, listOutbox } from '@/data/localBase';
+import { resetPatientFeeds } from '@/data/patientsFeed';
+import { CACHE_KEPT_FLAG, clearDeviceUserState } from '@/lib/deviceUserState';
+import { useUI } from '@/store/useUI';
+import { hasSignedInHint, setSignedInHint } from '@/data/authHint';
+import {
+  ensureProfile,
+  seedSettingsIfMissing,
+  subscribeProfile,
+  updateSettings,
+} from '@/data/repositories/settings.repo';
+import type { UserProfile, UserSettings } from '@/domain/types';
+import { SEED_SNAPSHOT, defaultUserSettings } from '@/domain/defaults';
+import { reconcileSeeds } from '@/domain/seedSync';
+import {
+  requestPersistentStorage,
+  type StoragePersistence,
+} from '@/lib/storagePersistence';
+
+export type SessionStatus =
+  | 'loading'
+  | 'unconfigured'
+  | 'signed-out'
+  | 'signed-in';
+
+interface SessionState {
+  status: SessionStatus;
+  /** Whether the browser has promised not to evict our IndexedDB. */
+  storagePersistence: StoragePersistence;
+  user: User | null;
+  profile: UserProfile | null;
+  missingConfig: string[];
+  error: string | null;
+  setError: (error: string | null) => void;
+  /** Settings with defaults applied — never undefined once signed in. */
+  settings: () => UserSettings;
+}
+
+/**
+ * ONE default object, built once.
+ *
+ * `settings()` is used as a zustand selector (`useSession((s) => s.settings())`)
+ * all over the app, and a selector must return the same reference while
+ * nothing changed. With no profile yet (first sign-in, a new account before
+ * seeding, an offline first load) it returned `defaultUserSettings()`: a NEW
+ * object on every call, so every subscriber saw a change on every render and
+ * re-rendered forever ("Maximum update depth exceeded" on the board).
+ */
+const DEFAULT_SETTINGS: UserSettings = defaultUserSettings();
+
+export const useSession = create<SessionState>((set, get) => ({
+  status: 'loading',
+  storagePersistence: 'unsupported',
+  user: null,
+  profile: null,
+  missingConfig: [],
+  error: null,
+  setError: (error) => set({ error }),
+  settings: () => get().profile?.settings ?? DEFAULT_SETTINGS,
+}));
+
+let unsubscribeProfile: (() => void) | null = null;
+/** When main.tsx began running: page start to here is download and start-up. */
+let codeReadyAt = 0;
+/** The start-up auth cap, released at the first auth state. */
+let bootCap: BootAuthCap | null = null;
+
+/**
+ * Boots auth. Called once from main.tsx.
+ *
+ * Anonymous auth is deliberately absent (SPEC 8): this database holds
+ * identifiable patient data, and an anonymous uid is an unrecoverable
+ * credential — losing it would strand a resident's entire ward list.
+ */
+export function initSession(): () => void {
+  // The app's code has downloaded and started; what follows is the auth check.
+  codeReadyAt = performance.now();
+  // Only where a stored user exists to be kept (see data/bootAuthCap.ts).
+  bootCap = hasSignedInHint() ? installBootAuthCap() : null;
+  const init = initFirebase();
+  if (!init.ok) {
+    bootCap?.release();
+    useSession.setState({ status: 'unconfigured', missingConfig: init.missing });
+    return () => undefined;
+  }
+
+  const { auth, persistenceReady } = init.services;
+  logSessionEvent('boot', bootReason());
+  try {
+    if (sessionStorage.getItem(CACHE_KEPT_FLAG) === '1') {
+      sessionStorage.removeItem(CACHE_KEPT_FLAG);
+      useSession.setState({
+        error:
+          'Data offline di perangkat ini BELUM terhapus: ada tab Plano lain yang terbuka. Tutup semua tab Plano, masuk, lalu Keluar sekali lagi.',
+      });
+    }
+  } catch {
+    // No storage.
+  }
+
+  // Completes signInWithRedirect, which is the only flow that works inside an
+  // iOS standalone PWA (popups are blocked there).
+  // Only when nobody is signed in: a pending redirect can exist only then, and
+  // on a signed-in boot this would load the sign-in iframe for nothing.
+  if (!hasSignedInHint()) {
+    void getRedirectResult(auth, browserPopupRedirectResolver).catch((error: unknown) => {
+      console.error('[auth] redirect result failed', error);
+      logSessionEvent('redirect-error', errorCode(error));
+      useSession.setState({ error: describeAuthError(error) });
+    });
+  }
+
+  /**
+   * Subscribe only once the credential store has settled.
+   *
+   * `setPersistence` swaps the store the SDK reads credentials from, and any
+   * auth state emitted mid-swap describes a store that is being replaced —
+   * which arrives at this listener as `null`, indistinguishable from a real
+   * sign-out. Waiting costs a few milliseconds of `status: 'loading'`, which
+   * the gate already renders.
+   *
+   * The unsubscribe has to survive that wait: `initSession` returns
+   * synchronously, so a caller that tears down before the promise resolves
+   * would otherwise leak a listener that attaches afterwards.
+   */
+  let unsubscribeAuth: (() => void) | null = null;
+  let disposed = false;
+
+  void persistenceReady.then(() => {
+    if (disposed) return;
+    unsubscribeAuth = subscribe(auth);
+  });
+
+  return () => {
+    disposed = true;
+    bootCap?.release();
+    unsubscribeAuth?.();
+    unsubscribeProfile?.();
+    unsubscribeProfile = null;
+  };
+}
+
+/** Extracts an `auth/...` or `permission-denied` code, where the SDK gave one. */
+function errorCode(error: unknown): string | undefined {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code: unknown }).code;
+    if (typeof code === 'string') return code;
+  }
+  return undefined;
+}
+
+/** Whether this page has logged its start-up time yet. */
+let reportedBoot = false;
+
+/**
+ * `kode 1,2 dtk · cek akun 8,7 dtk`: which half of a slow start was slow.
+ * Download and start-up are this page's code; the account check is the
+ * network. `dibuka dari perangkat` says the cap cut the check short.
+ */
+function bootPhases(now: number): string {
+  const parts = [
+    `kode ${formatSeconds(codeReadyAt)}`,
+    `cek akun ${formatSeconds(Math.max(0, now - codeReadyAt))}`,
+  ];
+  if (bootCap?.capped()) parts.push('jaringan lambat, dibuka dari perangkat');
+  return parts.join(' · ');
+}
+
+function subscribe(auth: Auth): () => void {
+  return onAuthStateChanged(auth, (user) => {
+    unsubscribeProfile?.();
+    unsubscribeProfile = null;
+    // The boot check is over either way; later requests get no cap.
+    bootCap?.release();
+
+    setSignedInHint(user !== null);
+    if (!user) {
+      logSessionEvent('signed-out');
+      resetPatientFeeds();
+      useSession.setState({ status: 'signed-out', user: null, profile: null });
+      return;
+    }
+
+    logSessionEvent('signed-in');
+    // Page start to a known session: download, start-up and the credential
+    // store together. Only the first time per page; later events are not a
+    // wait anybody watched.
+    if (!reportedBoot) {
+      reportedBoot = true;
+      const now = performance.now();
+      reportWait('mulai sampai masuk', now, bootPhases(now));
+    }
+    // The error is cleared on every transition. It described the PREVIOUS
+    // session, and a sign-in page showing "Gagal memuat pengaturan." from a
+    // session that ended minutes ago reads as a failure of the sign-in
+    // happening now — which is the screen that gets reported as the bug.
+    useSession.setState({ status: 'signed-in', user, error: null });
+
+    /**
+     * Ask for persistent storage once we have a session to protect.
+     *
+     * Requested here rather than at boot because browsers weigh site
+     * engagement, and a signed-in user is the strongest signal we can offer.
+     * The result is advisory — Settings surfaces it, since "install the app"
+     * is only useful advice to someone whose storage is still evictable.
+     */
+    void requestPersistentStorage().then((state) => {
+      useSession.setState({ storagePersistence: state });
+      if (state !== 'persisted') {
+        console.warn('[storage] not persistent — session may be evicted', state);
+      }
+    });
+
+    void bootstrapAccount(user);
+
+    unsubscribeProfile = subscribeProfile(
+      user.uid,
+      (profile) => {
+        useSession.setState({ profile });
+        if (profile) void reconcileProfileSeeds(user.uid, profile);
+      },
+      (error) => {
+        console.error('[auth] profile subscription failed', error);
+        logSessionEvent('profile-error', errorCode(error));
+        useSession.setState({ error: 'Gagal memuat pengaturan.' });
+      },
+    );
+  });
+}
+
+async function bootstrapAccount(user: User): Promise<void> {
+  try {
+    await ensureProfile(user);
+    await seedSettingsIfMissing(user.uid);
+  } catch (error) {
+    // Offline first sign-in: these writes stay queued and apply on reconnect,
+    // so this is a warning rather than a blocker.
+    console.warn('[auth] account bootstrap deferred', error);
+  }
+}
+
+/*
+ * `isStandalonePwa` and `isHandheld` were deleted here, not left unused.
+ *
+ * They existed to CHOOSE between popup and redirect by sniffing the device.
+ * The choice is gone: popup is attempted everywhere and redirect is the
+ * fallback when the popup itself fails, which is a fact the browser reports
+ * rather than one we have to guess from a user-agent string. Keeping a device
+ * sniff around invites the next person to route on it again.
+ */
+
+export async function signInWithGoogle(): Promise<void> {
+  const { auth } = services();
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+
+  /**
+   * Save THIS sign-in to localStorage, not IndexedDB (2026-10-23).
+   *
+   * Firebase's IndexedDB persistence refuses every write once the page has
+   * been hidden ("Database is closing/hidden") and clears that only when the
+   * page is visible again. A popup that covers the app — a new tab on Android
+   * Chrome, the desktop app's browser pane — hides it, so Google's answer
+   * arrived, saving the user failed, and the sign-in screen said "Gagal
+   * masuk" although the account was fine. localStorage has no such check.
+   * The next start finds the user there and moves it into IndexedDB itself
+   * (PersistenceUserManager migration), so the long-term store is unchanged.
+   *
+   * Not awaited: Auth runs it through its operation queue ahead of the popup's
+   * write, and an await here could cost the click's user activation that lets
+   * the popup open on iOS.
+   */
+  void setPersistence(auth, browserLocalPersistence).catch((error: unknown) =>
+    console.warn('[auth] could not switch sign-in persistence', error),
+  );
+
+  try {
+    /**
+     * Popup FIRST, on every device, with redirect as the fallback.
+     *
+     * This used to be the other way round — redirect on any handheld — because
+     * a popup on mobile can hang instead of erroring. That reasoning still
+     * holds; it is just outranked now, because redirect stopped working at all
+     * on mobile rather than working slowly.
+     *
+     * Why redirect breaks here specifically: Plano is served from
+     * `nottezio.github.io` while Firebase's auth handler lives on
+     * `plano-85e9e.firebaseapp.com`. `signInWithRedirect` hands the session
+     * between those two origins through cross-site storage, and browsers have
+     * been switching that off — Safari's ITP, and third-party cookie blocking
+     * now on by default in Chrome and Samsung Internet. Nothing in this repo
+     * changed; the platform did. Popup does not need that storage: it talks to
+     * its opener over `postMessage`.
+     *
+     * Second failure mode this also covers: from an INSTALLED standalone PWA a
+     * redirect can complete in the browser rather than in the app, so the app
+     * never sees the result and sits on the sign-in screen looking broken.
+     *
+     * The fix on the other side is a same-origin auth handler, which needs a
+     * custom domain or a reverse proxy — neither of which GitHub Pages can do.
+     * So this is the fix, not a workaround for one.
+     *
+     * Redirect is kept below rather than deleted: it is still the only thing
+     * that works when a popup is genuinely blocked, which is common on iOS.
+     */
+    await signInWithPopup(auth, provider, browserPopupRedirectResolver);
+  } catch (error) {
+    // A blocked or hung popup falls back to the old path. On iOS standalone
+    // this is still the normal outcome, not an exception.
+    if (isPopupProblem(error)) {
+      await signInWithRedirect(auth, provider, browserPopupRedirectResolver);
+      return;
+    }
+    console.error('[auth] sign-in failed', error);
+    logSessionEvent('signin-error', errorCode(error) ?? (error instanceof Error ? error.name : typeof error));
+    useSession.setState({ error: describeAuthError(error) });
+    throw error;
+  }
+}
+
+
+
+/**
+ * SPEC F1 / 18 — sign-out clears the local cache AND localBase.
+ *
+ * Leaving one account's note bodies in IndexedDB while a colleague signs in on
+ * the same laptop is a privacy defect. Firestore's cache can only be cleared
+ * while the client is terminated, and the client cannot be restarted in place,
+ * so the page reloads afterwards. That is intentional, not a workaround.
+ *
+ * UNSYNCED WRITES FIRST. In an offline-first app the local store is not only
+ * a cache: until the server confirms, it is the ONLY copy of what was typed.
+ * Sign-out used to delete the outbox and Firestore's write queue without
+ * looking, so signing out on a ward with no signal destroyed the round's
+ * edits. It now saves open editors, waits briefly for the queue to drain,
+ * and refuses (returning `'unsynced'`) unless the caller passes `force`
+ * after the person has been told.
+ */
+export type SignOutResult = 'done' | 'unsynced';
+
+async function writesSettled(db: Firestore, timeoutMs: number): Promise<boolean> {
+  const drained = waitForPendingWrites(db).then(
+    () => true,
+    () => false,
+  );
+  const timedOut = new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), timeoutMs));
+  const queueDrained = await Promise.race([drained, timedOut]);
+  if (!queueDrained) return false;
+  const outbox = await listOutbox().catch(() => []);
+  return outbox.length === 0;
+}
+
+export async function signOutAndClear(options: { force?: boolean } = {}): Promise<SignOutResult> {
+  const { auth, db } = services();
+
+  // Anything still in an editor's debounce goes into the queue first.
+  useUI.getState().flushAll();
+  if (!options.force && !(await writesSettled(db, 5000))) return 'unsynced';
+
+  unsubscribeProfile?.();
+  unsubscribeProfile = null;
+
+  await signOut(auth);
+  await clearLocalBase();
+
+  // PIN, AI key and consent, clipboard note, census history, layouts, jaga
+  // roster: everything per person on this device. See `clearDeviceUserState`.
+  clearDeviceUserState();
+
+  try {
+    await terminate(db);
+    await clearIndexedDbPersistence(db);
+  } catch (error) {
+    /*
+      Another open tab holds the cache. It used to be logged and nothing
+      else, while the screen said the offline data had been deleted. The
+      next boot now says it was NOT, and what to do.
+    */
+    console.error('[auth] could not clear offline cache', error);
+    try {
+      sessionStorage.setItem(CACHE_KEPT_FLAG, '1');
+    } catch {
+      // Nowhere to say it.
+    }
+  }
+
+  window.location.replace(import.meta.env.BASE_URL);
+  return 'done';
+}
+
+function isPopupProblem(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code ?? '';
+  return (
+    code === 'auth/popup-blocked' ||
+    code === 'auth/popup-closed-by-user' ||
+    code === 'auth/operation-not-supported-in-this-environment' ||
+    code === 'auth/cancelled-popup-request'
+  );
+}
+
+/** Bahasa Indonesia messages; never leaks the raw Firebase code to the user. */
+function describeAuthError(error: unknown): string {
+  const code = (error as { code?: string } | null)?.code ?? '';
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return 'Email atau kata sandi salah.';
+    case 'auth/email-already-in-use':
+      return 'Email ini sudah terdaftar.';
+    case 'auth/weak-password':
+      return 'Kata sandi minimal 6 karakter.';
+    case 'auth/invalid-email':
+      return 'Format email tidak valid.';
+    case 'auth/network-request-failed':
+      return 'Tidak ada koneksi. Masuk memerlukan internet sekali di awal.';
+    case 'auth/too-many-requests':
+      return 'Terlalu banyak percobaan. Coba lagi beberapa menit.';
+    case 'auth/unauthorized-domain':
+      return 'Domain ini belum diizinkan di Firebase Authentication.';
+    default:
+      /**
+       * The raw code goes on screen for anything unmapped.
+       *
+       * Every branch above is a code someone already hit and diagnosed. The
+       * default is by definition the ones nobody has — and it was returning
+       * "Gagal masuk. Coba lagi." for all of them, so the only failures that
+       * needed reporting were the only ones that could not be reported. A
+       * screenshot of the sign-in screen could not distinguish a blocked
+       * popup from a dead network from a misconfigured provider.
+       *
+       * `auth/...` codes name a condition, not a secret; showing one costs a
+       * little polish on a screen seen once and saves a round trip that
+       * happens while someone cannot get into the ward's notes.
+       */
+      // No code means the error did not come from Firebase Auth (a closed or
+      // replaced popup window, a script error): name it so a screenshot says which.
+      if (code) return `Gagal masuk (${code}).`;
+      return error instanceof Error && error.name !== 'Error'
+        ? `Gagal masuk (${error.name}). Coba lagi.`
+        : 'Gagal masuk. Coba lagi.';
+  }
+}
+
+
+/**
+ * Guard against re-entry.
+ *
+ * Writing the reconciled settings fires the profile subscription again, which
+ * would call straight back into here. `reconcileSeeds` is idempotent, so the
+ * second pass is a no-op and the loop terminates on its own — but only after a
+ * wasted round trip, and only if nothing else is racing it. A flag makes that
+ * guaranteed rather than merely likely.
+ */
+let reconciling = false;
+
+/**
+ * Bring seeded settings up to date whenever the profile loads.
+ *
+ * On load rather than behind a button, because the whole point is that a
+ * corrected template should not need the user to know it exists, go looking
+ * for it, and then choose between the fix and their own wording. A button was
+ * the previous answer and it is what made this a problem.
+ *
+ * Failure is swallowed: settings that are one version behind are a small
+ * problem, and a sign-in that fails because the seed merge could not write is
+ * a large one. The next load tries again.
+ */
+async function reconcileProfileSeeds(uid: string, profile: UserProfile): Promise<void> {
+  if (reconciling) return;
+  // A brand-new account's first profile snapshot arrives before
+  // `seedSettingsIfMissing` has written `settings`; the next snapshot has it.
+  const settings = profile.settings as UserSettings | undefined;
+  if (!settings) return;
+  const result = reconcileSeeds(settings, SEED_SNAPSHOT);
+  // `dirty` is false only when the baseline already matches, which also means
+  // the baseline is present — so the narrowing below can never widen.
+  if (!result.dirty || !result.settings.seedBaseline) return;
+  const seedBaseline = result.settings.seedBaseline;
+
+  reconciling = true;
+  try {
+    await updateSettings(uid, {
+      noteTemplates: result.settings.noteTemplates,
+      greetings: result.settings.greetings,
+      openingSentences: result.settings.openingSentences,
+      closingSentences: result.settings.closingSentences,
+      carryForwardClearSections: result.settings.carryForwardClearSections,
+      sectionAliases: result.settings.sectionAliases,
+      seedBaseline,
+    });
+  } catch (error) {
+    console.warn('[settings] seed reconciliation failed', error);
+  } finally {
+    reconciling = false;
+  }
+}

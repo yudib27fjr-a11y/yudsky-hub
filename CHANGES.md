@@ -1,0 +1,13255 @@
+# Plano — CHANGES
+
+## `2026-11-06.4` — Roster listener can resume: the departures cutoff is a calendar day
+
+Console, Avi (6 Nov): reads rose after `2026-10-31.11`/`.12`: 58K, 43K, 65K, 70K, 55K on 1-5 Nov (no-cost 50K); peak connections 17 (was ~10), writes +38% week on week. Cloud Monitoring, 7 days: ~70-75% QUERY, ~25-30% LOOKUP; hourly follows ward hours and nearly stops at night, so no idle loop.
+
+- **Root cause (a bug from `2026-10-31.12`).** `subscribeRoster` filtered `leftAt >= new Date(now - 30 d).toISOString()`, a value to the millisecond. A different filter is a different query, and a new query has no resume token, so every List Maker mount re-read every departure, even seconds after leaving. The old whole-collection listener could resume within 30 min. The October emulator count (390 → 150) compared first attaches only and missed this.
+- **Fix.** `rosterLeftSince(now, days)` in `domain/floorList/floor.ts`: a local calendar date, so the query is identical all day and moves at local midnight, when the first attach of the day pays anyway. `YYYY-MM-DD` sorts correctly against the ISO `leftAt`. The local-versus-UTC mix moves the window by hours at most. Same field and operator, no index or rules change. Test added.
+- **Checked.** `npm run verify`. Emulator, the SDK's IndexedDB `targets` store, three mounts each: the fixed query kept one target with a resume token; the old millisecond cutoff added a new target per mount (1, 2, 3). Test floor deleted. This shows the query can resume, not what production bills.
+- **Not done.** Reads saved are not measured: the audit's model gives ~8K/day (range 4-15K), resting on an assumed mount count, and the emulator does not bill. Query Insights cannot split reads: it omits listeners. Left out as owner decisions: shorter departures window, active feed linger, archive attach on board search, autosave debounce. Left out as small: presence interval beats, older-days stamp, note search cache, Visite named-day read. The 834 rule errors on the Usage page are not traced.
+
+## `2026-11-06.3` — Date list stays open when stepping days
+
+- **Root cause.** `PatientPage` keys `RailPanels`/`TabPanels` by `patient-day` (so kept rows and the auto tab reset per day). Stepping a day remounted them and `useState(false)` closed the date list each time.
+- **Fix.** Two module-level flags remember only "date list open" and "Tanggal tab picked" across the remount; the per-day reset of everything else is unchanged. Reset on reload.
+- **Not done.** Not seen in the running app. The page-level flash while the new day's note loads (outside the panel) is not touched. The flags are shared across patients.
+
+## `2026-11-06.2` — Rail warna Checklist: open and closed share one design
+
+- **Root cause.** The closed view drew `Row`s (ring + label); the opened view swapped in `ChecklistPills` (filled colour cards, its own `ProgressStrip`, "n/7 selesai" footer), so opening looked like a different widget with a doubled strip. Two components for one list.
+- **Fix.** `PanelList.full` is optional. The Checklist no longer passes it; opening a list without `full` renders `Rows all` (every row, done included, same ring/strip). Custom Checklist keeps `PatientTodos` as its `full` (it adds and edits). Tab status "Daftar lengkap" follows the same rule.
+- **Not done.** Not viewed in the running app. Custom Checklist's opened view (`PatientTodos`) still has its own look; not touched.
+
+## `2026-11-06.1` — Date arrows and newest-first scroll in the SOAP side panel
+
+- **Why.** Avi: the closed Tanggal row in Rail warna needed left/right arrows, and the opened list should land on the newest day.
+- **What.** `RailPanels` header is no longer one button (buttons cannot nest): toggle (label + chevron), prev/next `StepButton`s around the current date. `PanelContent.dates` gains optional `prev`/`next`; `PatientPage` fills them from `neighbourDates` (nearest rail day either side; SOAP Awal's only neighbour is the first day). `DatesBody` scrolls to the bottom on mount, because the rail runs oldest to newest and a long admission opened at the first week. Also used by the Tab status Tanggal tab, same list.
+- **Root cause of the scroll.** Not a bug in the scroll code: the container simply never set `scrollTop`, so it opened at the top of an ascending list.
+- **Not done.** No unit test for `neighbourDates` (private helper in the page file). Opening the list does not centre the selected day when it is not the newest, by request (newest).
+
+## `2026-11-05.9` — Two optional SOAP sidebars: Tab status and Rail warna
+
+- **Why.** Avi found the panel sidebar weak: five equal boxes, the open steps buried in the fourth and cut off by `truncate`, ticking two clicks away because `SidePanel` previews are read-only. Chose two of three mocked directions, as options rather than a replacement.
+- **What.** `SoapLayout` gains `tab` and `rail`; default stays `klasik`, and old builds read an unknown value as Klasik, so no migration. New `SidePanelLists.tsx` (`TabPanels`, `RailPanels`), `domain/sidePanelLists.ts` (`firstOpenTab`, `keepShown`, tested). `tickTodo.ts` is moved out of `PatientTodos` so both views write one way. `DpjpSideCard` gains `variant` (`quiet`, `bare`). In these two layouts only: checker reads "Aturan: tidak ada temuan" (the old line was cut off by the AI button), empty Poli row hidden, thin sidebar scrollbar.
+- **Decisions.** Checklist and Custom Checklist stay separate (Avi). A ticked row stays in place until the patient or day changes, so the next row cannot slide under the pointer. Custom Checklist has no colours, so its rail is neutral.
+- **Bug found while testing.** A step ticked earlier came back as open on reopening a patient. Root cause: the panel read the rows before the checklist document had answered, when every step resolves to not done, and `keepShown` remembered them all. The tab choice had the same race. The panels now wait for `loading`, and `useChecklist.loading` compares which document answered instead of a flag set in the effect, which said "loaded" for one render after a day change.
+- **Unchanged behaviour carried over.** Custom Checklist ticks are not blocked on a locked day, same as `PatientTodos`; Checklist ticks are.
+- **Checked.** Emulator at 1440 px: both layouts in Senja + hijau and Light, ticking from the closed view, ticks surviving a reload, Daftar lengkap, Catatan and Tanggal tabs. Driven by script because the app window was hidden, so hover and real pointer or keyboard use were not exercised.
+- **Not checked.** A long standing note, a locked day, a DPJP with an upcoming Poli, Dark and the other palettes by eye, a ward device.
+
+## `2026-11-05.8` — SOAP checker: sapaan against the DPJP
+
+- **Why.** Avi: the pembuka and penutup should address a Prof as "Prof" and a dr. as "dokter". `address.ts` already knew how to find and rewrite the sapaan ("Ganti ke Prof"), but nothing compared it with the patient's DPJP.
+- **What.** New finding `address` (level `cek`, one finding, every wrong sapaan in `occurrences`). `address.ts`: `addressLines` now maps line → `pembuka`/`penutup` (was a set), `eachVocative` passes the offset, new `addressMarks(body)`. `SoapCheckContext.dpjpIsProf` is set in `PatientPage` from the primary DPJP's registry name (`/^prof\b/i`); unknown DPJP → null → silent. Konsul and perpindahan notes are skipped (they address the consultant or receiving team). Titles (`Prof. dr. …`) and DPJP lines are ignored, as `address.ts` already did.
+- **Not done or not checked.** Only the primary DPJP is compared: a note with a Prof and a dr. as co-DPJP is judged by the first. "dokter" in the first three lines used as a noun (not a sapaan) would be flagged, the same limit "Ganti ke Prof" has. No "Ganti" button on the finding; it only asks. Not looked at in the browser; not run on real note exports.
+
+## `2026-11-05.7` — Typo findings in their own dropdown
+
+- **Why.** Avi: many typos would crowd the checker box. Root cause: `PatientPage` rendered every `soapFindings` entry in one list, and `typo` is the only kind that can appear up to 5 times.
+- **What.** The list is split: `typo` findings go into a closed `<details>` ("Kemungkinan salah ketik (n)") under the rule findings; everything else, including `gibberish`, stays in the main list. The "Periksa lagi" badge and the board count still include typos. Logic in `soapTypos.ts` unchanged.
+- **Not done or not checked.** Not looked at in the browser (phone sheet, side panel, dark mode); the open state is not remembered between renders of the box.
+
+## `2026-11-05.6` — SOAP checker: random keystrokes and typos
+
+- **Why.** Avi: the checker should catch text typed by accident (`a3e 3rjiwj`) and typos. No existing rule looked at the words themselves. Root cause of the gap: every rule compares two numbers or two sections; nothing judged a token.
+- **What.** New `soapTypos.ts`, called from `checkSoap`. `gibberish` (one finding, every hit in `occurrences`): lower-case letters+number+letters (`a3e`), a number then 3+ letters that are not a unit (`3rjiwj`), 4+ same letter, 4 neighbouring keys on one row, lower-case words with no vowel or 6 consonants in a row. `typo` (one finding each, max 5): a plain word of 5+ letters that starts lower case, is written once, is not in yesterday's note, and is one edit (substitution, insertion, deletion, swap) from a word with the same first letter written 2+ times across today and yesterday. Both skip frozen ranges (`frozenText.ts`). Both are level `cek` and never edit text.
+- **Why no dictionary.** The corpus is Indonesian, English, drug names and ward shorthand; a general list would flag most of every note. Both checks use shapes and the note's own spellings instead.
+- **Not done or not checked.** No real-note corpus run: false-positive rate on real exports is unknown (SPEC wants corpus-driven rules). A typo that is the only spelling in the note is not seen. A mash with a vowel and no keyboard run (`asjdkh`) passes. Two valid spellings one letter apart (`nafas`/`napas`) can be flagged. A typo carried forward from yesterday is not flagged, and a correct word is flagged if yesterday misspelled it twice. Capitalised typos are skipped. Not checked in the app UI or on a ward device.
+
+## `2026-11-05.5` — Settings: six categories, one at a time
+
+- **Why.** Avi: Settings was a cluttered mess. Cause: ~30 collapsed accordions in eight groups, each header carrying a 2-3 line description, in one long scroll. The groups overlapped (Utama, Tema, Tampilan, Papan & harian all held appearance; Akun and Privasi each appeared twice), and a collapsed row showed no value, so the page had to be opened row by row to read its state.
+- **What.** Six categories (`CATEGORIES` in `SettingsPage.tsx`), one open at a time. The open one is `?k=` in the URL, so the phone back gesture returns to the category list and a reload keeps the place. Phone: a list of categories, then the category. From `lg`: a pinned left rail with the first category open by default. A collapsed row is now title plus current value; the description moved inside, above the controls. Sections are one divided list per subgroup instead of a stack of bordered cards. Search still spans every category: while a query is typed every group renders so its sections can match; otherwise `SettingsGroup` renders only the open one, so a phone mounts one category's editors, not six.
+- **Values.** Added a `value` to Format catatan, Preset salin, Privasi, Watermark, Hari rawat, Catatan di kartu, Tata letak SOAP, Bullet WhatsApp, Checklist harian and Akun. Section code was moved verbatim between groups; no setting, key or write path changed.
+- **Removed.** The chip jump bar and the group scroll-spy (`GroupNav`, `GROUPS`): categories replace them.
+- **Not done or not checked.** Simple Mode is still undecided and not part of this. `openSettingsSection` only reaches a section in the open category (its one caller, Tentang, is in the same category as Yang baru). No old deep links to a group id exist in the repo; any bookmark to a hash lands on the first category. Ward device not checked.
+
+## `2026-11-05.4` — Catatan scroll holds its state
+
+- **Why.** Avi: it closed on every click elsewhere. That was the outside-press listener of 2026-11-05.3, now removed. Open or closed is kept per patient in `visite.board.catatanOpen` (this device), so it also survives a remount: layout switch, visit to the patient, reload. Each card rereads the list before writing, because `usePersistentIdSet` holds a copy per instance and one per card would overwrite the others. Esc now acts only with focus inside the scroll, so it cannot close all of them.
+- **Colour.** Avi: the neutral surface looked off on a coloured card. The scroll is now `--card-face` mixed 15% with black, opaque because it covers what is below, with the card's own ink. So it follows Netral and Garis too; Papan Kerja rows have no card colour and keep the raised surface.
+- **Stacking.** Several can now stay open, so the fixed z-index 35 became 25 for an open card and 35 only if it was pressed last (`data-front`), and a card in hand stays on top. A resting card pressed last (30) now rises above an open scroll covering it.
+- **Not done or not checked.** An open scroll keeps covering what is below it until closed, by design. Ids of patients who have left stay in the list (a few bytes, harmless). Touch, ward device and the shelf case unchecked. Empty notes focus only when pressed open, not when restored.
+
+## `2026-11-05.3` — Catatan scroll, scroller coloured by section, an arrangement per layout
+
+- **Catatan height.** Root cause: `InlineCatatan` showed up to three lines (two in Papan Kerja), so every note made its card taller. It is now one line in the app's own surface tokens (`.note-scroll*` in `index.css`), so ink contrast is the existing `fg` on `surface-raised`. A first draft looked like literal old paper; Avi asked for a modern take. A press unrolls it as a layer: the root keeps one bar's height and the body is absolute inside it, so the card, row and masonry do not change size and only the scroll grows (a first draft grew the card, which Avi rejected). `grid-template-rows` 0fr to 1fr, so the note's height is not measured; the rolled edge at the body's foot is what travels. It opens at least 13rem wide for a narrow Papan Kerja column, covering the columns beside it. `:has()` raises the canvas card or shelf holding an open scroll (inline z-index, so `!important`) and lets the shelf stop clipping while it is open. A press outside or Esc rolls it up. The ✎ button of 2026-11-05.1 is gone: the roller is a control, the rest of the card still opens the patient. `HoverDetail` stays for the rolled state. The note's text is untouched; the rolled line only displays its first non-empty line.
+- **Preview scroller.** `paintThumb` colours the scrollbar with the part of the note level with it (the same fraction down the text as the box is down its track). Parts come from `soapParts`, which already cut a note into opening, S, O, A, Terapi, Plan and TS, and now takes the user's aliases. `--sec-*` are too faint for a thin bar, so `--sec-bar-*` are new. Set through `scrollbar-color`: Chrome ignores `::-webkit-scrollbar` once that is set, which the app's global rule does. The `pre` is now one span per part; the text and what is selected do not change. Dx scrolls to the span at the diagnosis offset instead of a ref.
+- **Positions lost on a layout switch.** Root cause: 2026-11-04.5 kept one position map for all layouts and ran Rapikan after every switch, so hand placement was overwritten each time. Now `CanvasBoard` saves the map of the layout being left (`visite.board.canvasByLayout`) and `restoreArrangement` puts back the one being entered. Only geometry comes from the saved map; shelf membership, shelf names and removed shelves come from now. A card with no saved place is auto-placed rather than left at its place from the other layout. Rapikan runs only on the first visit to a layout. Papan Kerja draws no canvas, so going through it changes nothing.
+- **Diagnosis text swallowed the click.** Root cause: `opacity-80` makes a stacking context, painted above the stretched link's `::after`, so a press on the text hit the span and opened nothing. An oversight of 2026-11-05.1. `pointer-events-none`; hover detail is unaffected because it tests a rectangle.
+- **Checked (emulator, made-up patients).** Scroll: identitas, S, O, A, Terapi, TS at measured positions in Asli; parts also detected in SIMGOS and WA. Scroll: card and row height unchanged while open (measured), unroll and roll-up, Esc returns focus, outside press, empty note focuses, typing kept after rolling up, hover panel while rolled, selection mode passes through, rolled bar in dark and light by eye. The Esc, typing, hover and selection checks ran on the first draft; only markup and CSS changed since. Positions: Kartu to Standar (first visit tidies) to Kartu to Standar, also through Papan Kerja, exact to the pixel, one real drag.
+- **Not done or not checked.** Real data; a ward device; touch; Senja by eye; coloured (ticked) cards by eye, only neutral ones; Papan Kerja only at 1040 px; the shelf case, whose `:has()` rule never ran; a scroll opened at the very bottom of the board, which runs below the fold until you scroll; Firefox and Safari. Free stickers and drawings are not per layout. The account mirror (phone canvas) receives whichever layout was arranged last, as it did. Arrangements are per device. Positions already overwritten by earlier builds cannot be recovered. The Standar card's own note is unchanged.
+
+## `2026-11-05.2` — Kartu Ringkas: flags on the status line; hover detail on diagnosis and Catatan
+
+- **Banner height.** `FlagRow` had its own row at the bottom of the card, while the status line above it was mostly empty. It now shares that line and wraps only when it does not fit. Papan Kerja keeps its Penanda column.
+- **Hover detail.** New `HoverDetail`, used by `DiagnosisLine` and `InlineCatatan`. The stretched link covers the text, so hover cannot come from the text's own events; raising the text above the link would break click-to-open and Ctrl+click. It tests the pointer against the zone's rectangle from listeners on the card. Portalled to `body`, since the canvas clips. Diagnosis shows `card.preview` as stored (already redacted when initials-only is on); Catatan shows the full note. Nothing is shown when the card already shows it all.
+- **Not done.** Mouse only: no keyboard or touch trigger (Dx and the ✎ button remain the way in). The Standar layout is unchanged. `card.preview` is capped at `PREVIEW_LIMIT`, so a very long diagnosis section still ends in an ellipsis.
+
+## `2026-11-05.1` — Compact layouts: whole diagnosis, Dx jumps to it, card really clickable
+
+- **Cut-off diagnosis.** Root cause: `DiagnosisLine` truncated to one line to save height, and a phrase cut in the middle says nothing. It now wraps in normal flow. Cards and rows with a long first diagnosis are taller, so fewer may fit a screen.
+- **Dx.** Opens the preview and scrolls to the diagnosis section. `assessmentStart` shares `findAssessment` with `buildPreview`, so the jump and the card agree on what the diagnosis is. `BoardPage` counts asks per patient (`diagnosisAsks`), so a second press on an open window scrolls again. The `pre` is split at the offset only for the ref: the text and what is selected do not change. The offset applies to the note as written, so Dx returns the window to Asli. A note with no diagnosis section opens at the top. Dx is now a button with a single diagnosis too.
+- **Clicking the card.** Root cause: the stretched link of 2026-11-04.7 worked, but what sat above it covered most of the card: a full-width status button and a full-width textarea. Fix: status is `w-fit`; the textarea is `pointer-events-none` until focused, with a ✎ button (or Tab) to edit. This reverses click-to-type from 2026-11-04.5 on these two layouts, a trade the owner may want to weigh; the summary sticky still types directly. Hovering a compact card shows a stronger edge.
+
+## `2026-11-04.7` — Compact card: Catatan readable apart from diagnosis, whole card opens; preview no longer flashes
+
+- **Preview flash.** Root cause: `PatientPeekWindow` initialised `pos` to (0, 0) and set the real position in a `useEffect`, which runs after paint, so one frame showed in the top-left corner. An old bug, on every board layout. Fix: a lazy `useState` initialiser. The window is keyed by patient, so `index` at mount is the index at open; the `openIndex` and `dragged` refs had no other job and are gone.
+- **Catatan vs diagnosis.** Root cause: both were 12 px lines in the card's ink with nothing between them. Catatan now sits in a neutral well (`bg-black/15`, no second hue on the checklist colour) at medium weight; the diagnosis line leads with "Dx" at 80% opacity. The label moved to the front in Papan Kerja too, since `DiagnosisLine` is shared.
+- **Opening a card.** Root cause: `PatientCompactCard` was built as a div so the note could sit outside a link, which left only the name clickable. Fix: `STRETCHED_LINK`, the name's link covers the card or row through `::after`, with buttons and the textarea raised above it. Ctrl+click and keyboard focus keep working because it is still one real link. Text on the card can no longer be selected by drag, except in the note.
+
+## `2026-11-04.6` — One Tampilan menu, Catatan sticky back in Kartu Ringkas, Tema grouped
+
+- **Two doors for one question.** Root cause: 2026-11-04.5 put the layout in Pengaturan while the order stayed on the board, and the Normal/Ringkas button was a third control over the same cards, so nothing showed which one was in charge. Fix: `BoardViewMenu` on the board holds Tata letak and Urutan. The order dropdown, the Normal/Ringkas button (desktop) and the Pengaturan section are gone. `dense` now applies below `lg` only, so a desktop that stored `ringkas` shows full cards in Standar; use Kartu Ringkas there. Phone controls are unchanged. Choosing a layout from Denah moves to Urutan visite, because Denah draws no cards. `BOARD_ORDERS` also feeds the phone select, replacing a second copy of the labels.
+- **Missing sticky.** Root cause: 2026-11-04.5 deliberately filtered the `catatan` sticky out of both new layouts, reasoning that the card repeats it. Avi uses it. `placedNotes` now filters only in `baris`, where it would push rows off the screen. A sticky hidden during a tidy keeps its old position, so if it lands on cards, press Rapikan.
+- **Tema.** Eight flat sections are now `SettingsSubgroup`s by what they change: Warna (mode, aplikasi, bagian catatan), Teks & jarak (ukuran, kepadatan), Papan pasien (gaya kartu, sticky, latar kanvas). `SettingsSection` gained `value`, shown on the collapsed row (closes the "Settings rows hide values" gap for Tema only). Warna aplikasi labels its two choices. Mode warna no longer opens by default. Search still hides an emptied subgroup through `.settings-group`.
+- **Checked (emulator, made-up patients, 1426 x 746).** Menu: all three layouts and all orders, Denah exit, Urutan sendiri absent in Papan Kerja with the stored order kept, Escape closes. Stickies: `catatan` and `lab` on Kartu Ringkas in canvas and list, only `lab` in Papan Kerja, add entry present. Tema: subgroups, values on rows, search. **Not checked:** a ward device, real data, phone width for Tema, light theme and Senja for the new menu, screen-reader behaviour of the radio groups (no arrow-key roving; Tab moves between choices).
+
+## `2026-11-04.5` — Kartu Ringkas and Papan Kerja, switchable in Settings
+
+- **Why.** Avi: the board is crowded at the current census, and asked for both layouts switchable in Settings, per device, with Catatan typed in place and one diagnosis line plus a count. Measured on the emulator first (18 made-up patients with long notes, 1426 x 746): Standar shows 6 whole patients.
+- **Setting.** `domain/boardLayout.ts` (`standar`, `kartu`, `baris`; absent or unknown reads as `standar`), `hooks/useBoardLayout.ts` (localStorage `visite.board.layout`, shared live by a window event). Section in Pengaturan → Tema. Below `lg` the board ignores it. No Firestore field.
+- **Kartu Ringkas.** `PatientCompactCard`: bed first, name, DPJP, RM, status button, `diagnosisSummary` (first diagnosis and count, headings and the Problem block excluded), Catatan, flag row. Colour rules still apply (`data-patient-card`, `data-color-token`, Netral and Garis). On the canvas it reports as `'folded'` through `isUncapped`, so stored caps are not applied and there is no height grip; stored caps come back with Standar.
+- **Papan Kerja.** `BoardRow` under the existing `groups`, with a stronger line between rooms. Row is neutral; the checklist colour is in the status cell only. Not a link (it holds a textarea); the name is the link. `Urutan sendiri` reads as `visite` for display and the stored order is kept. The detail view is the existing `PatientPeekWindow`, not a new side panel.
+- **Catatan in place.** `InlineCatatan` uses `usePatientNotes`, the same field, draft store and merge as the sticky and patient page. Stored text is never altered; rest height 3 lines (2 in rows) with "+n baris", 12 lines on focus, then scroll. Outside the link so a click for the caret never opens the chart. The `catatan` summary sticky is hidden in both layouts (`placedNotes`), excluded from `layoutIds` so it leaves no hole, and returns with Standar.
+- **Status is a button** that opens `QuickChecklistSheet` (critique P2); right-click still works. `ProgressStrip` gained `mono`. Finished patients show "✓ Selesai" with no strip.
+- **Canvas on switch.** `CanvasBoard.packFor` tidies once when the layout differs from `visite.board.canvasPackedFor`, keeping reading order, with Undo.
+- **Checked (emulator, 18 made-up patients, long notes, 1426 x 746).** Whole patients visible: Standar 6; Kartu Ringkas 12 on canvas and 12 in Urutan visite; Papan Kerja 10. 0 overlaps after every switch. Typed text survives a reload and appears in the sticky (same field). A long note opens to 12 lines and scrolls; a click into it does not navigate. Status opens the checklist; the eye opens the preview. Phone width on a fresh load ignores the layout.
+- **Not done or not checked.** A ward device; real notes; Netral and Garis styles in the new layouts; light theme and a full Senja contrast sweep (`check:contrast` has no gate for the new placements, though they reuse existing token pairs); the sidebar rail and the "(DONE)" and "(Menunggu)" marks from the proposal are not built. Two people editing one note at once was not exercised beyond sharing the existing hook.
+
+## `2026-11-04.4` — Board fixes from the critique: room search, sticky height, Rapikan
+
+- **Search missed the room.** Root cause: neither `buildSearchBlob` nor `patientHaystack` included `patient.room`, so `407` returned "no patient" with four patients in that room. Fix in `patientHaystack`, which needs no re-index: adds `kamar <room>`, `bed <bed>`, `<room>/<bed>`. `matchesQuery` keeps `bed 5` and `kamar 407` as one token, otherwise the 5 matched any RM holding a 5. `archiveSearch` shares the haystack, so archive search finds rooms too.
+- **The summary sticky buried list orders.** Root cause: the list had no height limit and masonry renders stickies in a row above the patients. With 18 made-up patients and long notes the sticky reached about 2,200 px and the first card started below the first screen. Fix: `max-h-[min(50dvh,24rem)]` with its own scroll unless the user capped it on the canvas (`fitHeight`).
+- **Rapikan ignored card height.** Root cause: `CanvasBoard` passed `tidy` only shelf heights, so every row used `ROW_STEP` (260): Ringkas kept gaps and long Normal cards overlapped the row below by up to 166 px, hiding reminder chips. Fix: read `offsetHeight` of each drawn card at the press. `tidy` now finds rows from the cards instead of fixed bands: on the band grid, short rows packed closer than a band merged, so a second press reordered them.
+- **Checked.** Emulator with 18 made-up patients and long notes at 1426 x 746: Rapikan leaves 0 overlapping pairs in Normal and Ringkas; `407` finds 4, `407/5` finds 1, `bed 5` finds the 2 in a bed 5. **Not changed:** existing overlaps stay until Rapikan is pressed, because nothing moves on its own (deliberate); plain text stickies still grow in list orders. **Not checked:** a real device, real notes.
+
+## `2026-11-04.3` — Identity band no longer pokes out of the card's rounded corners
+
+- **Root cause.** The identity band (`.card-band`) bleeds to the card edge with negative margins and square corners; the card is `rounded-xl` without `overflow-hidden`. When no Pemantauan / H-1 strip sits above it (the strips carry their own `rounded-t-xl`) the band's tint showed past the border at both top corners. It existed before 2026-11-04.2 but the new styles made it obvious (Avi's screenshots, board and canvas).
+- **Fix.** `[data-patient-card] > .card-band:first-child` gets an 11 px top radius (card radius minus its 1 px border). A band below a strip is untouched. CSS only; checked in the emulator that the rule applies to the strip-less cards only. **Not checked:** the corner pixels at zoom in Garis (2 px edge), a card with an attached note.
+- **Picker samples followed the live setting (Avi's screenshots).** Root cause: the page's `data-card-style` sits on `<html>`, so `[data-card-style='netral'] [data-patient-card]` matched inside every sample whatever the sample's own wrapper said (all three looked like the active one); `[data-density='normal']` and `[data-text-size='normal']` had no rule of their own, so a sample pinned to Normal inherited the page's variables; and the card sample's size followed the page density and text size. Fix: card-style rules are written as `html[data-card-style=X] [data-patient-card]:not([data-sample-style] *)` plus `[data-sample-style=X] [data-patient-card]` for samples; explicit `normal` blocks; card samples pinned with `data-density="normal" data-text-size="normal"`. Checked in the emulator: all 20 samples (sticky 5, canvas 6, density 3, text size 3, card style 3) are unchanged while the page's density, text size and card style are flipped.
+
+## `2026-11-04.2` — Three optional looks: Kepadatan, Ukuran teks, Gaya kartu pasien
+
+- **Why.** Avi called the phone UI "so crowded"; asked for three settings in Pengaturan → Tema, selectable like the sticky look and the canvas background, all optional. Mocked first (Terang/Senja, phone/desktop). Avi rejected the mock's bottom "pita" band on style (b) as AI-slop, so Netral is a neutral card with the colour only in the status chip. Decision: implement all three, defaults unchanged.
+- **Settings.** `settings.density?`, `settings.textSize?`, `settings.cardStyle?` (`domain/appearance.ts`; absent or unknown reads as `normal` / `normal` / `pastel`). `AppShell` writes `data-density`, `data-text-size`, `data-card-style` on `<html>` (`applyAppearance`); the picker samples use the real CSS (`data-density` on the sample, `data-patient-card` on the sample card), so they cannot drift.
+- **Density.** Tailwind spacing keys `d-card`, `d-card-s` (dense card), `d-band`, `d-gap`, `d-flag`, `d-row` map to CSS variables in `index.css`; defaults equal the old classes (`p-2.5`, `py-1.5`, `mt-1`, `mt-1.5`). Used by `PatientCard` (padding, strips, identity band, body gaps, flag row, status rail), the List Maker patient row (`ListPanel`) and the patient-page header row (`PatientPage`). The 44 px tap targets are not scaled: the card header is set by the 44 px icons, so Kompak saves roughly 15 px on a card, not 40%.
+- **Text size.** One factor `--tf` (0.92 / 1 / 1.15). Tailwind `fontSize` keys `note` (15 px, line-height 28 px × factor), `ctitle` (14 px), `cbody` (12 px). `METRICS` in `BodyEditor.tsx` is now `text-note`; the textarea, the measuring copy, `SectionBands` and `BookmarkMarks` all take their metrics from that one string (and read computed line-height in JS), so they cannot drift (the 2026-11-02.7 bug). Verified: textarea, measuring copy and band layer report identical font-size and line-height at all three sizes.
+- **Card style.** `[data-card-style]` rules in `index.css` target `[data-patient-card]` (added to the full and the folded card). `netral` and `garis` paint on `--surface` and restyle the identity band; `netral` turns the status text (`.card-status`) into a chip in the token's own bg/fg pair; `garis` draws a 1 px border plus a 1 px inset outline in the token accent (2 px, no layout shift). `--card-face` is what the clipped-body fade now fades into. Token keys are untouched.
+- **Contrast.** `check-contrast.mjs` gained gates: fg and 70%-fg on the surface and the netral band, fg and 70%-fg on the garis band (12% accent over the surface) per token, and a 3:1 gate for the garis edge, in light, dark and Senja (132 lines, all pass).
+- **Checked.** Emulator (Auth + Firestore), dark and Senja: the three pickers render with live samples and persist (`data-*` on `<html>`); in-page contrast sweep over the board card in light, dark, Senja × the three styles: no failures in Netral and Garis; Pastel in Senja shows 4.23:1 on the neutral card's "Lokasi belum diisi" and the fold button (existing, not touched). Card height and padding per density, title size per text size, tap target stays 44 px. Second pass (six seeded patients with Pemantauan, H-1, Pulang, KJS and DPJP chips): phone 412 and 360 px, light, dark and Senja × Netral and Garis, contrast sweep over every card text: after one fix none below 4.5:1 (root cause of the fix: the DPJP chip's tinted fill sat inside the location line's 70% opacity, 3.4:1 in Senja; on the white styles it is now an outlined chip, `.card-dpjp`). 27 style × density × size combinations at 360 px: no horizontal overflow, no clipped card, no button under 44 px tall. Desktop canvas: no overlap or clipping at Kompak and Longgar in all styles. Patient page at 360 px: header 96 / 102 / 110 px for Kompak / Normal / Longgar (only 6 to 8 px, the 44 px rows dominate), mirrors identical at every text size. Compiled CSS contains every new utility.
+- **Not checked.** List Maker patient rows rendered (the paste did not produce a list from a made-up message; only the compiled CSS was checked), the phone canvas tiles (`PhoneCanvas`, still pastel in every style, by choice), the patient page with a long real note at each density, Catatan and Visite text (not scaled, only the SOAP editor is), Pastel in Senja and dark (existing 3.1 to 4.5:1 on the location line, RM and DPJP chip, not touched), a ward device.
+
+## `2026-11-04.1` — Canvas background, chosen in Settings
+
+- **Why.** Avi, 4 Nov: "any recommendation for the background of the canvas dashboard", then "all of them selectable like the sticky note, no chalk stroke (the pen draws those), Denah ruangan boxes without labels". Six looks were mocked first.
+- **Setting.** `settings.canvasBackground?: CanvasBackground` (`titik` default, `polos`, `papan`, `gabus`, `vinyet`, `denah`); absent or unknown reads as the default (`canvasBackgroundOf`). Pengaturan → Tema → "Latar kanvas": a radio group whose samples use the board's own CSS, so the picker cannot drift from the board.
+- **Implementation.** `CanvasBackdrop` wraps the free canvas on desktop (`CanvasBoard`) and the phone canvas (`PhoneCanvas`) in `BoardPage`: a `data-canvas-bg` panel at least the visible height, in its own stacking context (`isolate`), so the cards and the pen layer (inside the canvas surface) stay above it. The list views keep the plain page. Backgrounds are CSS only (`index.css`): dots and the grid are mixes of `--fg` (so they follow every theme), the slate board and cork use `--board-chalk-bg`, `--board-cork-bg`, `--board-cork-dark/-light` (light, dark, Senja), the vignette mixes `--bg` with white and black. `denah` is a grid layer of dashed room outlines either side of a solid strip, no text, many rows clipped to the panel.
+- **Contrast.** Decorative only: no text is drawn on a background (cards, notes and the toolbar are opaque or above it), so `check:contrast` has nothing to hold; the pen strokes (white in Senja, dark in light) read on all six.
+- **Checked.** Emulator: all six on the desktop canvas in Senja and light, all six on the phone canvas in Senja, the Settings picker in Senja and light, and a real pen stroke drawn over Titik, Papan tulis and Denah (it draws above each). Two bugs found and fixed there: the picker samples' `bg-bg` class overrode the slate and cork colours, and the Denah sample's strip was as wide as a column. **Not checked:** the phone canvas in light, dragging cards over each background, a ward device.
+
+## `2026-11-03.8` — Full Senja sweep: nurse station, destructive buttons, one duplicate hint
+
+- **Method.** Emulator in Senja at 1280 px and 412 px, test data for patients, patient notes, the three sticky kinds, a List Maker floor, a rich Catatan and a Versi-less patient page. An in-page contrast sweep (text colour over the first opaque ancestor background, opacity applied; disabled controls and `aria-hidden` skipped) over: board, Arsip, Dokumen, Catatan (+ Catatan jaga), Kalkulator, Checklist, Helper, Akun, a patient page, List Maker (all six tabs) and every Settings group; plus screenshots of the Catatan editor (checklist, strikethrough, highlight, toggle, colour palette), the phone patient sheets (Catatan, Checklist, Periksa lagi), the card note strip, and the board canvas (desktop and phone) with a drag by the note's own grip.
+- **Fixed.** (1) The Denah's landmark block ("NURSE STATION", in `FloorDenah` and `DenahPlanView`) was `bg-[var(--warn-strong)] text-white`: white on Senja's bright yellow, 1.5:1. Now a `--warn-soft` fill, a `--warn-strong` edge and `text-fg`. (2) Solid danger fills with `text-white` (DeletePatient, TwoTapButton, the Census verifier badge, DocumentsPage, NotePage, RevisionTrail): about 2:1 on the pale dark-mode danger. New `--on-danger` token (white in light, `#0b0f14` dark, `#101524` Senja), a Tailwind `on-danger` colour, and a `check:contrast` gate for it (4.83 / 6.95 / 9.29:1). (3) The phone "Catatan pasien" sheet printed "Berlaku untuk seluruh hari rawat…" twice (the sheet's description and the hint under the box); the hint is hidden in `bare` mode.
+- **Measured, deliberately left.** The WIP pill (4.0:1; the colour is Avi's call); the editor's floating format toolbar (`opacity-40` until hover or focus, by design); step numbers in the Checklist list (`fg-faint`, 4.2:1); the "Hapus list…" text in List Maker Setelan (danger text on surface, 4.0:1).
+- **Not checked.** Resizing a sticky on the canvas; Catatan jaga with content (the tab opens, no jaga note was created); light and plain dark themes (the sweep ran in Senja only); a ward device.
+
+## `2026-11-03.7` — Theme settings in one group; Senja contrast pass on the Catatan surfaces
+
+- **Settings.** `warna-bagian` (section tint) moved from Tampilan and `tampilan-sticky` from Papan & harian into the Tema group, after Mode warna and Warna aplikasi. Ids, keywords and stored keys are unchanged, so search and saved settings are unaffected. Left in Tampilan on purpose: the SOAP layout, the watermark and "Hari rawat di judul" (note content, not theme); left in Papan & harian: the note strip under a card (a board toggle).
+- **Found in the emulator (Senja, 1280 px and 412 px, all five sticky looks).** (1) `bergaris` styled EVERY textarea inside the note: the Catatan pasien summary note holds a textarea per row, which got the 44 px indent, the 22 px rules and, with the margin line (`::after`), a red line through the Lab hari ini text. Now the rules and indent apply to the note's own textarea only (`> textarea`) and the margin only when the note has no `kind` (`data-kind`, set from `note.kind`). (2) The note header label, the × and the "Tidak ada lab" line were `opacity-60/70` of the ink: 3.3 to 3.9:1 on the dimmed paper and on the Klasik card colours in Senja; now `opacity-80` (the same in `PatientSummaryRows`), 0 findings under 4.5:1 in all five looks. (3) Selected/active rows: the Senja accent tint was 20%, which put the accent label and `fg-muted` text on it at 4.0 and 4.4:1; now 13% (`#aab9ff22`; ungu 13%, rose 12%), accent 4.65:1. `check:contrast` gained an "accent on accent-soft over surface" gate for light, dark and Senja so this cannot regress.
+- **Measured, not changed.** Senja: the WIP pill (4.0:1; the colour is Avi's call, kept), `fg-faint` on selected rows (a timestamp at 3.7:1 before this change, better now but still under 4.5 on the raised surface), the floating editor toolbar when the text area is not focused (2.3:1: it reads as disabled by design), and `fg-faint` generally (the known ~3:1 gap). The same sweep on the light and near-black dark themes was not run.
+- **Checked.** Emulator in Senja: the board with all three sticky kinds (free note, Catatan pasien, Lab hari ini) in all five looks, the card note strip, the Catatan page and editor, and the Settings Tema group; a contrast sweep of the board, Catatan, patient page, List Maker, Kalkulator, Checklist and Pengaturan. **Not checked:** the Catatan jaga tab, the patient Catatan sheet on a phone, a Catatan with highlights or toggles, canvas drag/resize.
+
+## `2026-11-03.6` — Sticky note looks, chosen in Settings
+
+- **Why.** Avi, 3 Nov: the note did not look like a sticky note (in Senja it is a dark blue rectangle with a pale tape strip and a dark triangle for the fold, i.e. a card). Four mocks were shown (A Post-it, B pinned, C ruled legal pad, D quiet paper) and Avi asked for all of them to be selectable.
+- **Setting.** `settings.stickyStyle?: StickyStyle` (`postit` default, `dipaku`, `bergaris`, `tenang`, `klasik`); absent or unknown reads as the default (`stickyStyleOf`), so an older profile or a newer build cannot break the board. Pengaturan → Papan & harian → "Tampilan sticky note": a radio group whose samples are drawn with the notes' own CSS, so the picker cannot drift from the board. `klasik` is the previous look, unchanged.
+- **Implementation.** `StickyNoteCard` sets `data-sticky` and the `--paper-bg`, `--paper-fg`, `--pin` variables (`stickyPaper`); the decoration (strip, curl, pin, perforation, margin, rules, peeled corner) is CSS only in `index.css` under `[data-sticky]`, as `::before`/`::after`, `pointer-events: none`; no images, fonts or downloads, so it works offline. The tape and fold spans render for `klasik` only. The ruled look sets the textarea to 14 px on a 22 px grid with the rules on the textarea (`background-attachment: local`), so they scroll with the text; summary sticky notes (Catatan pasien, Lab) show the margin but no rules, as their rows are not on that grid. `prefers-reduced-motion` drops the tilt.
+- **Colour.** `--paper-<colour>-bg/-fg` and `--paper-neutral-*` in all three theme blocks, dimmed in dark and Senja (the ink stays `#1d1b16`), so `check:contrast` holds all 21 pairs automatically (lowest 6.98:1). `--pin-<colour>` is the same on every theme. In `dipaku` the colour is the pin, the paper is neutral, and the palette swatches show the pins.
+- **Tests.** `boardNotes.test.ts`: the list, the default and unknown-value fallback, the paper/pin variables, and that every colour has a paper pair in each of the three theme blocks.
+- **Checked.** All five looks in the Firebase emulator at 1280 px (light and the near-black dark theme) and at 412 px (light); the Settings picker in light and on a phone. **Not checked:** Senja itself (it shares the dark values), the canvas board mode with dragging and resizing, a note with attached images, a note on a real ward device, the 'Catatan pasien' and 'Lab hari ini' summary notes in the new looks.
+
+## `2026-11-03.5` — DPJP chip: active state readable
+
+- **Cause.** The pressed chip only changed border (`border-fg`) and a near-identical fill (`bg-surface-2`), so on the dark theme it looked almost the same as idle (Avi's screenshots).
+- **Fix.** Pressed = solid `bg-accent text-on-accent`, semibold, the same as the other pressed pills (`MarksField`, `FeedbackForm`). Not checked on the light theme or Senja.
+- **Search box spacing.** `ListMakerPage` forced `!mt-0` (8 px under the tabs); Avi saw it collide with the tab bar. Removed, so it gets the default section gap (16 px). Not seen rendered; phone width not checked.
+
+## `2026-11-03.4` — Denah search offers "only this DPJP" when a DPJP code is typed
+
+- **Why.** Typing "ks" already matched the DPJP code, but as a word-prefix over the whole line, so it also hit residents and names starting with "ks". Avi wanted a clean per-DPJP highlight.
+- **Change.** `search.ts`: `dpjpOffers` (DPJPs with a patient here whose initials are a whole typed word, A–Z), `isDpjpPatient` (own patient or shared KJS, same rule as the DPJP boxes), `dpjpWord`. `FloorDenah` shows one chip per offer; chosen, the code word is dropped from the text search and only that DPJP's patients are hit. The choice is local state and lapses on its own when the word leaves the box (derived from `offers`, no effect).
+- **Not done.** The List tab does not get the chip (only the denah was asked); no separate always-visible DPJP button row; not checked on a ward device.
+
+## `2026-11-03.3` — Our Plan after a KJS discharge-therapy list no longer copies as TS
+
+- **Root cause.** `regionsOf` keeps a TS block open until a "Mohon izin …" heading, so a consultant's own `Plan:` stays inside their reply (2026-10-10). The ward also lists a co-managing team's discharge therapy (KJS) under our Terapi as a bare `TS Pulmo` + drug bullets and goes straight on to our `*Plan:*`. That Plan was copied under "Terapi + TS" and the Plan chip was empty.
+- **Corpus.** Parser audit over the 27 Oct export (417 entries, 130 patients): 18 Plan-like headings sat inside TS blocks. Every consultant reply among them had its own assessment line (`A/`, `Assessment`, `Diagnosis`) before the Plan; the 4 blocks without one were KJS lists followed by our Plan (confirmed by Avi). Two other assessment-less blocks used `Planning` and were the consultants'.
+- **Fix.** `PLAN_ONLY` + `CONSULT_ASSESSMENT` in `sectionSlices.ts`: a heading that owns its line and is exactly "Plan" (any bold, colon optional) ends a TS block that has no assessment line yet. "Planning" and "Plan Diagnostik / Monitoring" never do. After the fix the audit shows exactly those 4 moved; patients with an entry lacking a Plan block 16 → 13. Three tests; the KJS one fails without the fix.
+- **Audit findings left alone (0 cases in the export).** Unbulleted report fields under O, dated or prefixed TS headings, echo `A : 12 cm/s`, CRLF bodies, emoji / NBSP / numbered headings. Not changed without corpus evidence.
+- **Not done.** One entry writes a TS block between O and our own `Diagnosis:` heading (not a "Mohon izin" form), so A, Terapi and Plan stay inside that TS block. Ambiguous with a consultant's Diagnosis; left. The Lt. 4 / Lt. 5 colleague exports were not on this machine, so only Avi's own notes were audited. Not checked in the app.
+
+## `2026-11-03.2` — Report "- Plan :" field no longer opens the Plan; Transfusi PRC calculator
+
+- **Root cause (parser).** A PJT Lt. 4 note had a pacemaker interrogation report under O (`*Laporan Interrogate 22/1/26*`, `- Summary : ...`, `- Plan : Check 1 year`). The known-alias matcher accepts `- ` as decoration and ` :` as the delimiter, so `- Plan : Check 1 year` was read as OUR Plan heading. The Plan section then ran from that line through every study below it (echo full study, bedside echo, hemodynamics, lung ultrasound), and the real `*Plan:*` was merged in after them.
+- **Fix.** `isReportField` in `parseSections.ts`: in the O region, when the previous heading is a report block (a `custom_` section), a BULLETED line naming S, A, P or Terapi with a value on the same line is that report's field, not a heading. It is skipped before `lastOwn` is set, so it does not count as the Plan having begun. An unbulleted `Plan: x` or a `- Plan:` that owns its line after a report still opens the Plan (tested).
+- **Calculator.** `domain/calc/transfusion.ts` + `TransfusionCard` (Kalkulator → Ginjal & cairan): PRC volume = ΔHb × BB × 4, bag count from a user-entered cc per kantong (default 250, since it varies by blood bank). Sources on the card: Morris et al., Arch Dis Child 2005 (formula table; notes these formulae underestimate), and NICE NG24 (1 unit ≈ +1 g/dL in a 70 kg adult, single-unit then reassess).
+- **Not done.** No whole-blood (×6) factor: no citable source found for it. No thresholds or targets (FFP, TC, cryo dosing not added). Not added to the floating calculator on the SOAP page. Calculator not rendered in the browser or on a phone. The parser rule was not run against the Lt. 4 / Lt. 5 export corpus.
+
+## `2026-11-03.1` — Phone patient page: the DPJP row folded into the chips row
+
+- **Why.** Avi, 3 Nov: "so crowded". Measured on a 412 px phone: the note began 273 px down (the sticky header 101 px; then the DPJP summary row 53, the tool-chip row 61, the date strip 57). On a phone with the browser toolbar showing (~650 px) that is about 40% of what is visible.
+- **Change (below 640 px only).** `renderDpjpLine` returns nothing on a phone. The DPJP information is one chip, last in `renderPhoneChips` (initials, "Poli hari ini" / "Poli besok" when the clinic is today or tomorrow, an accent "6MWT" for the three consultants who get that instruction, and a chevron); its sentences (`renderDpjpDetails`, extracted from the old row so both layouts share them) open under the chips row. The chip is LAST so Catatan, Checklist and Periksa lagi keep their positions: first, it pushed the amber findings chip off the right edge at 412 px. Note now starts at 220 px (−53).
+- **Also.** The "other device has this note open" banner is one line on a phone (it was two).
+- **Not done, and why.** Merging the name into the top bar (option A, which Avi accepted in principle) does not fit: the back button, sync dot, Visite, Salin and ⋯ leave about 140 px for a title at 412 px, which truncates real names, and the "Salin RM" button has no other home. `IdentityBar`'s own comments make identity the one thing that must never be guessed at, so it is unchanged. Hiding the sticky header on scroll (option C) was not chosen.
+- **Not verified.** 412 px in the emulator only (no 360 px, dark, Senja); a patient with several clinic lines; a patient with no DPJP (the chip reads "Info").
+
+## `2026-11-02.7` — Section bands one line above their headings when the note starts with blank lines
+
+- **Root cause.** `buildBands` draws each heading as a `display: block` span and drops the newline after it (a block already ends its line). When a note, or a section, starts on a blank line, the first "heading" is the EMPTY first line: an empty block has no line box, so there was nothing for the dropped newline to end and the blank line disappeared from the mirror. Every band below sat one line higher than the textarea's text. A Versi trimmed to "Penunjang terbaru saja" starts with blank lines, which is how Avi's screenshot got there.
+- **Fix.** The newline is consumed only when the block has text (`headerEnd > section.start`); an empty block leaves it in the text that follows.
+- **Checked.** Reproduced in the emulator at 134% zoom with a note starting on three blank lines: bands 32 px above their headings (313 vs 345, 425 vs 457, 537 vs 569); after the fix a constant 4 px offset (the span box against the glyph box), the same for every heading. Tests: the "rebuild" invariant now re-adds a newline only after a non-empty block, and a new test pins the leading-blank-line case; it fails without the fix.
+- **Not verified.** Avi's own Versi text and the carried-over version flow; only a text of the same shape. Other mirror layers (`BookmarkMarks`, the measuring copy) use the whole body and were not touched.
+
+## `2026-11-02.6` — Impeccable phone audit, P2s: side stripes, DPJP chip, two tap targets
+
+- **Side stripes removed.** `CensusVerifier` severity cards (`border-l-4` per severity) now take a 1 px edge in the severity colour over its `-soft` fill (`SEVERITY_EDGE`, `bg-surface` dropped from the three `<li>`s so the fill is not fighting it); `SensusCompare` block tone is a 14% background mix instead of `borderLeft: 4px`; `DateRail` note rows (`border-l-2`) use the same full border as the strip pills, so one rule covers both orientations; `ShiftNoteEditor`'s frame lost a redundant `border-l-4` on a frame that is already accent-bordered; the List's H-1 / Pulang rows lost the `inset 4px` shadow (a stripe the detector cannot see) for an **H-1** / **Pulang** chip before the identity, which was already red/green. Left: the editor toolbar, `Changelog` and `ArchivePage` 2 px rules, which the detector did not flag.
+- **DPJP code.** Board card chips 11 → 12 px; `PhoneCanvas` blocks 10 → 11 px (the documented caption step).
+- **Tap targets.** The Saran row's patient name and the patient header's "Tambah identitas pasien" get a pseudo-element hit area (44 px) that does not move anything.
+- **Audit corrections.** Two of the audit's findings were wrong or already decided: the board search is an `<input>` inside a 44 px `<label>`, so its real target is 44 px; the board card icons are 28 px wide on purpose (`PatientCard`: 44 px tall, wider than the 24 px WCAG 2.2 minimum, to give the name ~34 px back). The footer links "Simpan versi" and "Riwayat perubahan" are already `min-h-tap`. None changed.
+- **Not done.** The WIP pill stays red (Avi, 2 Nov). Not rendered: Helper's census cards and Sensus compare, the vertical DateRail, dark and Senja.
+
+## `2026-11-02.5` — List Maker phone header: one row less above the tabs
+
+- **Why.** The impeccable phone audit (Pixel 7, 412 px) found the tabs 38% down the screen: floor chips, date, chief summary, then Panduan and Catatan Visite on a row of their own, all stacked below 420 px.
+- **Change (below 640 px only).** Date and Catatan Visite share one row from 360 px (the grid was `min-[420px]`, so a 412 px phone stacked them); the chief summary and, when open, the two chief fields take the full width; Panduan is a chip at the end of the floor strip (`onGuide`; the button next to Catatan Visite is hidden on a phone, unchanged from 640 px up).
+- **Left alone on purpose.** The Saran tray stays open by default: Avi designed it as the one place proposals appear, and it already collapses and remembers that. The audit's suggestion to collapse it on Denah is a product decision, not a spacing fix.
+- **Not done / not verified.** Checked in the emulator at 412 px only; 360 px and the dark theme not rendered.
+
+## `2026-11-02.4` — Ekspor Word: landscape three-column sheet + print page opens with it
+
+- **What.** Layout copied from the .docx Avi hand-edited from the old export (`SOAP Tn. Sardar Ali Bakkas 2026-11-02.docx`): A4 landscape, `w:cols` 3 with 720 twips gap, margins 720, Arial 7 pt (`sz` 14), single line spacing (240). Indents, bullets, header and footer are unchanged. `exportWord` now also calls `printDocument(soapPrintHtml(input))` after `deliverFile`, so the browser print dialog opens on the same sheet (CSS `column-count:3`, `@page` A4 landscape).
+- **Header tab.** The sample's header right tab sat at 9638 (the old portrait width, so the date floated mid-page). The tab now follows the text width (15398).
+- **Not done / not checked.** Not opened in Word or printed on paper. The print page has no "Halaman x dari y" (browser-owned). On phones the print dialog follows the share sheet.
+
+## `2026-11-02.3` — Panduan buttons get a border
+
+- **Why.** The quiet (borderless) Panduan button on List Maker and Helper read like a label on a phone (Avi agreed). Both are now the default bordered `Button`, the same look as Catatan Visite beside it.
+
+## `2026-11-02.2` — Helper: first-time Panduan; one shared guide component
+
+- **What.** "Panduan Helper": welcome, then one step per tab (Konfirmasi Jaga, Verifikasi List, Buat Sensus, Morning Report, Tersimpan), naming the real buttons (Salin Formasi, Terkonfirmasi, Salah orang?, Transkripsi dan periksa, Susun dengan AI, Perlu dicek…). Opens once per device (`plano.helper.guideSeen`, apart from the List Maker's); a **Panduan** button beside the "Periksa sendiri" note reopens it.
+- **Refactor.** `ListMakerGuide` became `components/common/PageGuide` (title, steps, storage key); steps live in `domain/guides/` (`guide.ts` core, `listMaker.ts`, `helper.ts`). The List Maker key is unchanged, so anyone who closed it does not see it again.
+- **Checked.** Emulator at 390 and 1280 px: opens once, stays closed after reload, the Panduan button reopens at step 1 (Helper and List Maker after the refactor). Not checked on a real phone or the installed window.
+
+## `2026-11-02.1` — List Maker: first-time Panduan (tutorial)
+
+- **What.** A step-by-step guide sheet, "Panduan List Maker" (`ListMakerGuide.tsx`, steps in `domain/floorList/guide.ts`). It opens by itself the first time a list is shown on a device; Lewati, Mulai pakai, ✕ or back all mark it seen (`plano.listmaker.guideSeen`). A **Panduan** button next to Catatan Visite opens it again at step 1.
+- **Steps (editor).** Welcome → Tempel (paste / Export chat, Baca, check, Simpan, Batalkan tempel ini) → Denah (tap a bed, search) → status, Saran and Chief Bangsal (handover offered from 16.00 the day before) → List (Salin teks, Word: Denah, PDF, Simpan edisi) → Riwayat, Analisis, Setelan.
+- **Viewer** ("lihat saja") gets 4 steps without Tempel, Saran, Simpan edisi or inviting; a test checks no such words leak in.
+- **Design choice.** A paged sheet, not coach marks pointing at buttons: the List Maker head re-lays itself per width (folded chiefs on a phone), so anchored bubbles would drift. A blocked localStorage counts as seen so it never reopens on every visit.
+- **Not checked.** Unit tests only; not rendered in the emulator, phone or laptop.
+
+## `2026-11-01.8` — Chief handover is suggested hours before 07.00, not at 07.00
+
+- **Why.** The Saran tray offered "Terima" for the Chief Bangsal handover only inside jam dinas (Mon–Fri 07.00–16.00). The List is printed hours before 07.00, so the printed chief was always the old one. Before 07.00 there was only the passive line "N pasien ganti chief · Sen 07.00".
+- **Change (Avi's choice, 1 Nov 2026).** `chiefSuggestions` no longer checks the clock: the handover is open from the end of the previous jam dinas (16.00) on, which is every hour that matters (evenings, nights, weekends). Terima changes the chief at once, so the printed List is already right. The passive "later" line (`Tray.later`, `nextJamDinas`, `isJamDinas`, the `ignoreClock` option) is gone.
+- **Abaikan** now holds until the end of the current cycle (`handoverCycleStart`: the latest weekday 16.00 not after now), not until 07.00. Dismissed Monday 10.00: quiet through Monday 15.59, asked again at 16.00 for Tuesday. Dismissed Monday 04.00: quiet for that morning's jam dinas. Saturday/Sunday dismissals hold until Monday 16.00. A patient with no chief at all stays dismissed for good, as before.
+- **Side effect to know.** A patient who arrives from IGD at 17.00 now shows "Chief → Kirana" at once (it used to wait until the next 07.00). Tap Abaikan if the old chief should stay for the night.
+- **Not checked.** Unit tests only (chiefHandover, suggestionTray); not seen in the UI.
+
+## `2026-11-02.1` — Desktop tabs in a narrow installed window (split screen)
+
+- **Root cause.** `useDesktopTabsEnabled` needed `(pointer: fine)` and 900 px, or 768 × 600 by touch. A colleague snaps Plano beside SIMGOS (photo: about 600 px wide, so the phone layout with its bottom bar), which met neither clause, so no strip.
+- **Fix.** A third clause: `(any-pointer: fine) and (min-width: 480px) and (min-height: 400px)` (`DESKTOP_TABS_ROOM`). `any-pointer`, not `pointer`, because a touch laptop can report coarse as its primary pointer. A phone is out by three independent tests: portrait width < 480, landscape height < 400, and no fine pointer; a flat folded phone has only touch.
+- **Layout.** The shell already sizes from `--app-h` (`AppShell`, the auth screens, `PatientPage`), so the phone layout under a strip needs no change; rendered to confirm.
+- **Not done / not verified.** Seen in the emulator at 620 × 760 only (strip forced on by overriding `matchMedia`'s display-mode); not on the colleague's machine. Below 480 px there is still no strip.
+
+## `2026-11-01.7` — List Maker: desktop bottom gap, and the List tab's side panel no longer starts behind the sub-tab bar
+
+- **Root cause (gap).** `ListMakerPage` had `pb-24` at every width. `PageFrame` and Settings use `pb-24 sm:pb-10`: the 96 px is phone clearance for the bottom tab bar and floating buttons, and from 640 px there is no bottom bar. Now `sm:pb-10`; phones unchanged.
+- **Root cause (clipped panel).** The side panel was `lg:sticky lg:top-16` (64 px) but the sub-tab bar is taller than that on a touch laptop (44 px buttons: about 72 px with its padding, seen in Avi's screenshot), so the panel's first ~8 px, plus its own scroll, started behind the bar. `ListMakerTabs` now measures its height into `--lm-tabs-h` (ResizeObserver, removed on unmount, like `--tabs-h`), and the panel's `top` and `max-h` read it.
+- **Not done / not verified.** Checked in the emulator at 1920×1008 only; a 120-patient list (the case in the screenshot) was not seeded. Phone widths unchanged and not rechecked.
+
+## `2026-11-01.6` — Active List Maker tab: the yellow fill uses `--warn-soft`
+
+- **Why.** `.5` mixed `--warn-strong` at 38% over `--bg`; in light mode amber over a cool grey reads tan-orange, not yellow. The active tab is now `--warn-soft` (the token the inactive tab already used) with the 55% tinted edge; the inactive tab is that fill at half strength, so active reads as the stronger of the two.
+- **Checked.** Rendered in the Firebase emulator (`npm run emu` + `npm run dev:emu`, fake patients, desktop tab strip forced by overriding `matchMedia`), Terang and Gelap, 1920×1008: one ✕ in the search, no bar on the tab, head and sub-tabs as intended, sticky sub-tabs keep a gap over scrolled rows. **Not checked:** Senja, a phone width, and a real installed window.
+
+## `2026-11-01.5` — List Maker spacing pass: one search clear, no yellow bar on the active tab, head and sub-tabs re-laid
+
+- **Root cause (double ✕).** The search is `type="search"`, which Chromium decorates with its own clear button, and the page drew a second one. Fixed with `[&::-webkit-search-cancel-button]:appearance-none` on the three inputs that draw their own clear (List Maker, Catatan, Checklist); the other `type="search"` inputs have no clear of their own and keep the native one. The List Maker's was a text `×`; it is now `IconClose`, like the other two.
+- **Root cause (yellow bar).** `DesktopTabs` gave the active List Maker tab `shadow-[inset_0_3px_0_var(--warn-strong)]`, a 3 px bar that no other tab has. Now the active one is a 38% `--warn-strong` fill over `--bg` with a 55% tinted edge; the inactive one is unchanged.
+- **Root cause (side panel).** The List tab's right panel is `sticky` with `max-h: 100dvh - 5.5rem`, which ignores the 44 px tab strip (`--app-h`), so its last ~20 px sat below the window and could not be scrolled to. Now `var(--app-h, 100dvh)`.
+- **Head layout.** The date, Chief Bangsal and Chief shared one row, so the Chief box, as tall as its chips (four lines), left a dead pocket under the other two, and Catatan Visite sat alone on a row. Row 1 is now date | Chief Bangsal | Catatan Visite (the page passes the button as `actions`); the Chief box is row 2 across the block. Phones keep the folded chiefs and the button on its own row.
+- **Sub-tabs.** On a wide window the six tabs shared the full width at 12 px. At 640 px and up they are content-sized (`sm:w-fit`, `sm:flex-none`, 14 px); phones are unchanged. The sticky bar gained 4 px below it so rows that scroll under it do not meet its edge, and the search sits 8 px under the tabs instead of 16.
+- **Not done / not verified.** Written from Avi's screenshots and the source; not seen rendered here (the List Maker needs a signed-in session), so spacing values and the new tab yellow still need a look in the installed app, light and dark and Senja. `check:contrast` covers tokens, not this tab fill.
+
+## `2026-11-01.4` — Desktop tabs: a tab keeps its scroll and the List Maker's day; the List Maker tab is yellow
+
+- **Root cause.** A tab switch in `DesktopTabs` is `navigate(url, { replace: true })`, so the page remounts. Scroll came back only on Back (`AppShell.useRestoreScroll` ran for `Pop` only, from the history key, and a replace gets a new key), and the List Maker kept the picked day in `useState`, so both were lost on every switch. The sub-tab (`?tab=`) and floor (`?f=`) were already in the URL, which the tab stores.
+- **Fix.** `DesktopTabs.go` records `#main`'s scrollTop of the tab being left and passes the target tab's value as navigation state (`tabScroll`); `useRestoreScroll` uses it for non-Pop navigations, with its existing retry until the list has filled. The List Maker's day is the `d` URL param (written only when a day is picked, so "today" still follows the clock). Yellow: `tabAccent` (`appTabs.ts`, tested) picks the `/list` tab; styled with `--warn-soft`/`--warn-strong` so it follows the theme.
+- **Search and open boxes.** Kept in a module-level slot in `ListMakerPage` (`kept`), so they survive the remount for the session; a reload clears them. One slot: two List Maker tabs share it, and a box whose patient is not on the loaded list yet renders empty until the roster arrives.
+- **Not done / not verified.** Tabs only exist in the installed desktop app, so none of this was seen running: typecheck, tests and build only. Not restored: scroll when two tabs show the identical URL (no navigation happens). A scroll restore competes with the page still loading; it retries for about 1.5 s.
+
+## `2026-11-01.3` — Typing lag in Versi SOAP and Catatan pasien: closed sheets no longer re-render per keystroke
+
+- **Root cause.** The draft lives in hooks called by `PatientPage` (`useBodyEditor`, `useShiftNotes`, `usePatientNotes`), so every keystroke, in the day SOAP, a Versi/jaga note or the Catatan pasien box, re-renders the whole 2,900-line page. Eleven sheets are mounted all the time (Salin, Bandingkan, Identitas, Rapikan, Rapikan SOAP, Tindakan, Lab, Pembuka, Versi baru, Ringkasan, Riwayat) and none was memoised, so each ran its hooks every time even when closed. `CopySheet` alone composes the full report, scans it for non-ASCII and checks identity against the note on each render. Nothing visible came of any of it.
+- **Measured** (emulator, dev build, desktop, same ~4.2k-character Versi note, React commit duration per keystroke, median of 25): Versi SOAP 14.1 → 6.6 ms, Catatan pasien 10.3 → 5.5 ms. A phone will be several times slower than both, which is where the lag showed. Production build and a real phone not measured.
+- **Fix.** `memoWhileClosed` (`Sheet.tsx`): `memo` with a comparator that skips the render when the sheet was closed and still is. `PatientPage` uses it for the eleven sheets. The render that opens a sheet carries fresh props, and the sheets already reset their own state on that edge (`if (open)` effects in Salin, Rapikan SOAP, Pembuka, Versi baru, Bandingkan), so nothing is lost by skipping the closed renders.
+- **Not done.** The rest of the page still re-renders on each keystroke (about 5–6 ms in dev: date rail, jump bar, section bands, buttons). Taking that out means moving the draft state out of `PatientPage` or memoising its children behind stable props; it is a larger change and was not attempted. Only the closed sheets were removed. No unit test: the change is render scheduling, checked by timing in the browser.
+
+## `2026-11-01.2` — Firestore reads: the date rail listens to the last 4 days, older days read once per session
+
+Read-cost fix B, the safe variant (Avi chose it over a summary on the patient document).
+
+- **Root cause.** `subscribeEntryDates` listened to `entriesCol(patientId)` whole, bodies included, only to know which days exist, which have a body, and each day's live shift notes. Billed one read per day of stay on every open after 30 min away, and one more per autosave of the open day.
+- **Why not a summary on the patient (the original B).** Plano has no forced update: devices on an older build keep writing entries without maintaining a summary, so on updated devices a day or a SOAP jaga could be missing from the rail until every device reloads. Rejected for that reason.
+- **Fix (`entries.repo.ts`, `useEntry.ts`).** Live listener on `documentId() >= today − ENTRY_DATES_LIVE_DAYS (4)` (`igd` sorts after the digits, so it is in it). Older days: `getDocsFromCache` at once, then `getDocs` once per patient per session (`olderDaysRead`, set only for a server answer). The first emission waits for the live part, so the "latest written day" is never decided from older days alone. Summary rules unchanged, moved to `summarizeEntryDays` (tested, `entryDays.test.ts`). `useEntryDates` takes today from `useClinicalToday`, so the window moves at midnight.
+- **Checked.** `npm run verify` green. Emulator, rules on: a patient with IGD, days −8, −7, −6 (SOAP jaga only), −5, −3, −1, today; the rail showed all of them, the −6 jaga note included (outside the window, so from the once-per-session read). Reads not measured.
+- **Limits.** An edit or SOAP jaga on a day older than 4 days, made on another device during this session, shows on the next session. The open day's autosave is still billed once on this listener when it is in the window (normally it is).
+
+## `2026-11-01.1` — Firestore reads: an autosave writes the patient document only when the card changes
+
+From the read-cost analysis of 1 Nov (fix A of A–E; B, the date-rail summary, is next as its own version).
+
+- **Root cause.** `writeBody` always called `touchEntryMeta`, which always `updateDoc`'d the patient with `updatedAt: serverTimestamp()`. So every autosave (0.8 s idle, at least every 15 s) changed the patient document, and every listener holding it was billed one read: the board feed (`active` never stops), `usePatient` on the patient page, and the board of any other device or member. With the entry and entry-dates listeners that is ~4 reads per autosave on the typing device alone, about half of them for the patient document, although typing in S/O/P changes nothing the card shows (preview is the A region; DPJP/KJS from the DPJP lines; `labPlans` from the Plan's lab lines).
+- **Fix.** `touchEntryMeta` builds the same fields as before (preview fields when `previewMovesTo`, plus `derivedPatientFields`) and compares them with the cached patient (`getDocFromCache`, already read there) through `patientMetaChanged` (`src/domain/patientMeta.ts`, JSON comparison, true when there is no cache). Unchanged: no write; a per-patient trailing `{ updatedAt, updatedBy }` write goes out `TRAILING_TOUCH_MS` (60 s) after the last skipped save, so what keys on `updatedAt` (VisiteSheet refetch, `useArchiveText` cache key) still moves once per editing burst. A real change writes as before and cancels the trailing timer.
+- **Checked.** `npm run verify` green; `patientMeta.test.ts` (4). Emulator, rules on, through the patient page: first SOAP wrote the preview; four autosaves in P took the entry from rev 1 to 5 with the patient `updatedAt` unchanged; ~60 s later one trailing write moved `updatedAt` (preview unchanged); editing A wrote the new preview at once. Reads themselves not measured (the emulator does not bill); watch the console for a few days.
+- **Limits.** The trailing write is lost if the tab closes within 60 s (only Visite refresh and archive-search caching depend on it). Two devices editing the same note: the card can show the other device's A until the next change. The entry listener and `subscribeEntryDates` are still billed per save (fix B).
+
+## `2026-10-31.17` — Service worker no longer swallows /__/auth/handler
+
+Avi on tabulaplano.web.app: "Masuk dengan Google" opened a popup at `tabulaplano.web.app/__/auth/handler?apiKey=…` that rendered Plano's own sign-in page.
+
+- **Cause.** With `VITE_FIREBASE_AUTH_DOMAIN_HOSTING=tabulaplano.web.app` the auth handler is on the app's own origin. The SW's `NavigationRoute` (SPA fallback) serves `index.html` for every navigation in scope, including Firebase Hosting's reserved `/__/` paths, so the handler page never loaded. With the old auth domain (`plano-85e9e.firebaseapp.com`) the handler was cross-origin and out of the SW's reach, so GitHub Pages never hit this.
+- **Fix.** `sw.ts`: `/^\/__\//` added to the navigation denylist; those requests go to the network (Hosting serves its handler).
+- **Rollout.** The old SW keeps control until the new one activates (no skipWaiting by design): tap *Muat ulang* on the update banner, or close every Plano tab, before retrying sign-in.
+- **Checked.** `npm run verify`. Not reproduced against production before the fix (re-verify on tabulaplano.web.app, popup and iPhone redirect).
+
+## `2026-10-31.16` — Carry device-only settings to the new address (dormant)
+
+Plano moves from GitHub Pages (nottezio.github.io/Plano) to Firebase Hosting (tabulaplano.web.app) so the repo can go private. A new origin starts with empty browser storage: Firestore data returns at sign-in, localStorage-only settings do not.
+
+- **`domain/moveSettings.ts` (new, pure).** `isCarriedKey`: every `visite.*` / `plano.*` key except device identity (`deviceId`, `chunkRecovery`, `iosInstallHint`), the PIN, `ai.key`/`ai.flags` (already synced), `plano.clipboard.last` (patient name/RM), Firestore mirrors (`visite.jaga.*`, `plano.sensus.v1/v2`), `visite.access.*`, `visite.sessionLog`, `plano.move.*`. `packSettings` packs to JSON under 300 KB, smallest values first, reports skipped keys. `planApply` writes only carried, string-valued keys that are absent. `parseMovedTo` accepts https, or http on loopback for local testing. `moveRole` → none / old / new by origin.
+- **Rules + repo.** `users/{uid}/private/move`: owner only, `devices` map (device id → { label, at, json }) with at most 3 entries, deletable. `move.repo.ts`: write own entry (`setDoc` merge, resolves on server ack), read from the server (written on another origin), remove used/ignored entries (`FieldPath`, whole doc when none remain). Carried through Firestore, not the URL: stickers and census history can hold patient names, and URLs land in history.
+- **UI (`MoveBanner`, top of `<main>`).** Old address: "Plano pindah ke …"; *Bawa pengaturan & buka* flushes editors, waits up to 15 s for Synced (refuses otherwise), uploads (20 s timeout), opens the new address; *Buka tanpa membawa* link; × hides for the page. New address: one *Pakai (device · date)* per source device, applies then reloads (stores read settings at start-up); *Abaikan* deletes the copies.
+- **Dormant.** Shows nothing unless the build has `VITE_MOVED_TO` (repository variable, passed in `deploy.yml` and `firebase-hosting.yml`). Avi decides when to switch it on.
+- **Checked.** Unit tests (13). Emulator, two origins (5174 old, 5175 new): banner shown, upload, navigation, offer, apply wrote theme, refRanges and a sticker (`visite.board.stickers.mine`), PIN and clipboard not carried, offer gone after apply. Screenshots at 390 px (both) and 1280 px (old). Not seen on a real phone or against production rules (re-verify after the rules deploy).
+- **Not done.** Device label is the coarse `describeDevice` ("Perangkat lain" for unknown UAs). The new-address offer is read once per start while copies exist.
+
+## `2026-10-31.15` — Versions carry on from the earlier day's version
+
+Avi's dr. AHA routine: full SOAP to the chief, then a shortened "SOAP AHA" version for the DPJP. Each morning the full SOAP carries forward, the version does not, and nothing records which full-SOAP lines changed overnight, so a change was easy to miss in the remade version.
+
+- **Cause.** The version is a hand-kept second copy with no link to the SOAP it was made from. Remaking it from today's SOAP redoes the hand shortening; copying yesterday's means remembering the overnight changes.
+- **`domain/versionCarry.ts` (new, pure).** `carryVersion(yesterdaySoap, yesterdayVersion, todaySoap)` line-diffs the two SOAPs (`diffSegmentsByLine`, trailing spaces ignored) and replays each hunk onto the version: (1) changed lines found once as whole lines → replaced (blank line left doubled by a removed block collapsed); (2) equal line counts → per line, a whole-line match or a unique, word-bounded substring inside a version line (folded vitals/lab rows; needles under 4 chars refused); (3) pure additions → next to the nearest unchanged neighbour the version has (equal, or a folded heading starting with it), walking past neighbours the version left out and stopping at one it has twice; blocks set off by blank lines go above the next neighbour, list lines below the previous. Anything else, and any ambiguity, is `pending` with old and new text. Tests on a synthetic AHA-shaped SOAP and version.
+- **`penunjang.ts`.** `penunjangBlocks` also opens a block at a folded heading (`*Heading (dd-mm-yyyy)* text`, bold part alone must read as a dated heading). Root cause found by the carry test: the shortened version folds EKG/lab onto their headings, so "penunjang terbaru saja" never dropped the old EKG in it. Affects `insertLab` and Visite too (they now also see folded blocks); all existing tests unchanged and green.
+- **UI.** `NewVersionSheet`: "Mulai dari" chips (that day's versions, dashed, and "SOAP hari ini"); defaults to the earlier version named like the default title, else that day's newest, and takes its title. Shows the auto-applied changes (folded list) and the pending count. "Buat versi" is disabled while the earlier SOAP is read or when it cannot be (offline, not cached). `PatientPage`: the earlier day = newest earlier date with a non-cleared version in `shiftNotesByDate` (already live; a weekend gap pairs Friday's version with Friday's SOAP); its SOAP is read once per sheet opening by the new `fetchEntryBody` (one `getDoc`). Pending changes show in `CarryPendingPanel` (warn `Callout`) above that version's editor until "Selesai".
+- **Known gap (stated in the sheet).** A change made to the earlier day's SOAP after its version was made is in both SOAPs, so it is not carried. Pending list is page state only: gone after a reload.
+
+## `2026-10-31.14` — Restore sees patients outside the 30-day roster; phone header folds the chiefs
+
+Rest of the List Maker audit (items 4 and 5).
+
+- **Restore (`RestoreDialog`).** Root cause: `planRestore` compared the point with the live roster only, which since .12 drops departures older than 30 days. A patient in the point who left before that was planned as `recreated`: the point's copy was `set` over their record, and the pre-restore point listed them in `added`, so undoing that restore deleted the document. Fix: after reading the point, keys in `point.patients`/`point.added` missing from the live roster are read once with `readRosterPatients` and joined (`[...older, ...roster]`, roster wins in the Map) for both `planRestore` and `pointBeforeRestore`. Unreachable keys (offline) stop the dialog with "butuh koneksi" instead of a wrong plan. Side effect, intended: Batalkan tempel of an old paste now removes an added patient even if they left over 30 days ago (as before .12).
+- **Phone header (`ListMakerHeader`).** Below 640 px the Chief Bangsal and Chief fields sit behind a summary button ("Atur chief", "Bangsal: … · Chief: …", chevron), same pattern and storage shape as the Salin fold in .8 (`plano.listMaker.chiefsOpen`, folded unless left open; storage that throws reads folded). The fields' wrapper is `contents` when shown, so the 420/640 px grid is unchanged; `sm:contents` keeps the laptop as it was. Tabs moved from ~835 to ~670 px (device px at 390 width, 2x), first patient on screen without scrolling.
+- **Checked.** `npm run verify` green. Emulator: two pastes, then the updated patient set pulang 40 days ago by REST; Batalkan tempel listed them under "Masuk list lagi" (was "Dibuat lagi"). Phone 390 px folded/open screenshots, no horizontal overflow, open state remembered across reload; laptop 1280 px shows no summary button.
+- **Not done.** Catatan Visite still takes its own row on a phone. `kmr 417` still gives no room.
+
+## `2026-10-31.13` — List Maker verification fixes: chat date order, offline Baca, manual add overwrite
+
+From a List Maker audit (paste, 30-day roster, phone layout) against the emulator and parser probes.
+
+- **Chat date order (`chat.ts`).** Root cause: `isoDate` decided day/month order per header; a part over 12 swapped only that header. Android exports were always taken month-first and COPIED day-first, so an Indonesian Android export read `12/10/26` as 2026-12-10 next to `13/10/26` = 2026-10-13. `latestOf` then kept the older SOAP (future stamp), and it was stored with that stamp, so `pasteDiff` never found a later real SOAP newer. Fix: `monthFirstIn` decides once per header shape per paste (any header with a part over 12 settles all of them; otherwise the old default). Test in `floorList.test.ts` (Android day-first, US copied month-first, evidence in a later message).
+- **Offline Baca (`PastePanel`, `readRosterPatients`).** .12 stopped the whole Baca when any key outside the live roster could not be looked up, i.e. any new admission offline, so no SOAP update could be saved without signal. `readRosterPatients` now uses `allSettled` and returns `{ patients, unchecked }`; unchecked keys are left out of `pasteDiff` (never proposed as `add`, which could overwrite an old record) and listed in a warn callout. Also: a `readTurn` ref drops a lookup answer that a later Baca or a text edit has superseded (Baca is async since .12).
+- **Manual add overwrite (`ManualPatientSheet`).** It `setDoc`'d the whole patient under `rm:<RM>` without looking, so an RM already on the list (or departed) lost log, chief, colour, dates, tags. Now: live roster first, then `readRosterPatients` for the key; `manualAddAction` (pure, tested in `floor.test.ts`) → `onList` refused with the patient named, `readmit` = report + status/leftAt/pindahKe fields with a "Masuk lagi (pasien manual)" log entry, `add` only when no document exists; an unreachable lookup refuses with "butuh koneksi". Both sheet mounts (ListMakerPage, ListPanel) pass `roster`.
+- **Checked.** `npm run verify` green. Emulator: see the session notes for the paste/offline/manual runs.
+- **Not done.** `planRestore` still compares a point with the live roster only, so restoring an old point naming a patient gone over 30 days treats them as recreated (and undoing that restore deletes the record). Phone header above the tabs (date, Chief Bangsal, Chief, Catatan Visite) still takes about half the screen. `kmr 417` (lowercase abbreviation) gives no room; iOS Indonesian-locale headers without a comma are not recognised as headers.
+
+## `2026-10-31.12` — Firestore reads: roster listener holds 30 days of departures
+
+Avi chose "last 30 days" for the roster (the next read sink after .11).
+
+- **Root cause.** `subscribeRoster` listened to the whole `floors/{id}/patients` collection: every patient ever on the floor, Pulang/Pindah included, never pruned. Every List Maker open by every member after more than 30 min away re-read all of it (Firestore bills a resumed listen older than 30 min as a new query), so the cost grew with the floor's history, not with use.
+- **Fix (`floors.repo.ts`).** Two listeners joined: `status == 'dirawat'`, and `leftAt >= now − ROSTER_LEFT_DAYS (30)` filtered to `status != 'dirawat'` (a readmitted patient keeps a stale `leftAt` until the write lands). Single-field queries, automatic indexes, no rules change.
+- **Readmissions older than 30 days.** `pasteDiff` matches by key against the roster; a key the live roster lacks would have been an `add` (a `set` that overwrites the old document, and whose Batalkan tempel deletes it). `PastePanel.read` is now async: keys not in the live roster are read once by id (`readRosterPatients`, 1 read each, a missing doc included) and joined before the diff, and into `touchedPoint`. If that read fails (offline, not cached), Baca stops with a message instead of proposing adds.
+- **Legacy move.** "Roster empty" (which offers the pre-12.12 move, itself a batch of `add`s) now also requires `rosterHasAny` (`limit(1)`, 1 read) to be false, so a list whose patients all left over 30 days ago is not taken for empty.
+- **Behaviour change (accepted).** Pulang/Pindah in ListPanel and the Analisis departures show only the last 30 days. A departure with no `leftAt` (none are written that way now) is not shown. Restoring an old point that names a patient gone over 30 days lists them as "recreated" and rewrites the point's copy.
+- **Checked.** `npm run verify` green. Emulator, rules on, a test floor with one Dirawat patient, departures 5, 29 and 60 days ago, and one readmitted with a stale `leftAt`: the live roster held the first four plus the readmitted once, not the 60-day one; `readRosterPatients` found it (and skipped a missing key); `rosterHasAny` true. Pasting a newer SOAP for the 60-day patient: without the lookup `pasteDiff` called them fresh (the overwrite), with it a readmission. Test floor deleted. Not seen in the List Maker UI; reads not measured in the console.
+- **Not done.** `ManualPatientSheet` add is unchanged (it never looked at the roster before writing). No unit test: Firestore wiring, checked in the emulator instead.
+
+## `2026-10-31.11` — Firestore reads: board peek and Visite read a window, not the admission
+
+Avi's console (31 Oct): reads ~40–55K/day since 19 Oct against the 50K/day free quota, paid tier touched on 20, 21 and 27 Oct; writes far under quota.
+
+- **Root cause.** `PatientPeekWindow` and `VisiteSheet` showed ONE note (today's, else the newest with text) but read it with `fetchEntryBodies`, a server `getDocs` of every entry of the admission (a 14-day stay = 14+ reads per open). `VisiteSheet` also keyed its effect on the `patient` object; the board list hands over new objects on every snapshot, and every autosave anywhere touches a patient doc (`touchEntryMeta`), so during a round an open Visite re-read the whole admission on every save by anyone on the board.
+- **Fix.** New `fetchLatestEntryBody(patientId, today)` in `entries.repo.ts`: `where(documentId(), '>=', today - 3 days)` (ids are the dates; the range is open upwards, and `igd` sorts after the digits so it is always in it), same filter as before (shared `toBodies`). Exact whenever the range holds a dated day with text; otherwise it falls back to the full read (so a patient with only an IGD note or none costs one extra read). Not `orderBy(documentId(), 'desc')`: the emulator rejects it ("does not support descending key scans"). `VisiteSheet` now re-reads only when the shown patient's own `updatedAt` changes. No index or rules change.
+- **Checked.** `npm run verify` green (one earlier run failed three test files on `node_modules` files OneDrive had not loaded, `Cannot find module …date-fns…`; the rerun passed all 201). Emulator, rules on: 7 synthetic patients (12-day stay, no note today, a week of empty days then older notes, a future-dated day, IGD only, empty day, no entries): the new reader returned the same date and body as the old full read in all 7. Test data deleted afterwards. Not seen in the peek window or Visite UI, not measured in the Firebase console.
+- **Not done.** (1) The floor roster listener (every patient ever on the floor, re-read in full on each List Maker open after 30 min) is unchanged: paste needs departed patients to recognise readmissions, so trimming it is a product decision. (2) `subscribeEntryDates` on the patient page still reads every entry with its body on open; making it cheap needs the date list on the patient doc. (3) Board search with "cari di isi catatan" on reads every archived patient's entries once per app session (in-memory cache only). (4) `PatientPreviewSheet` is not mounted anywhere (dead code), left as is. (5) No per-collection read figures exist; ranking above is from the code, not measured.
+
+## `2026-10-31.10` — Board card: SOAP status only when missing
+
+From the board re-render (realistic notes, some checklist ticks): "● SOAP hari ini" was the same words on every card once the round was under way, and took the width the next-step label needed (desktop showed "5/8 · Inp…").
+
+- **Change (`StatusRail` in `PatientCard`).** Today's SOAP renders nothing visible (an `sr-only` "SOAP hari ini sudah ditulis." keeps it for screen readers). "○ SOAP kemarin" / "○ Belum ada SOAP" are now `font-semibold` at full opacity instead of `opacity-70`, so the exception is the thing that stands out. No new colour: the card colour already means checklist progress.
+- **Side effect.** On cards with today's SOAP the progress strip (`flex-1`) is wider. The 0/8 strip was proposed for hiding and declined.
+- **Checked in the emulator.** Phone 390 px and laptop 1280 px with 12 patients with today's SOAP, one with yesterday's only and one with none: the two exceptions read in bold, the rest show strip + "0/8 · Visite pasien" untruncated on most desktop cards.
+
+## `2026-10-31.9` — Phone patient page: less furniture above the note
+
+From the UI critique rendered at 390×844: eight bands sat above the note (it began at ~410 px), and the format toolbar, dimmed to 40 % opacity including its background, sat over the note's last lines while reading.
+
+- **Date strip.** `DateRail` takes a `trailing` slot (strip only). Below `sm`, PatientPage passes `JagaAddButtons` (new export in `JagaBar.tsx`, same buttons and conditions), so "+ Versi" / "+ SOAP jaga" sit after the days and before "Tanggal lain". `JagaBar` hides its add buttons below `sm` and hides itself there when the day has no jaga notes or versions; with notes it still lists them.
+- **Fill-from-note prompt.** The "Dari catatan: … · Isi identitas · ×" `Banner` is gone; `IdentityBar` takes an `action` slot and PatientPage passes an "Isi RM 001245" button (one missing fact shows its value; several show their labels, all values in the accessible name) plus an × "Abaikan usulan identitas". Same handler (`fillPatientFromNote`) and dismissal. The identity row now also renders when only the prompt exists (a blank patient), which is when it matters most.
+- **Toolbar.** Below `sm` the sticky toolbar is `hidden` unless the editor is focused, with a 300 ms linger after blur so a touch browser that blurs before the click does not hide the button under the finger. Toolbar buttons already `preventDefault` on mousedown, so focus stays in the note (checked: tapping Bold left focus on the textarea). Laptop keeps the dimmed toolbar.
+- **Not done, on purpose.** The proposal also merged the DPJP/diagnosis line into the identity block. Dropped: that line was moved out of the sticky header on 2026-10-05 so it does not follow the scroll, and merging it would put it back. Tablet and laptop untouched (their toolbar is still translucent over the text).
+- **Checked in the emulator.** Phone 390×844: note top 410 → 306 px; toolbar hidden while reading, solid while typing; "Isi RM 001245" filled the RM (row then shows "Salin RM"); strip scrolled to the end shows + Versi, + SOAP jaga, Tanggal lain. Laptop 1280×800 and tablet 820×1180 unchanged. Not tried on a real phone, and the 300 ms linger is not tested on a real touch browser.
+
+## `2026-10-31.8` — Salin on a phone: preview first
+
+From the UI critique rendered at 390×844: Preset, Format, Bentuk and Bagian filled the sheet and the preview textarea began below the fold, so the text Avi selects by hand needed a scroll for every patient.
+
+- **Change (phone only, `CopySheet`).** Format, Bentuk, the shape fields, Bagian and Penyesuaian sit in `#salin-options`, `hidden` below `sm` unless opened. A summary button above them (`sm:hidden`, `aria-expanded`) reads everything that changes the copy: format, shape (with the jaga time), the chosen parts, "tanpa judul bagian" and "penunjang terbaru saja" when on. The identity-mismatch callout, the DPJP "biasanya meminta" callout and the Preset chips stay visible. Open/folded is remembered per device (`plano.salin.optionsOpen`, folded by default; storage errors read as folded). Laptop layout unchanged.
+- **Preview row.** The "Preview" heading is laptop-only so the count, "Pilih semua teks" and Teks/Tampilan fit one row on a phone; the textarea gets `aria-label` (it had no label). The count moved from `fg-faint` to `fg-muted`. The summary button's hover applies under `(hover: hover)` only, so a tap does not leave it grey.
+- **Checked in the emulator (390×844 and 1280×800).** Textarea top moved from below the fold to y≈425; with a realistic note the text through Terapi is visible on open. Choosing "A" in the expanded options updated the summary to "WhatsApp · Laporan harian · A" and the preview to the A section. Desktop screenshot unchanged.
+- **Not done.** The textarea keeps its fixed 26rem height on a phone, so its bottom still sits behind the copy button until the sheet is scrolled. Konsul's missing TB/BB warning is inside the folded options (only reachable after choosing Konsul, which opens them). Not tried on a real phone.
+
+## `2026-10-31.7` — Refused writes are shown, not just logged
+
+From a UI critique (rendered against the emulators): a write the server refuses looked exactly like success.
+
+- **Root cause.** Every repository write goes through `trackWrite` (`data/syncStatus.ts`). On rejection it only called `console.error` and settled the pending count, so the pill went back to "Synced". `SyncState` had no error state. A rules refusal (e.g. the undeployed `firestore.rules` from .29.9 onwards) or a quota error was invisible; the editor's status line said "Tersimpan" regardless.
+- **Change.** `SyncState` gains `{kind: 'error', failed, code, at}`. `trackWrite` counts refusals and keeps the Firestore code (code only, never the message, which can carry document paths), and logs `write-rejected` to the session log so it reaches feedback reports. The error is sticky until `acknowledgeWriteFailures()`: a later successful write says nothing about the refused one. It outranks offline (offline writes are queued, refused ones are not).
+- **UI.** `SyncPill` renders a red, worded button in all three places (board top bar "Gagal sinkron · N", desktop sidebar, phone patient header "Gagal" so the date stays readable). Tapping opens a sheet: the reason by code (`permission-denied`, `resource-exhausted`, `unauthenticated`, other), that refused changes are not resent, and to copy visible text before reloading; "Mengerti" acknowledges. The live region wraps the button: a `status` inside a button is dropped from its accessible name (found when the button had no name). The editor status line reads `sync.kind`: "Tersimpan di perangkat ini" offline, "Ada perubahan yang ditolak server" after a refusal, and moved from `fg-faint` to `fg-muted` (faint is ~3:1 on the canvas); "Synced" likewise.
+- **Checked.** Unit tests for saving → synced, refusal → error with code, sticky after a later success, count of several refusals. In the emulator: `updatePatient` on a non-existent patient returned a real `permission-denied`; pill seen on the phone board, phone patient header and desktop sidebar; sheet opened by role/name; "Mengerti" returned to synced.
+- **Not done.** No generic "retry": a rejected Firestore write cannot be replayed from here, and resending blindly could overwrite newer text. The error does not say WHICH document was refused (`trackWrite` has no context). Whether the text sync's editor keeps the refused text on screen after Firestore reverts its cache was not tested, so the sheet says "if it is still on screen". Not seen on a real phone.
+
+## `2026-10-31.6` — Tab strip on installed tablets
+
+Request: a tab-like structure on a friend's tablet.
+
+- **Root cause.** `useDesktopTabsEnabled` required `(pointer: fine) and (min-width: 900px)`, so any touch device never got the strip. Now also `(min-width: 768px) and (min-height: 600px)`; the height keeps a phone in landscape out. Still installed-only.
+- **Touch fixes in `DesktopTabs`.** The × on inactive tabs showed only on hover (`group-hover`), so touch could not close them: now always visible under `hover: none`. × and + get larger targets under `pointer: coarse`. Drag-to-reorder already used pointer events with `touch-none`.
+- **Not done.** Not tried on a real tablet or in an installed window. No Ctrl+click / Ctrl+Tab equivalents on touch (none exist). The strip's bar height (44 px) is unchanged. A tablet in a narrow split-screen (<768 px) gets no tabs.
+
+## `2026-10-31.5` — Transfer: copy to the recipient, sender keeps the original archived
+
+Avi: "for transferring a patient make a copy also from the sender and archive it".
+
+- **Change.** `acceptTransfer(patientId, uid, myName)` no longer takes ownership. It reads the original patient, its entries and checklists **from the server**, writes a new patient `{originalId}_{uid}` owned by the recipient (`domain/transfer.transferCopy`: active, undeleted, no Titipan/archive/transfer fields; tested), copies entries and checklists in batches of 400 (as `importData`), and LAST archives the original (`status: 'archived'`, `archive: {reason: 'pindah', note: 'Diserahkan ke …'}`, request cleared). The deterministic copy id makes a retried accept rewrite the same copy instead of adding a second. Revisions are not copied: they stay with the sender's original. Sender's sheet texts updated.
+- **Why this shape.** The sender keeps the whole record (revisions included) and edits they make later, even offline, land in their own archived original instead of being refused, which the ownership move could not do.
+- **Rules.** New `isPendingRecipient(pid)` lets the addressed account read `entries` and `checklist` while the request is open (not revisions). The recipient's update clause on the original no longer allows changing `ownerId`/`memberIds`; it may only clear the request, either leaving the rest as is (decline) or with `status == 'archived'` and `archive.reason == 'pindah'` (accept). Test checks the rule text.
+- **Checked in the emulator (REST, emulator tokens).** Recipient reads pending entries/checklist 200, stranger 403; recipient creates the copy, its entry and checklist 200; on the original: take ownership 403, archive with another reason 403, edit a field 403, archive as pindah + clear 200; afterwards recipient reads 403, sender still 200, original still owned by sender. Test data removed.
+- **Not done.** The Terima banner was not seen rendered (one app account in the emulator). A copy interrupted between the patient and the last batch leaves the request open with a partial copy until Terima is tapped again. Board images, documents and the canvas position are not copied (they belong to the account, not the patient). Rules still NOT deployed (this plus .29.9 onwards).
+
+## `2026-10-31.4` — Ubah SOAP saved the summary instead of the full SOAP
+
+Owner: a patient already on the list, given a text that holds a short summary ("Diagnosis:" only) and then the full SOAP of the same patient, ended up with Diagnosis only in the list.
+
+- **Root cause.** `SoapFloat.save` splits the text with `readReports` (one part per "atas nama" opening) and took `parts.find((p) => p.key === patient.key)`: the FIRST part with the patient's key, which is the summary. The `2026-10-30.5` summary rule lives in `latestOf`/`pasteDiff` and was never consulted here. Tempel onto an existing patient was already right.
+- **Fix.** `latestOf(parts).find(...)`: the later part wins, and a part with no Terapi never replaces one that has it.
+- **Tests.** floorList.test.ts: Ubah SOAP selection, and Tempel onto an existing roster patient (invented patient).
+- **Not done.** Not tried in the app or on a device. The earlier limit stands: a summary that does contain a terapi still wins when it comes later.
+
+## `2026-10-31.3` — Lab sheet: free each PDF after it is read or drawn
+
+Owner approved review finding 1 on be8a467 (.31.2).
+
+- **Root cause.** pdf.js keeps a parsed document (and the file's bytes, in its worker) until `destroy()` is called. `extractPdfText` only called `cleanup()`, which frees page caches but keeps the document; `PdfPreview` called neither. The preview also re-opens every PDF in the list each time one is added, so 4 dropped PDFs left 4 + (1+2+3+4) = 14 documents held for the session.
+- **Fix.** `extractPdfText` calls `loadingTask.destroy()` instead of `cleanup()` (pdf.js 6 has `destroy` on the loading task, not on the document). `PdfPreview` destroys each document in a `finally` once its pages are drawn (or the effect is cancelled); the canvases keep the pixels.
+- **Not done.** The preview still redraws every earlier PDF when one is added (speed only, not memory). Not tried in the app with a real PDF or on a phone; memory was not measured. No test (pdf.js worker + canvas).
+
+## `2026-10-31.2` — Lab sheet: PDF preview in the source box
+
+Request: the left box of "Format hasil lab" should show the PDF instead of only the text.
+
+- **Change.** `LabSheet` keeps the dropped PDFs (`pdfs`) and, when there are any, shows `PdfPreview` (new, `components/patient/PdfPreview.tsx`) in place of the textarea, with a Pratinjau PDF / Teks hasil lab toggle. The textarea stays one click away because the parser reads that text, and a misread value has to be correctable. Pages are drawn to canvases with pdf.js at the box width.
+- **Refactor.** `openPdf(file)` split out of `extractPdfText` in `lib/pdfText.ts` so both share the worker setup; extraction behaviour is unchanged.
+- **Not done.** Not tried in the app with a real lab PDF or on a phone. No test (canvas rendering). Images (OCR path) have no preview. Pages render sequentially, so a long PDF fills in top-down. Preview resets after Sisipkan; closing the sheet without inserting keeps it, like the text.
+
+## `2026-10-31.1` — Audit fixes: owner lock-out rule, pinned deploy action, dead code, cache match
+
+Owner approved fixes 1, 2 (pin only), 6 and 10 from the 2026-10-30 repo audit.
+
+- **Owner could be locked out of a patient (firestore.rules, member `allow update` on `patients/{pid}`).** Root cause: the rule checked that `ownerId` is unchanged and that the writer stays in `memberIds`, but not that the owner does. A member could write `memberIds: [self]` and the owner lost read access to the patient and its notes. Latent only: nothing in the app adds members (see next item). Fix: `resource.data.ownerId in request.resource.data.memberIds`. Every current write keeps the owner (create, import and accept set `memberIds: [uid]` with `ownerId: uid`; accept is a separate `allow update` and is unaffected).
+- **Deleted `addMember` (patients.repo.ts) and its `arrayUnion` import.** No caller anywhere; it was the only path to the hole above. Bring it back together with real sharing.
+- **Rules deploy action pinned.** `.github/workflows/firestore-deploy.yml` used `w9jds/firebase-action@master`, a moving third-party branch that runs with the service-account key. Now pinned to commit `18be666` (tag v15.34.2, which is master today), so the deploy runs exactly the same code as before.
+- **Service worker cache cleanup (sw.ts activate).** Root cause: stale caches were found with `!key.includes(APP_VERSION)`, and a version is a substring of a longer one (`.1` inside `.10`). Harmless while versions only go up, wrong after a rollback. Now `endsWith('-' + APP_VERSION)`; every Plano cache name (shell, runtime, assets) ends that way.
+- **Not done.** The rule change was NOT run in the emulator; there is still no rules test (audit finding 3). It deploys to production automatically when pushed to main, so try a patient edit, a send and an accept on the live app after pushing. Audit fixes 3, 4, 5, 7 and 8 were not applied: 5 (60 s AI timeout) would cut census extraction (16,000 tokens) and 7 (require `baseHash`) would refuse clears, locks and preview writes.
+
+## `2026-10-30.10` — Canvas: smoother card drag, scroll at the edge
+
+Owner: "smoothen the placement and the moving of the patient card in the dashboard for the canvas mode".
+
+- **Root cause (read from the code, not profiled).** `beginGesture` ran `setLive` plus a `shelfAt` DOM measurement on every `pointermove`. Pointer events arrive as fast as the mouse reports (hundreds a second on a high-rate mouse), and each one re-rendered every card on the board, more than a frame holds, so the card lagged the pointer in steps. Nothing scrolled during a drag, so moving a card down a long board meant drop, scroll, grab again.
+- **Fix.** `CanvasBoard.beginGesture`: the pointer position is stored on each event and the board updated once per animation frame (`requestAnimationFrame`); on release a pending frame is applied synchronously so the drop uses the latest position. For a move, holding the pointer within 64 px of the scroll container's top or bottom scrolls it (up to 16 px a frame, only after the first move) and the scroll counts as movement. `scrollParentOf` moved from `FloorDenah` to `lib/scrollParent.ts`, shared.
+- **Not done.** Not tried in the app and not profiled, so how much smoother it feels is unmeasured. The per-card re-render on each frame is unchanged (a per-card memo would need `ClampedCard` children to be stable). No snapping, no collision handling on drop (cards can still overlap), no easing on drop, no auto-scroll for width or height drags or sideways. Applies to shelves' move too, as they share the handler. No unit test: the change is DOM and timing.
+
+## `2026-10-30.9` — Summary stickies list patients in visite order
+
+Owner: "Can you sort the order like the Visite DPJP order?"
+
+- **Change.** The Catatan pasien and Lab hari ini stickies (desktop canvas, list view and phone canvas) took the board's current order, so a board on Terbaru or DPJP listed patients in that order. `BoardPage` now builds `summaryCards` once by passing the board's cards through `orderPatients(…, 'visite')` (ward route from `denahPlan.ts`, beds ascending, off-route rooms in location order) and hands it to all three `StickyNoteCard` sites and to `phoneStickies`. No new sort logic.
+- **Kept.** Pinned patients stay first, as `orderPatients` does in every order. Filters and search still narrow the list, since it is derived from the visible cards.
+- **Not done.** No new test (it reuses the tested `orderPatients`). Not checked on a real phone. "Visite DPJP order" was read as the board's *Urutan visite*; if the owner meant grouping by DPJP (the floor-list order), that is a different change.
+
+## `2026-10-30.8` — Summary stickies on the phone canvas show their content
+
+Owner: "no sticky notes catatan and lab in mobile view?"
+
+- **Root cause.** They were there, but easy to miss. On a phone the only way to add them is the ⋯ (Aksi lain) sheet, because + Tambah is rendered only when the desktop canvas exists. And on the phone canvas (Urutan sendiri → Kanvas) a sticky is a small `StickyBlock` with a fixed "Catatan" band and the first line of `text`. A summary sticky has empty `text`, so .3 passed a placeholder label: both blocks read "CATATAN / Catatan pasien" and "CATATAN / Lab hari ini", with none of the content.
+- **Fix.** `PhoneSticky.title` (optional) sets the band. `BoardPage` builds a summary block's text from the same cards the sticky lists (`name: catatan`, `name: lab line dated today`), and `StickyBlock` shows up to 4 lines of it. Plain notes are unchanged. Tap still opens the editable `StickyNoteCard` sheet.
+- **Checked** at 375 px in the emulator: list view and the Urutan sendiri list already showed both stickies in full; the canvas blocks now show the titles and content, and a tap opens the catatan editor with the stored text.
+- **Not done.** Not tried on a real phone (the owner's device may still have an older cached build until it updates). No + Tambah button was added to the phone header. The ⋯ sheet is still the way in.
+
+## `2026-10-30.7` — Parser pass over the Lt. 5 export (another floor's habits)
+
+Owner: a different floor writes its SOAPs differently, and some misparse in Plano. Corpus: WhatsApp export "SOAP FIX LT 5", 9 to 30 Oct 2026, 369 messages (295 SOAP reports, 21 sent lists). Method: every message run through `readReports`, `parseSections` and `regionsOf` with the default aliases; output snapshotted before and after, every changed line read. Harness kept out of the repo (it reads patient data).
+
+- **Section parser: sentence headings by shape, not by spelling list.** `REQUEST_HEADING_RE` (parseSections.ts): a whole line `Mohon i[zj]i?n … (dengan)? :`, classified by `classifyProseHeader` (assess/terapi stems only). The alias table lists spellings one by one and missed "Mohon Izin prof, pasien kami assest dengan:", "… assest pasien dengan:", "… asessment dengan :", "Mohon ijn kami terapi dengan:". 9 reports had no A region (diagnoses copied as O), 6 more no Terapi region. `classifyProseHeader` and `sectionSlices` `OWN_HEADING` accept "ijn".
+- **Bare S / O.** `BARE_LETTER_RE` + `bareLetter`: a line that is only `S`, `O` or `S;` (14 reports). Never `.`; S only before any S/O/Terapi/Plan, O only before any O/Terapi/Plan; never inside a TS block.
+- **List body (`report.ts` ASSESS/TERAPI).** `i[zj]i?n` and `as+e?s+` (was `asses+`, which missed "asessment"). For one patient the list body had fallen back to the "KESIMPULAN :" of a cath report inside O (5.5k chars). A newer SOAP whose "Mohon ijn kami terapi" was not read had no `Terapi:` and was therefore discarded as a summary by `isSummaryOf` (.30.5); now read.
+- **Room (`readPlace`).** "Kamar 508 B" / "508 A ," → 508B/508A (were both 508); "Kamar (Super) VIP 501" → 501 (was empty); "Kamr" typo; "Lantai 5 Bed 508 A" with no Kamar → room 508A (was bed 508). Room letter limited to A–D with a word boundary, so "505 atas" stays 505.
+- **Sent lists.** `LIST_ROOM` accepts "bad" (= bed): "513 bad 1/", "510 bad 3/" were not patient lines, so the patient vanished AND its A/P was appended to the patient above (RM …523 showed …033's diagnosis). `LIST_SEPARATOR` matches a separator with text glued after it; the rest of the line is read as its own line. `mergeKjs`: the same patient listed twice as an own line keeps the entry with a body (was: the first, empty one).
+- **DPJP carried forward (`latestOf`).** A newer report with no DPJP and no KJS keeps the previous report's DPJP (4 patients were filed under no DPJP).
+- **Before/after on the corpus.** 30 SOAPs gained their missing S/O/A/Terapi region, none lost one; the only SOAP still without a region is a consult reply with no Plan of its own. Lists: 2 patients recovered per list from 27-10 on, 1 wrong body fixed, 1 empty body filled.
+- **Tests.** floorList.test.ts and parseSections.test.ts, invented patients.
+- **Not done.** `parseSections` still opens own Terapi/A sections for `Th/`, `T/`, `Assestment:` inside TS blocks (jump chips, bands). `regionsOf` already keeps them in the TS block, so copy and List are unaffected. List blocks written `A/ P/ I/` keep `P/` and `I/` as written. Patients with no RM in a list (e.g. pediatri "ny.Rasma") are keyed by room+name, as before. Not seen rendered.
+
+## `2026-10-30.6` — Card catatan strip off by default
+
+Avi: the yellow catatan strip under each board card duplicates the new Catatan pasien sticky; hide it by default, keep it as a setting.
+
+- **Change.** New `UserSettings.showCardNote` (absent = off, so no default/migration needed). `PatientCard` passes an empty note when it is off, which also restores the card's rounded bottom and drops the strip from the height bounds. Toggle in Settings → Papan & harian → "Catatan di kartu pasien".
+- **Not done.** Not seen rendered (another chat's dev server holds this folder's preview). The note popover and peek window still show catatan; only the strip under the card is gated.
+
+## `2026-10-30.5` — List maker: a newer summary message erased the terapi
+
+Owner: a pasted SOAP (summary "Post Tindakan" + full SOAP) came out in the list with Diagnosis only, no Terapi.
+
+- **Root cause.** One patient, two messages: a short summary (`Diagnosis:` + `_Verifikasi : …_`, no Terapi) and the full SOAP. `latestOf` (report.ts) and `pasteDiff` (floor.ts) keep the newest report per patient, and in a WhatsApp export the summary was sent after the SOAP, so it replaced it. Untimed pastes happened to work (the SOAP came second).
+- **Fix.** `isSummaryOf(report, earlier)`: a non-list report with no `Terapi:` never replaces a non-list report that has one. Used in both pickers; `latestOf` still carries the summary's Chief/Junior over.
+- **Tests.** Two in floorList.test.ts (untimed and timed order), invented patient.
+- **Not done.** A summary that does contain a terapi still replaces the older SOAP. A genuine newer SOAP with no terapi at all is ignored in favour of the older one. Not tried on a device.
+
+## `2026-10-30.4` — Transfer: accepted patients went to Arsip, trash, Titipan or nowhere
+
+Avi: "sometimes patient gets moved to archive, or lost in transfer, missing".
+
+- **Root cause.** `acceptTransfer` changed only `ownerId`/`memberIds`, so the patient kept the sender's state. A patient the sender archived (reason "Pindah ruang/RS" is the natural handover step) before or after sending landed in the recipient's Arsip; one trashed landed in their trash; one soft-deleted (`deletedAt`) matched no list at all; one marked `temporary` (Titipan) landed under Titipan, not Pasien saya. The incoming query filters on `transferTo` only, so all of these were offered and accepted normally.
+- **Fix.** `acceptTransfer` also writes `status: 'active'`, `deletedAt: null`, and deletes `archive` and `temporary`. Rules: the recipient's clause allows those keys; accept must leave `status == 'active'` and `deletedAt == null`; decline may not touch them. Test checks the rule text.
+- **Not done.** Not reproduced on a device; cause found by reading the code (only these four state fields hide a patient from the active board). Patients already accepted into the wrong place are not migrated: reactivate from Arsip/trash by hand; a soft-deleted one needs an admin. Rules NOT deployed (this plus .29.9–.30.2).
+- **Checked in the emulator (REST, emulator tokens).** A patient sent while archived + Titipan: new accept → 200, lands `active`, no `archive`, no `temporary`, recipient owns it; an accept that leaves it archived → 403; a decline that also un-archives → 403; a plain decline → 200. Test documents deleted afterwards. Recipient's banner not seen rendered.
+
+## `2026-10-30.3` — Summary stickies: Catatan pasien (two-way) and Lab hari ini
+
+Owner: a sticky summarising every patient's catatan, editable both on the board and the SOAP page; and a variant showing each patient's labs planned for today. Settled with the owner: one summary sticky per board (not one per patient), identity = name · room/bed · DPJP, added from + Tambah, labs read from the SOAP plan where residents write "tests (date)".
+
+- **Model.** `BoardNote.kind?: 'catatan' | 'lab'` (absent = plain note); `createBoardNote` takes it. The sticky stores nothing else: content lives on the patients. Position, colour and soft delete are the existing sticky machinery.
+- **Catatan.** `PatientSummaryRows` renders one row per board card (board order, current filters) with a textarea driven by `usePatientNotes`, the same hook the SOAP page uses, so both write `Patient.notes` and each follows the other live through the patient snapshot.
+- **Lab.** `domain/labPlan.labPlans(body)`: lines below the first own-line A/P/Terapi heading (where penunjang says a dated line is a plan, not a result) that match `lab|laboratorium|cek|periksa`, are not EKG/echo/thorax/imaging/procedure, and carry a `d/m/yyyy` date; text kept as written; max 12 (tested). Cached as `Patient.labPlans` beside `preview` in `touchEntryMeta`, and by `healCardPreview` when the latest day is opened and the cache differs. The sticky shows those dated today.
+- **Not done / not verified.** Keyword match, not a lab vocabulary: a lab line without `cek`/`lab`/`periksa` is missed, and a non-lab "cek …" line not in the exclusion list is shown. Patients whose latest note was not saved or opened since this build show no labs. Custom section aliases are ignored by `labPlans` (default parser). The peek window and the catatan sticky both run `usePatientNotes` for the same patient on the board; typing in both at once was not tested. The summary sticky lists filtered cards, so a board filter narrows it. No rows link to the patient. Not tried on a phone.
+
+## `2026-10-30.2` — Kirim ke rekan: send by @username
+
+Step 3 of the plan. The field takes `@username` or an email.
+
+- **Change.** `isEmailInput` (an '@' after the first character = email; tested) picks the path. A username goes through `parseUsername` then `lookupUsername` (now `getDocFromServer`, so offline throws "perlu koneksi" instead of a false "tidak ditemukan" from cache), refuses your own handle, and sends by uid with the handle's stored name. Input is `type="text"` (an email input would refuse a bare handle) with `inputMode="email"`. Button shows "Mencari…" during the lookup.
+- **Checked in the emulator (this rules file).** In the app: `@dr.nobody` → "tidak ditemukan"; `@dr.rekan` (seeded for a fake uid) → patient stored with `transferTo` = that uid, `transferToName`, `transferFrom` = sender; sheet shows "Menunggu diterima oleh Dr Rekan". As the recipient via REST with an emulator token: incoming query 200; notes before accepting 403; editing another field 403; accept 200; notes after 200; the patient then left the sender's board. A stranger: get 403, query for the recipient's key 403. `usernames`: list 403, get one 200.
+- **Not done.** Rules still NOT deployed. The recipient's Terima/Tolak banner was not seen rendered (only one app account in the emulator). Decline and email-based sending not exercised. Not tried on a phone.
+
+## `2026-10-30.1` — Account page with a username
+
+Step 2 of the Kirim ke rekan plan (teammates → account page + username → username lookup).
+
+- **Change.** New route `/akun` (`AccountPage`), linked from Settings → Akun: Google name and email (read-only: `ensureProfile` copies them on every sign-in, so an edit would be overwritten), username claim/change, Keluar. `domain/username.ts` (`parseUsername`: strip '@', lowercase, 3–20 of `[a-z0-9._]`, letter/digit at both ends; tested). `usernames.repo.ts`: `claimUsername` in a transaction (fails at once offline instead of queuing a write that could be refused later because someone else took the name; sets `users/{uid}.username`, creates `usernames/{handle}` {uid, name}, deletes the previous handle), `lookupUsername` (exact handle, for step 3).
+- **Rules.** `usernames/{handle}`: `get` for anyone admitted, `list: if false` (no directory), create only as yourself with the handle pattern and only when the profile points at it after the write (`getAfter`), update own name only, delete own only once the profile has moved off it. A test checks the pattern and the no-list line match the client.
+- **Checked.** In the local emulator (auth + Firestore with this rules file), dark theme: claim `@Dr.Test` → stored as `dr.test`; change to `dr.test2` releases `dr.test` (delete rule passed); a handle owned by another uid shows "sudah dipakai".
+- **Not done.** Rules (from .29.9, .29.10 and this) NOT deployed. The `list: if false` rule and the transfer rules were not exercised in the emulator. Not tried on a phone or in light theme. Step 3 (typing `@username` in Kirim ke rekan) not done, so the username has no use yet. One account can still hold extra handles by creating a second without releasing the first through some other client (the app always releases); not enforced in rules. The name stored on a handle is not refreshed if the Google name changes. Export/import was not checked for the new `username` profile field. No nav entry besides the Settings link.
+
+## `2026-10-29.10` — Kirim ke rekan: pick a List Maker teammate instead of typing an email
+
+Avi: the sender should not need to know the recipient's email. Agreed plan: (1) teammates from shared lists + send by uid, (2) account page with a username, (3) username lookup. This is step 1.
+
+- **Change.** `transferTo` now holds the recipient's uid when picked, or the lowercase email as a fallback (a uid never contains '@', so one field serves both). New `transferToName` for the sender's "Menunggu diterima oleh …". `domain/transfer.teammates()` builds the pick list from `subscribeMyFloors` (`memberIds` + `names`, me excluded, deduped, first name wins, sorted; tested). `subscribeIncomingTransfers(uid, email)` runs two equality queries (uid, email) and merges them, since each must match the rule on its own.
+- **Rules.** `isTransferTarget` accepts `transferTo == auth.uid` OR the email; the accept/decline clause also allows and requires clearing `transferToName`.
+- **Why not a user directory.** The repo is public and this is clinical data: a searchable list of every account lets any signed-in user harvest names and emails, and Firestore cannot limit a list to "people you might know". List Maker teammates already see each other's names.
+- **Not done.** Rules (from .9 and this) still NOT deployed or run in an emulator. Not tried with two accounts or seen rendered. A teammate's name is the one the list shows; the same person on two lists under different names shows the first. Viewer-only list members appear as teammates too; whether they can accept depends on `allowed()` (a viewer cannot). Steps 2 and 3 (account page, username) not started.
+
+## `2026-10-29.9` — Send one patient to a colleague (handover)
+
+Avi: send one patient in-app to a friend; it moves to their board once they accept.
+
+- **Design.** Patients are already top-level with `ownerId`/`memberIds` (SPEC 6.1), so a handover is a change of owner, not a copy: entries, revisions and checklists follow because their rules read `memberIds` on the parent. The request lives on the patient document as `transferTo` (lowercase email) and `transferFrom` ({uid, name}); no new collection.
+- **Code.** `domain/transfer.ts` (`transferTarget`: trim, lowercase, refuse empty/malformed/own email; tested). `patients.repo`: `sendPatient`, `clearTransfer` (cancel or decline), `acceptTransfer` (`ownerId` = me, `memberIds` = [me], request cleared), `subscribeIncomingTransfers` (`where transferTo == email`). UI: "Kirim ke rekan" in `PatientActionsSheet` (pending state shows who and a Batalkan button); `IncomingTransfers` above the board with Terima / Tolak.
+- **Rules.** `patients/{pid}`: read also allowed to the addressed account (`data.transferTo == token.email.lower()`, the same shape the floor-invite query uses so the query can be proven). A member's `transferFrom` must be unchanged or carry their own uid. A new update clause lets the addressed account only clear the request, optionally taking `ownerId` and `memberIds == [self]`; nothing else may change. Before this, ownership was immutable. Subcollections are untouched, so the recipient cannot read notes before accepting.
+- **Not done.** Rules not run against the emulator and NOT deployed: `firebase deploy --only firestore:rules` is needed before it works. Not tried in the app with two accounts. The recipient's email must match their Google sign-in email exactly. A sender who edits offline after sending and comes back online after the recipient accepted gets those writes refused (kept in the outbox as "versi luring belum digabung", not lost). A sender who has the patient open when it is accepted sees "Gagal memuat pasien." rather than being returned to the board. No notification outside the app; the recipient sees it the next time the board is open. A pending card is not marked on the sender's board, only in the patient menu. Only one recipient at a time; any member may cancel.
+
+## `2026-10-29.8` — Denah on a phone: zoom buttons removed, double-tap instead
+
+Avi did not like the floating + / − / Muat buttons (they covered room text); chose pinch only.
+
+- **Change.** `FloorDenah` `DenahCanvas`: the button group is gone. A double-tap (two taps under 350 ms and 30 px apart, each under 10 px of movement and 300 ms) on anything that is not a button, link, input or label toggles fit and full desk size, about the tap (`zoomAbout`). Pinch is unchanged. `ZOOM_STEP` removed from `pinch.ts`.
+- **Not done.** Not tried on a phone. A double-tap on a patient row does nothing extra: the first tap opens the SOAP, which is the existing behaviour. Rooms packed with patient buttons leave little empty space to double-tap on. Two sizes only (fit and full), no in-between steps except by pinch. The pinch-while-scrolling suspicion from .5 is still unchecked.
+
+## `2026-10-29.7` — Denah: a new patient on a taken bed no longer pushes the old one to the next bed
+
+Avi: when a new patient is entered on a bed still held by another patient, the room's patients move to the next bed. That is wrong: a new patient replaces the old one, who went home or moved room.
+
+- **Root cause.** `placeBeds` (`beds.ts`, shared by the screen denah, PDF and Word) treated a bed that was "already taken" like an unreadable bed: the patient went to the first free slot of the room. So the patient who lost the bed was drawn on another bed number, and which one lost depended only on the roster order, not on who is actually there now.
+- **Fix.** Beds are claimed newest SOAP first (`soapStamp`, so an edit counts). The newer patient keeps the bed; the older one goes to `loose` (listed under the room, no bed number, never dropped). Unreadable or out-of-range beds still fill free slots, in the list's order as before. Test added in `docx.test.ts`.
+- **Not done.** The old patient is not marked pulang/pindah automatically, and not flagged as "bed sama" beyond being listed under the room; the list maker still marks them by hand. The text List (WhatsApp) prints room/bed as written and was not changed. Not checked in the app, PDF or Word.
+
+## `2026-10-29.6` — Sticky tape back over the edge, with room to show it
+
+Avi did not like the tape moved inside the paper (.5); he prefers it hanging over the top edge.
+
+- **Fix.** `StickyNoteCard` is back to `-top-2` / `pt-2`; the tape keeps the ink-tinted colour (40%). The clipping cause from .5 is handled where the clip is: `ClampedCard` (CanvasBoard) now adds `CLIP_BLEED` = 8px of top padding and an equal negative margin to a capped card's box, so the box reaches 8px higher while nothing moves; its height grows by the same 8px and the natural height it reports subtracts the padding, so layout numbers are unchanged. The expanded-card button moves to `top-3` when capped so it stays where it was.
+- **Not done.** Not seen rendered. A note placed at the very top of the canvas (y = 0) still has its tape cut by the canvas frame (`overflow-hidden`); the layout is not offset for that. The 8px bleed applies to every capped card, patient cards included (transparent, nothing visible there).
+
+## `2026-10-29.5` — Sticky tape clipped; Denah zoom on a phone
+
+Avi: the sticky's tape sometimes goes missing; zooming the Denah on a phone feels finicky.
+
+- **Root cause, tape.** The tape was `absolute -top-2`, 8px outside the note's own box. `ClampedCard` puts `overflow: hidden` on any canvas card the user has height-capped, and a note near the canvas's top edge sits against the canvas frame (also `overflow-hidden`), so the tape was cut or gone depending on the note's cap and position. It was `bg-white/45`, which is also nearly invisible on a pale note.
+- **Fix, tape.** `StickyNoteCard`: the tape sits inside the box (`top-0.5`, root `pt-4` instead of `pt-2` so the header clears it) and is a 30% tint of the note's ink (`currentColor`), so it shows on light and dark notes.
+- **Root cause, Denah.** The only button flipped between fit and full size and left the scroll untouched: the plan grew from its top-left corner, so the room you were looking at moved away. It sat above the plan, out of reach once scrolled, and the only other way to zoom was a two-finger pinch.
+- **Fix, Denah.** `zoomAbout` in `domain/floorList/pinch.ts` (tested). `DenahCanvas`: + / − / Muat buttons in a zero-height sticky row at the bottom of the scroller, zooming about the middle of what is in view in quarter steps (`ZOOM_STEP`), 44px targets, disabled at the limits. The pinch is unchanged.
+- **Not done.** Not tried on a phone. A pinch that starts while one finger is already scrolling may not be cancelable on Chrome (the page scrolls with it); I suspected this and did not confirm or change it. The buttons sit 76px above the bottom edge to clear the tab bar; if an ancestor ever clips `position: sticky` they would rest at the end of the plan instead. No double-tap zoom. The tape position changed everywhere (also masonry and the sheet), not only on the canvas.
+
+## `2026-10-29.4` — Phone: selecting text opened the spellcheck menu
+
+Avi: typing on mobile is bugged; highlighting text always opens a dictionary box (screenshot: Kodong / Kodingan / Kosong / Add to dictionary / Delete over a board sticky).
+
+- **Root cause.** The SOAP box, the Catatan editor and the board sticky all set `spellcheck` on, deliberately ("an underline you can ignore"). On Android Chrome a long-press or double-tap on an underlined word opens the system suggestion menu instead of starting a selection. In Indonesian clinical text with names and abbreviations most words are underlined, so selecting nearly anything triggered it.
+- **Fix.** `main.tsx` sets `document.documentElement.spellcheck = false` when `(pointer: coarse)` matches; the attribute inherits to every textarea and contenteditable. The three explicit `spellcheck` overrides were removed so they no longer win over it. Desktop is unchanged.
+- **Not done.** Not tried on a phone. Red underlines are gone on touch devices too, not just the menu: there is no way to keep one without the other. A tablet with a keyboard counts as touch. No setting to turn spellcheck back on. iOS was not looked at (its menu behaves differently).
+
+## `2026-10-29.3` — Patient card: note panel unfolds from its strip; opaque chip tints; done reminders folded
+
+Avi: the expanded catatan on the card looked wrong; spacing of the card.
+
+- **Root cause.** (1) `NotePopover` was a separate floating box: 4px below the strip, all corners rounded, a title bar repeating the card's patient name, a translucent `--warn-soft` header over a slate body. For a one-line note it opened to the same text the strip already showed. (2) `--warn-soft` and `--accent-soft` are 18-33% alpha, so on a coloured checklist card the reminder chips and the note strip mixed with the card colour (olive on green), the collision DESIGN.md records for the discharge wash. (3) The two done reminders left no room for KJS · Kardio, which wrapped onto its own row.
+- **Fix.** `NotePopover` gets `unfold` (card strips only; `PhoneCanvas` keeps the old panel): anchored on the strip's rectangle, same left and width, same fill and ✎, no title bar. `NOTE_FILL` is an opaque `color-mix` of `--warn-strong` over `--surface`, used by the strip, the panel and due reminder chips. Done chips use the card's own ink. `CardNote` is a button only when text is clipped (`more > 0` or measured `scrollHeight > clientHeight`). `FlagRow` folds two or more done reminders into "✓ n pengingat"; tapping unfolds them. Strip padding `px-2.5` matches the card.
+- **Not done.** Not looked at in the app or on a device: placement, the flip-above case and the contrast of `NOTE_FILL` under the three themes are unchecked beyond `check:contrast`. The uneven vertical gaps (dx line, flag row, strip) were not changed: I could not tell without rendering whether they come from the clipped body or the margins. The unfolded panel covers the strip, so the strip cannot be tapped while open (× or tap outside closes). The grey location/RM text opacity was not touched. A single done reminder still shows as its own chip.
+
+## `2026-10-29.2` — Canvas: shelves shared between laptop and phone
+
+Avi: sync the canvas state between desktop and mobile, not the positions, but the basket/shelf content.
+
+- **Root cause.** Two unrelated models. The laptop keeps shelves in the canvas layouts (`rak:*` entries, `shelf`/`shelfAt` on cards) and mirrors them one way to `boardCanvas`; the phone kept its own `PhoneShelf[]` in `boardPhoneGrid.shelves`. The laptop only read `boardCanvas` as a seed for a device with no layout.
+- **Fix.** `boardCanvas.layouts` is the one copy. `domain/board/shelfSync.ts`: `shelvesFromLayouts` (phone reads), `layoutsWithShelves` + `shelfPatch` (phone edit as per-entry changes), `applyRemoteShelves` + `shelfKey` (laptop takes in the account's shelves). The phone writes with `patchSharedCanvas` (field paths, so laptop positions are not overwritten); `CanvasBoard` applies remote shelf state unless this device changed its shelves since it last agreed with the account (`syncedKey`; that device's mirror write then wins). New phone shelves get `rak:` ids. `savePhoneGrid` now writes cells/columns/at by field path.
+- **Migration.** The first device to open the board moves `boardPhoneGrid.shelves` into the layouts (`ps:` ids become `rak:`) and deletes the old field.
+- **Not done.** Concurrent edits are still last-writer-wins at shelf level (the laptop mirror writes the whole layout map, 2 s debounce). The phone cannot reorder inside a shelf (it only appends), and its 6-shelves-per-view limit does not apply to shelves made on the laptop. Not tried on real devices or against Firestore; covered by unit tests of the mapping only.
+
+## `2026-10-29.1` — List Maker: "H-1 hari ini" in an edited SOAP read as "pulang hari ini"
+
+Avi: a SOAP updated in List Maker with Plan "H-1 hari ini" got the suggestion "pulang hari ini" instead of H-1 (pulang besok).
+
+- **Root cause.** `suggestionFor` shifts a Plan by the SOAP's age: "H-1" written yesterday means today. It took the SOAP's day from `report.sentAt`. An edit in Plano (`SoapFloat` save) keeps `sentAt` as the original message's stamp on purpose and records the edit in `editedAt`. So yesterday's SOAP, edited today to "H-1 hari ini", still counted as written yesterday, and H-1 was moved forward a day to "pulang hari ini". Tapping Tandai then stored today as the discharge date (green).
+- **Fix.** `suggestionFor` reads the day from `soapStamp(report)` (edit time when it is later, else `sentAt`), the same stamp `soapState` already uses for an edited SOAP. Test added in `floor.test.ts`.
+- **Not done.** `doubtFor` (paste check) still uses `sentAt`; pasted reports are never edited, so it is not affected. A suggestion dismissed before the edit stays dismissed after it (`dismissed` is keyed by `sentAt`, which an edit does not change); not changed. Not checked in the app.
+
+## `2026-10-28.11` — List Maker: yellow DPJP codes are a setting; MAA added
+
+Avi: the yellow on AAU and YP should also apply to MAA, and be customizable.
+
+- **Root cause.** The yellow was `isPediatri(dpjpId)` at three sites (docx, printHtml, FloorDenah). `isPediatri` is the pediatric group (AAU, YP) that also drives the 👶🏻 emoji, ordering and counts, so MAA could not be added to it without moving MAA into the pediatric box.
+- **Fix.** `DenahPrint.amberDpjps` (per device, default `aau, yp, maa`) in `printSettings.ts`. `forPrint` sets `FloorPatient.codeAmber` for Word/PDF; the screen denah calls `isAmberDpjp` with the same setting, so the three agree. Chips in Atur cetak → Denah. A stored `[]` means none; a missing or malformed value falls back to the default, so devices with saved settings get MAA too.
+- **Not done.** Only which DPJPs are yellow is customizable, not the colour itself. The setting is per device, not per floor or shared across devices (like the rest of the print setup). Not looked at on screen or on paper. The text List (WhatsApp list) has no colour and was not touched.
+
+## `2026-10-28.10` — Location: "Redzone bed 1", not "Bed Redzone 1"
+
+Avi: Salin-Konsul is wrong; compared against the Invasif PJT and Laporan Invasif chat exports (97 + 82 reports).
+
+- **Root cause.** `formatLocation` prefixed every bed with `Bed `, so a bed stored as `Redzone 1` came out `IGD PJT Bed Redzone 1`. The group writes `IGD PJT Redzone bed 1` (20 reports); numeric-only beds (`IGD Bed 3`, `CVCU Bed 4`) were already right.
+- **Fix.** `bedPhrase` in `identity.ts`: a bed that is label + number becomes `<label> bed <n>`; anything else stays `Bed <bed>`. Fixed in the shared function, so the invasif, konsul, shift-note messages and the patient card/identity bar all agree.
+- **Not done.** The other differences from the corpus were left on purpose: bold/italic in the WhatsApp format (the reports are about 99% plain), `Diagnosis:` vs `Diagnosis :` (66 vs 22), and the "izin mengirimkan penunjang" line in the long form (41 of 82). Konsul presets (6MWT, echo) were not in the corpus and were not compared.
+
+## `2026-10-28.9` — Diagnostic: log when the SOAP editor loses focus while typing
+
+Avi: sometimes the typing cursor is lost while typing, and he fears text then lands elsewhere.
+
+- **Root cause: not known.** Read, not reproduced. The caret is already carried across remote merges (`mapOffset`) and every toolbar button already prevents the focus-stealing mousedown, so neither is the cause. Remaining candidates: editor going read-only (`locked`: entry loading, 48 h auto-lock), a button or dialog outside the toolbar taking focus, day rollover swapping the note, the conflict dialog.
+- **What shipped.** `BodyEditor` writes a `focus-lost` event to the session log (`sessionLog.ts`, shown in Pengaturan as "Kursor hilang") when the textarea blurs, or goes read-only while focused, within 4 s of a keystroke. Detail: where focus went (tag, role, "in dialog", "to nothing", "window lost focus"), page visibility, seconds since the key. No text, labels, names or MRNs.
+- **Not done.** No fix: the cause is unknown on purpose. Not tested on a phone. The log has no test of its own. Remove the diagnostic once the cause is found.
+
+## `2026-10-28.8` — Visite: two columns; headings without a colon dropped
+
+Avi (screenshot of Visite on a real patient): "the header still included in visite Mode *Mohon izin kami assest dengan*", and "make it have 2 columns, left Diagnosis, Terapi and Plan, right the pemeriksaan penunjang".
+
+- **Root cause.** Visite dropped a block's heading with Salin's `withoutHeader`, which recognised a heading only by a trailing colon (`HEADING_RE` `…:`). `*Mohon izin kami assest dengan*` has none, so it stayed as the first Diagnosis line. The same hole was in Salin's "Tanpa judul bagian" for every colonless heading the parser accepts: bare `Plan` (159 in the export), bare `Mohon izin kami terapi dengan` (135), `T/` (54). Two readers of "is this a heading" again disagreed: the parser knew (`ownsLine`), the regex guessed.
+- **Fix.** `Region` (sectionSlices `regionsOf`) carries `textStart`: the parser's own `section.textStart` when the heading owns its line, else `start` (inline `S: Sesak…` is content; a TS block's name line is the consultant; the kardiologi conclusion sentence, `carriesContent`, is the assessment). `regionText(body, region, dropHeader)` replaces `withoutHeader` (deleted, no other callers) in both `sliceGroups` and `visite.ts`.
+- **Parser.** `*Mohon izin kami assess dengan: *` (a space before the closing mark) read as heading + content `*`, so `ownsLine` was false (1 of 128 latest notes). The alias matcher now takes a closing `[*_~]{1,2}` after spaces as the heading's, only at line end, so `A: *Sesak berkurang*` keeps its bold content.
+- **Two columns.** `VisiteView` lays out with a CSS container query (`[container-type:inline-size]`, `[@container(min-width:40rem)]:grid-cols-2`, Tailwind 3.4 arbitrary variant; no plugin), so the patient page's narrower note column decides for itself. Left: Diagnosis, Terapi, Plan; right: EKG, Lab, Thorax, Laporan, Echo. Narrower: one column in the approved bedside order via `display: contents` + `order-*` (no duplicated markup). Board sheet widened to `xl`.
+- **Checked.** New tests: colonless headings in `sectionSlices.test.ts` and `visite.test.ts`, kardiologi sentence kept, closing-mark heading and bold inline content in `parseSections.test.ts`. Export: no Visite diagnosis/terapi/plan starts with a heading (was 1+); 706 notes lossless. Harness (deleted): grid 2 x 476 px at 1100 px with the columns as specified; 375 px one column in order, no overflow. No screenshot: the pane could not draw (window hidden).
+- **Not verified.** The real board sheet at `xl` and the patient-page column width were not rendered (Firebase); no pixel look at either layout.
+
+## `2026-10-28.7` — Visite mode (bedside summary for the DPJP round)
+
+Avi: a "Visite" mode on the patient card showing identity, DPJP, diagnosis, lab terbaru, foto thorax terbaru, laporan tindakan terbaru, echo (kesimpulan or EF only), terapi and our plan; brainstormed, spec and plan in the session scratchpad (not in the repo). Decisions: both entry points (canvas card and patient page); read-only cheat sheet for the resident's own eyes; EKG added; EKG/lab shown whole but folded to 4 lines.
+
+- **Domain.** `domain/visite.ts` `visiteSummary(body, aliases)`: picks lines, never rewrites them. A / Terapi / Plan from Salin's `regionsOf` (TS regions excluded, heading dropped with `withoutHeader`; for A the LAST own region, since an early "Diagnosis:" is a summary). EKG, lab (every block on the newest date), thorax, echo (not Echo Hemodinamik) and laporan tindakan (newest of any `laporan*` kind, tie = first written) from `penunjangBlocks`, so "terbaru" means what "penunjang terbaru saja" means. Echo shows its Conclusion/Kesimpulan lines, else the EF lines, else the first two.
+- **Root cause found on the export.** In the new-patient format "Diagnosis:" sits near the top and no later boundary closes it, so its region ran through TB/BB, the labs and a whole CA report (44 lines max over 128 latest notes). `diagnosisLines` ends it at the first blank line, or at the first non-list line once the list has started: max 10.
+- **UI.** `components/patient/VisiteView` (shared): DPJP/chief list, "SOAP dd/mm/yyyy, bukan hari ini" warn callout, hairline-divided sections (11 px caption heading, tabular date, 15 px copied lines with a hanging indent for list lines), fold with `aria-expanded` and a 44 px target, "Tidak ada di catatan" footer. `components/board/VisiteSheet`: Sheet titled like the card (initials-only respected), entry read like the peek window (today, else newest), Sebelumnya/Berikutnya + sideways swipe in board order, open patient held by id in `BoardPage`. Entry points: a clipboard button beside the Preview eye on `PatientCard`, a "Visite" button in `QuickChecklistSheet` (the phone's long-press sheet), and a toggle beside Salin in `PatientHeaderActions` that swaps the editor slot for `VisiteView` on the patient page (editor flushed first, text untouched; jaga notes keep the slot).
+- **Checked.** `visite.test.ts` (10 tests). Over the export's 128 latest notes: diagnosis 112, terapi 104, plan 106, EKG 81, lab 75, thorax 66, echo 62, tindakan 24. Real `VisiteView` rendered in a throwaway harness (deleted): 375 px light screenshot; dark and Senja checked by computed style only (the pane could not draw while the window was hidden): cream ink and muted headings are existing token pairs, no horizontal overflow, fold 4 → 7 lines, TS plan excluded, echo conclusion only.
+- **Not done / not verified.** `VisiteSheet` (Sheet, stepping, swipe) and the two board entry points and the patient-page toggle were not rendered (they need Firebase); typecheck only. Dark/Senja not seen as pixels; no 900 px look. Notes that write labs or echo after the assessment, or undated, are not found (same limit as "terbaru saja"). TS consult plans, vitals, copy/share not included (non-goals).
+
+## `2026-10-28.6` — Dashboard card: "Usul H-1" status
+
+Avi: "For the patient status in the card Dashboard can you also make a new status which is Usul H-1 which function like the Usul h-1 in list maker".
+
+- **Model.** `Patient.usulH1?: ClinicalDate` (the day it was marked), added to both patient shapes in `types.ts` and to the `updatePatient` field union (`undefined` clears it via `deleteField`, as for the other fields). `domain/discharge.ts`: `usulOpen` (marked, and no `dischargePlannedFor`/legacy `discharge`) and `usulDays`. Like the List Maker's usul: a tracked proposal, never a stage or colour, no auto-expiry; a decision (any planned date) closes it. Derived, not stored as a stage, so nothing goes stale overnight.
+- **Card.** `BoardCard.usulDays` (null when none open). `PatientCard` shows the same top strip as H-1 (`usulStrip`: H-1 amber, dashed bottom edge, "Usul pulang besok · H-1 · n hari"); a firm H-1/today strip wins over it. A first version drew a small chip; Avi's screenshot showed he wants the strip; `PhoneCanvas` blocks say "Usul" when no firm stage is shown.
+- **Setting it.** `PatientActionsSheet` > Rencana pulang: new "Usul H-1" option (writes `usulH1 = today`, clears planned date and legacy stage). H-1, pulang hari ini, "Belum" and the date field clear the usul. While open: "Jadikan H-1" (sets H-1, clears usul) and "Batalkan usul".
+- **Tests.** `discharge.test.ts` (open/closed, days), `boardCardStatus.test.ts` (card field).
+- **Not done.** Not synced with the List Maker's usul (separate stores: board patient vs. roster patient). No suggestion from the SOAP Plan on the board (List Maker has one). The usul strip is not in the Denah, Analisis or print. Not seen rendered; typecheck and tests only. No firestore.rules change expected (patient doc fields are not whitelisted per field; read, not run).
+
+## `2026-10-28.5` — Parser: bare dated investigation headings, longer own-line sub-headings, more lab rows
+
+Avi: "Improve the soap parser to recognize certain missed Header/Lab header/TS header etc." and "Improve the parser of pemeriksaan penunjang" (his export of 706 notes, 2026-10-27, and 100 SIMGOS PDFs). Method: ran `parseSections` over every note and listed lines that look like headings but were not sections; ran `parseLab` over the PDFs (text extracted the way `lib/pdfText.ts` does).
+
+- **Root cause (headings).** Only the bold form `*Laboratorium PJT (09-09-2026)*` was a heading (wrapped-header rule). The same line without asterisks has digits and no colon, which `CUSTOM_HEADER_SOURCE` refuses on purpose, so it was plain text: no tint, one undifferentiated O block. About 330 such lines in the export (Laboratorium, EKG, Analisa Gas Darah, Echo, Foto Thorax). `penunjang.ts` had a stricter variant of the same hole: its `HEADING_RE` only spelled `(date)`, so a bare date, a time inside the brackets (`(11-10-2026 pukul 19.34)`) or a note after the date (`onset 6 jam`) was no block, and "penunjang terbaru saja" kept the older one.
+- **Fix.** New `sections/investigationHeading.ts` (`matchInvestigationHeading`, `isoDate`), the one owner of "what is a dated investigation heading". Shape-led: the line must open with an investigation word and carry a date, with a short label before it and only a time, a short note (bracketed dates only) or a colon after it. `parseSections.detectHeader` uses it after the wrapped rule and before the custom rule, and only while we are above the assessment (`lastOwn` not a/terapi/p, not in a TS block): below it a dated `EKG (05-10-2026)` is a plan and must stay inside the Plan. No `-`/`•` lead, so a bullet is never a heading. `penunjangBlocks` tries its strict `HEADING_RE` first (any label) and falls back to the shared matcher; its local `isoDate` moved to the new file (now also rejects years outside 2000-2100).
+- **Own-line sub-headings.** `CUSTOM_HEADER_SOURCE` cap raised from 24 to 39 characters, but the old limits (24 characters, 3 words) still apply when a value follows the colon; a label alone on its line may be 4 words. Catches `Faktor Risiko Kardiovaskular :` (59 in the export), `Status vaskuler ekstremitas inferior:`, `DPJP Utama dan Tindakan :`. Prose that ends in a colon (`Pada CT Coronary Angiography dan Calcium Scoring ditemukan :`, 8 words) is still refused (test).
+- **Lab.** `parseLab` rows that were falling to "Lain-lain": Bilirubin Total/Direk (own keys, the bare `Bilirubin` alias stays the urinalysis row), ALP, GGT, HbA1c (printed `HbA 1c`), RET and Ret-HE; IPF/LFR/MFR/HFR added to the omitted list. The old test that pinned total bilirubin to "Lain-lain" now pins it to its own key (a lone total prints `Bil Total 0.5`, with both `Bil T/D 2.94/1.84`).
+- **Non-lab reports (same build).** `domain/lab/readReport.ts` (`readReport`, `reportBlockText`) and `LabSheet`: a dropped PDF that `labReportKind` calls "other" is read instead of refused. Radiology: the KESAN PEMERIKSAAN lines (title from `Nama Tindakan :` or the procedure line beside it, `Radiografi` becomes `Foto`, a `N proyeksi` tail and a parenthesis cut across lines are dropped, unit label appended to Foto; date = Tgl. Registrasi like labs). Echo: the Conclusion lines (title from `TTE STANDAR` / hemodinamik; date from the row under "Tanggal Tindakan"). Procedure (`Laporan Operasi`): vessel lines under "…dengan hasil :" (CA), PPM device lines, `Kesimpulan` (inline or bulleted) and `Saran`; title mapped for CA Diagnostik / EP Study / Radioablasi, otherwise the printed title cased with acronyms kept. Layout only: a lone bullet glyph makes the next line a `- ` item, a plain line after a bullet is its wrapped end, a repeated page header (and its subtitle) after the body ends it. Null when the section is absent. `LabSheet` keeps `reports` state, shows each as a removable row, and appends them to the lab block; `labMeta.toDate` is now exported for the reader. Run over the 10 sample reports plus the PPM, single-chamber CXR and TTE PDFs: all produce the note format of Avi's export except `AMANAN PROGRAMMING PPM` (null by design). Tests: `readReport.test.ts` (synthetic rows, no real patient).
+- **Checked.** 706 export notes: `parseSections` lossless on all, `soapParts` (List Maker) lossless on all and unchanged in its chips; 86 of 86 lab PDFs still read as labs and 10 of 10 radiology/echo/procedure PDFs still read as "other"; unknown analyte lines in the PDFs went from 19 to the 7 of a pleural-fluid analysis and an ANA-IF sheet. New tests in `parseSections.test.ts`, `penunjang.test.ts`, `parseLab.test.ts`.
+- **List Maker.** No change needed: its SOAP reading (`soapParts`, `chiefHandover`, discharge suggestions) goes through `parseSections` and only looks at S/O/A/Terapi/Plan/TS, which the new rule does not touch.
+- **Not done.** (1) Non-lab reader: not seen in the app (PDF drop and the removable rows were not exercised in a browser; parser output only). PPM programming reports, PCI/PTCA reports, a CTCA's per-vessel detail and the "Hasil Pemeriksaan" body are not read (only Kesan/Conclusion/Kesimpulan). A mixed lab + report insert goes where a lab block goes (above the newest lab), not by report kind. The heading is not editable per report (fix it after inserting). (2) `_..._` italic heading lines (`_DPJP Utama dan Tindakan : …_`) and bulleted dated lines (`- Echocardiography full study (Senin, …)`) are still not headings, on purpose. (3) Dated headings below the assessment are left alone, so a note that writes labs after A would not get them. (4) Pleural-fluid and ANA-IF sheets still go to "Lain-lain". (5) Not seen rendered in the app; only parser output was checked. (6) A heading's section id is still per label (including date), as for the bold form, so each dated block is its own custom section.
+
+## `2026-10-28.4` — List Maker: one "Saran" tray instead of two amber strips
+
+Avi: "design and revamp the notification (for accepting pasien pulang/usul, et cetera) in the list maker tab".
+
+- **Why.** `ChiefSuggestions` and `DischargeSuggestions` were two stacked amber boxes with identical chrome: every row was a `flex-wrap` of truncated text plus two or three 12 px buttons (the usul row wrapped into three lines at 360 px), twelve pending patients pushed the denah/list a screen down, and an accepted row just vanished (nothing said the tap had landed). Amber also means "H-1 stage" in DESIGN.md, so a chief handover wore the discharge colour.
+- **Domain.** `domain/floorList/suggestionTray.ts`: `buildTray(roster, floor, date, now)` returns `rows` (discharge rows first, then chief) and `later` (patients who change chief at the next jam dinas, outside jam dinas). Each row carries its sentence in parts, its answers (`TrayAction`: label, the fields and log line to write, and the short "done" text) and an Abaikan action. It reuses `suggestionFor` / `suggestionActions` / `chiefSuggestions`; their rules, labels and the written fields are unchanged (Abaikan still writes `dismissed = report.sentAt` or `chiefDismissed = now`). Row id = kind + key + `sentAt` (discharge), so a new SOAP is a new suggestion and is never hidden by an old tap.
+- **UI.** `components/floor/SuggestionTray.tsx` replaces both files (deleted). A surface card (hairline border, card shadow; no amber box): header button with bell, count pill (the only amber), summary and chevron (collapsed state in `localStorage` `plano.listmaker.tray`). Rows: `room/bed` + name (opens the patient), "Plan menyebut [H-1]" or "Chief Ari → [dr. Kirana]" with the proposed value on a tint (warn for discharge, subtle for chief), answers on the right; the two answers of an usul wrap to their own line on a phone; Abaikan is an × on a phone and the word from `sm`. Four rows shown, "Lihat n lainnya" for the rest; a footer with Terima semua / Abaikan semua when two or more chief rows are pending (one batch write, as before). New `IconBell`.
+- **Tap feedback.** A tapped row becomes a "ghost" (kept in local state with its position) that shows a check and `done` for 900 ms, then folds (grid-rows 1fr to 0fr, 220 ms), so the snapshot that removes it does not make the list jump. If a write is rejected the row comes back from the data. `prefers-reduced-motion` is handled by the global rule.
+- **Tests.** `suggestionTray.test.ts`: empty, H-1 row, usul with two answers, chief only in jam dinas with the written fields and log, Ganti chief cleared on accept, row id changes with a new SOAP, ordering, `doneText`.
+- **Checked.** Rendered the real component in a throwaway harness (Firestore repo stubbed, not committed) at 360 px and 900 px in light, dark and Senja, expanded, "Lihat semua", collapsed, a tapped row (and the write it made), and an evening clock; no console errors. No new colour pair: text uses `fg` / `fg-muted` on surface, `warn-soft` and `bg-subtle` only as fills behind `fg`.
+- **Not verified.** Not seen on a real phone or with a real list; with several editors on one list the row also folds for the other person only through the snapshot (no ghost there); the "Urungkan" step was not built (an accepted colour is changed back in Atur as before).
+
+## `2026-10-28.3` — Denah: usul toggle
+
+Avi: "add a toggle in denah view that shows who have a usul state".
+
+- `FloorDenah`: a `ShowUsul` context (every plan line, DPJP box and resident box is a `PatientButton`), a pill toggle "Tampilkan usul H-1 · n" above the denah (disabled while there are none and it is off), persisted per device (`plano.denah.usul`). On: a patient with `usul` (open usul, from `effective()`) gets a `--warn-soft` background and an amber `[usul]` tag, a line "Usul H-1: 412/2 Name · …" of buttons that open the SOAP, and a legend entry. Off by default.
+- Separate from the print setup: `denah.usulMarker` still decides what paper shows.
+- **Checked.** Rendered the real `FloorDenah` in a throwaway harness (not committed) with six patients, three with usul: off and on, no console errors.
+- **Not verified.** Not seen with a real list, on a phone width, or in light mode; the DPJP and resident boxes got the tag by the same component, not looked at.
+
+## `2026-10-28.2` — Analisis: today's patients first; List tab right panel no longer under the tabs
+
+Avi: the "Hari ini, per pasien" blocks should sit at the very top, under Salin / Ubah nama bagian, above the graphs; in the List tab the right-hand panel floats and overlaps (screenshot).
+
+- **Analisis.** `AnalysisPanel`: the "Rincian hari ini" section moved above "Dua minggu terakhir"; nothing else changed.
+- **Root cause of the overlap.** `ListPanel`'s right column was `lg:sticky lg:top-2`, while the tab strip above it is `sticky top-0 z-20` (about 50–58 px tall). The column stuck 8 px from the top, so its first rows (Jam list, Simpan edisi) slid under the tab strip, and a column taller than the screen could never show its bottom (Catatan pulang, Pratinjau). Now `lg:top-16 lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:overscroll-contain`: it sticks below the tabs and scrolls inside itself when it is taller than the window.
+- **Not verified.** Not rendered: the tab strip height was read from its classes, not measured, and the panel was not seen with real data or at other window heights.
+
+## `2026-10-28.1` — Salin without section headings, list ownership transfer, Analisis charts, Catatan / Kalkulator / Checklist / peek redesign
+
+Avi (a long list): redo Catatan, Kalkulator, Checklist, the floating patient window and its folded card ("AI slop", "ugly"); Analisis with graphs (the message was cut off after "Also"); the scroll-to-top button sits weirdly; in Salin, an option to leave out the header of a chosen part, off by default; transfer the list's ownership to the new Penanggung jawab.
+
+- **Salin.** `sliceGroups(body, aliases, groups, { dropHeaders })` and `withoutHeader(chunk)`: only the FIRST line of each chosen block, and only when it is a bare heading (`*Mohon izin kami assess dengan:*`, `*A:*`, `Plan:`: marks, words, a colon). `A: Sesak berkurang` (label and content on one line) and `*TS GEH*` (no colon) are content and stay; sub-headings inside a block stay. `ComposeOptions.dropHeaders` (ignored for `'all'`, which stays byte-faithful); `CopySheet` state `skipHeaders` (false), a `CheckRow` "Tanpa judul bagian" in Bagian, shown only with parts chosen. Not applied to the inline `S: …` form.
+- **Ownership transfer.** `transferOwnership(floorId, uid)` writes `ownerUid`, `roles.<uid> = 'edit'`, `updatedAt`. Rules: new `transfersOwnership()` (owner only; changed keys exactly `ownerUid`, `roles`, `updatedAt`; the new owner is a current member and an editor; the old owner's role is `edit` and unchanged; only the new owner's role entry may differ). The old owner stays an editor. UI: "Jadikan pemilik" (`TwoTapButton`, question names the person, says the owner stays an editor) on each non-owner member row in Setelan. `transferTargets` (members except the owner). **Deploy `firestore.rules`**: until then the button shows "Perubahan belum tersimpan".
+- **Scroll to top.** Root cause: `position: fixed; right: 1rem` against the window, so on a wide screen it sat over the side panel's scrollbar and cards. Now `right` is computed from the scroller (`<main>`) rect plus its scrollbar width plus 20 px, kept by a `ResizeObserver`; 40 px, drawn arrow, quiet colours.
+- **Analisis.** `analysis.ts`: `dpjpLoad` (patients on the floor by DPJP, "Tanpa DPJP" last), `stayBuckets` (days on the list in fixed buckets 0–1, 2–3, 4–7, 8–14, 15+; from when added, not hospital admission). `AnalysisCharts.tsx`: plain SVG `TrendLine` (monotone cubic curve, area wash, gaps for days with no saved list, end label, crosshair tooltip), grouped `Columns`, `BarRows`, `ChartCard`, `LegendKey`. Series colours `--chart-1..3` (blue, green, purple), validated with the dataviz validator for colour-vision separation (not amber: amber beside green is the classic confusion) and gated at 3:1 on surface and raised surface in light, dark and Senja. The summary tiles are one strip (no seven equal cards), sections use `SectionLabel`, the 7-day table is a fold-out under the charts as the numbers view. The census chart uses the last list saved each day, so it is empty until lists have been saved on the days in question.
+- **Catatan.** Root cause of "AI slop": a wall of separate cards with a coloured left edge taken from the note id (it meant nothing), plus heavy filled segmented control and orange Baru button. Rows are now one container split by hairlines, title + last edit + one-line preview + checklist progress, no edge colour; underlined shelf tabs; icon "+" for a new note; editor title `text-xl`; toolbar scrollbar hidden (wraps from `sm`), 36 px buttons on a mouse. `noteTone` is no longer used by the UI.
+- **Kalkulator / Checklist.** Kalkulator uses `PageHeader`/`PageBody`/`SectionLabel` (same frame as Arsip, Dokumen, Pengaturan); `CalcCard` is calmer, `ResultBlock` is the tinted answer with the copy line, `Segmented` selected state is a raised segment instead of a full accent block. Checklist list and steps are hairline stacks, next step tinted, same panes as Catatan.
+- **Peek window and folded card.** Window header is two rows (name + close; date chip that no longer wraps, RM; then an Asli/SIMGOS/WA segmented control, Salin RM, Buka); dock tabs are marked by an inset top line; the note body is 12 px mono at full strength with more padding. The folded `PatientCard` shows the grip (drawn), name, a DPJP pill, progress and a chevron instead of "+".
+- **Tests.** `sectionSlices.test.ts` (headings dropped only when bare, several blocks, sub-headings kept), `membersView.test.ts` (transfer question and targets), `analysis.test.ts` (DPJP load, stay buckets). The contrast gate now covers the chart colours.
+- **Checked.** Rendered in a throwaway Vite harness (not committed): the Analisis panel with synthetic data in dark, light and Senja (hover tooltip on the curve), the Catatan list, Checklist page, Kalkulator page, the peek window's header and tabs, and the folded card; no console errors. Two label collisions in the columns chart were found and fixed.
+- **Not verified.** Ownership transfer and its rules were not run (no emulator or Firestore here), so the rule is read, not tested. The Salin option was only unit-tested, not seen in the sheet. The Catatan editor pane itself (title, toolbar), the expanded patient card (flag and chief line from `.7`), the peek window with a real note and the phone widths of Catatan and Checklist were not rendered. The Analisis rename and charts were not seen with real list data. The Analisis request was cut off after "Also": whatever followed was not done.
+
+## `2026-10-26.7` — Card flag restored, chief louder, one page frame for Arsip / Dokumen / Pengaturan
+
+Avi: "I don't like the '2 cek' change, revert it to flag and number"; the chief name on the card is "not noticeable enough"; redo Arsip, Dokumen and Pengaturan (screenshots), "the spacing is weird", as the design skill sees fit for this kind of app.
+
+- **Card.** `PatientCard` StatusRail: `⚑ {n}` instead of `{n} cek` (title and aria-label unchanged, so the meaning is still stated). Meta line: the chief is `text-xs`, the name `font-semibold` at full strength, only the word "Chief" and the pin stay at 70%; it was 11px at 70% for the whole line. "+n lagi" for hidden flags is unchanged.
+- **Root cause of the weird spacing.** The three pages each chose their own container (`max-w-3xl` / `max-w-5xl` / `max-w-3xl`), header padding (`pb-2 pt-2`, `pt-3`), heading spacing (`mt-3`, `mt-4 first:mt-1`, `pt-4`) and gaps (`gap-2`, `mt-1`), so content jumped between 768 and 1024 px when switching tabs, rows of pills sat 4 px apart, and a heading had as much space below as above.
+- **Fix.** New `components/common/PageFrame.tsx`: `PAGE_X` (`max-w-4xl`, 16 px gutter, 24 px from `sm`), `PageHeader` (sticky, rows 12 px apart, hairline under), `PageBody`, `SectionLabel` (label, count, hairline; 12 px below, more above) and `CHIP_ROW` (scrolls with the bleed on a phone, wraps on a wide screen, scrollbar hidden). Spacing scale 4 / 8 / 12 / 16 / 24 / 32.
+  - Arsip: filters, then the "Cari di" scope picker; the scope chips are now neutral (on = `bg-bg-subtle` with a check) so they no longer read as filters; row padding `px-4 py-3`; month `mt-6`, week `mt-2`, list `mb-3`.
+  - Dokumen: `SectionLabel` per group, `mt-8` between groups, `gap-3` grid, card `px-4 py-3`.
+  - Pengaturan: from `lg` a two-column layout, a pinned left `GroupNav` (10rem, `IntersectionObserver` marks the group in view) and the content; below `lg` the chip row as before (no scrollbar). Groups `space-y-3 pt-6`, search field `rounded-lg text-sm` like the other pages. The nav hides while a search is typed.
+- **Checked.** Rendered the real `SettingsPage`, `DocumentsPage` and `ArchivePage` in a throwaway Vite harness (not committed) at 1280 px: the three share one left/right edge; Settings shows the left nav with the active group. No console errors.
+- **Not verified.** The harness has no signed-in user, so Arsip and Dokumen showed their empty states: the populated lists (rows, weeks, the document grid) were only changed by class and not seen. Phone width and light mode were not looked at. The card flag and chief line were not rendered. The scroll-spy marker was seen only at the top of the page.
+
+## `2026-10-26.6` — Senja theme, Tema settings group, phone canvas keeps its columns, Update SOAP, no "(kuning)" in Warna
+
+Avi: no "(kuning)" on Usul H-1 in Atur pasien (yellow is only the printed denah); "Ubah SOAP" → "Update SOAP" (a colleague updates SOAP that way, not through Tempel); the phone canvas jumps left after saving a position (two screenshots); a third UI palette beside Terang and Gelap, easy on the eyes, colours still perceived, not a 90s app, as a category in Settings (asked to use the impeccable skill).
+
+- **Phone canvas.** Root cause: `.3` added `viewOffset`, which drew the blocks shifted by the used grid's top-left corner on BOTH axes outside Atur. Saved cells were fine; the view dropped every empty leading column (and row), so an arrangement with a gap on the left came back flush left. `viewOffset` now returns `c: 0` always and only the row offset (`r`); empty leading rows are still skipped, a column stays where it was put. Not changed: the vertical skip, so a block saved on row 2 with rows 0-1 empty still shows at the top. If that is also unwanted it is one line (`r: 0`).
+- **Theme.** `domain/theme.ts`: `THEMES` (system, light, dark, senja), `resolveTheme(pref, prefersDark)`, `SENJA_BG`. Senja is a dark-family theme: it sets the `dark` class (every `dark:` utility, `color-scheme`, the mini window's copied attributes keep working) plus `data-theme="senja"`; tokens.css overrides the values in `.dark[data-theme='senja']`. `useUI.applyThemeClass` sets both and points the two `theme-color` metas at Senja's ground (restored on leaving); `index.html`'s pre-paint script does the same class/attribute so there is no flash. Stored in `visite.theme` like the other modes; `UserSettings.theme` type widened (it is not read by the app).
+- **Design.** Mode Operate, used for 12-hour shifts under fluorescent light and in dim wards. Dusk slate ground (`#252b3a`, mid-tone, so no halation of light text on near-black), surfaces one step up, warm cream text (12.2:1 on the ground, 10:1 on a surface: well past AA without Gelap's 16:1 glare), periwinkle accent `#aab9ff` with navy text on it. Checklist cards are lifted to mid-tones with real chroma (OKLCH L .425 / C ≈ .08, hues spread as in the light set) and a warm near-white text at 7.3-8.1:1, so red, amber, green and blue still read apart at a glance, which Gelap's near-black tints blur. Status colours (danger, amber, green, blue) are lifted to read on the lighter ground. Values were generated in OKLCH and clamped to sRGB, then gated.
+- **Interactions.** The black surface ("Hitam pekat") skips Senja (`:not([data-theme='senja'])`); warm paper only ever applied to light. Accent palettes apply on top; `ungu` and `rose` get a lifted accent under Senja because their Gelap accents were 4.2-4.3:1 on its surface.
+- **Gate.** `scripts/check-contrast.mjs` now checks Senja: card text pairs, marks, body/muted/faint/accent/status text on bg, surface and raised surface, on-accent text, every palette on Senja, hairline and strong border visibility, and that each card stands off the ground (≥1.4:1). Two real failures (faint text and danger on the raised surface) were caught and fixed by lifting those values.
+- **Settings.** New group "Tema" (second in the nav): "Mode warna" is a row of previews (`ThemePicker`: a mock of ground, header, accent and four cards in each theme's own colours; "Sistem" shows day and night side by side), then "Warna aplikasi" (accent and background), moved from "Tampilan". The old two-button "Tampilan" section in Utama is gone (it is the same control, now richer).
+- **Copy.** Usul H-1 in the Warna select; "Update SOAP" on the patient button (`SoapFloat`; the log and comments keep the old name where they describe history).
+- **Tests.** `theme.test.ts` (resolution in both device schemes, ids), `phoneGrid.test.ts` (columns kept, rows trimmed); contrast gate as above.
+- **Checked.** Rendered `ThemePicker`, `PhoneCanvas`, `MarksField`, buttons and a callout in a throwaway Vite harness (not committed) in light, dark, Senja and Senja + the ungu palette at 420 px: no console errors; Senja and Gelap compared side by side.
+- **Not verified.** Not seen on a real phone or an OLED screen (Senja is a mid-tone and was judged on a desktop render only); not seen in the printed denah (unaffected: print has its own colours); the sheets, the Catatan editor and the denah screen were not individually rendered in Senja, they use the same tokens. The `(kuning)` removal and the Update SOAP label were not rendered.
+
+## `2026-10-26.5` — Analisis names, usul print tag, Usul in the Warna select, tag rows, phone shelves
+
+Avi (five asks in one message): rename the Analisis sections ("Pindah ruangan (0)", "Rencana H-1 (pulang besok) (1)"…); rename and recolour the printed [usul]; the list tag UI in Setelan is badly laid out (screenshot); add Usul to the Rencana pulang Warna dropdown, in step with the true-H-1 / usul split of `.1`; add shelves ("basket") to the phone canvas, which `2026-10-17.1` listed as not done.
+
+- **Analisis names.** `analysis.ts`: `SectionKey` (census, pulangHariIni, rencanaH1, usulH1, pulang, pindah, kamar, masuk), `SECTION_TITLE` (the block titles as they were), `TILE_TITLE` (the short tile names), `readSectionTitles` (known keys only, trimmed, 60 chars, a blank or default-equal name is dropped), `sectionTitle` / `tileTitle`. `daySummaryText(day, ward, titles = {})` uses them, so the WhatsApp text follows. Stored as `analysisTitles` on the floor doc (shared by members, like `marks`); `writeAnalysisTitles` in `floors.repo.ts`. UI: an "Ubah nama bagian" toggle for editors in `AnalysisPanel` turns every block title (and the "Di lantai" tile) into a field saved on blur; blank resets. A tile shows the block's custom name when the section is renamed, else its short default; the 7-day table headers follow the tile names. A refused write shows a warn callout.
+- **firestore.rules must be deployed** (`floors/{id}` editor update whitelist gains `analysisTitles`). Until then renaming shows "Nama belum tersimpan" for editors; nothing else is affected.
+- **Print tag.** `DenahPrint.usulLabel` (default `usul`, brackets/`<>&"` stripped, 14 chars, blank = default) and `usulColor` (`USUL_COLORS`: amber default, orange, blue, purple, teal, grey, black; not red/green, which already mean H-1 and pulang). Per device, like the rest of the print setup. `forPrint` now stamps each usul patient with `usulPrint {label, docx}` (the print code still never sees the flag unless the marker is on); `printHtml` and `docx` read it for the line tag and the legend, falling back to the original amber `[usul]` when a caller prints a patient without `forPrint`.
+- **Warna select.** New choice `usul` (`floor.ts`: `ColourChoice`, `colourChoice`, `usulMarkFields`, `clearMarkFields`). Picking Usul H-1 writes `usulH1 = date` and clears the date colour; picking Tanpa warna from the select now clears `usulH1` too (before, `colourFields('none')` left it, so an usul could not be removed from the select). `colourFields` itself is unchanged, so the Plan-suggestion chips behave as in `.1`. The log line is "Usul H-1", which `moveKind` already reads as `usul`.
+- **Tag rows (Setelan → Warna list, `MarksField`).** Root cause of the screenshot: the Otomatis select and the DPJP chips shared one wrapping row with a `pl-5` indent, so the chips started beside the select and wrapped under the dot's column, and the name field was fixed at `sm:w-48`. Each mark is now a bordered card: name, colour, Hapus on one row; the rule select full width; the DPJP chips on their own wrapping row; the print checkbox last. No behaviour change.
+- **Phone shelves.** New `domain/board/phoneShelf.ts`: a shelf is `{id, title, scope: mine|temporary, closed?, ids[]}`, kept beside the grid cells in the same `boardPhoneGrid` account field (`shelves`; `savePhoneGrid` now takes and writes both, so a grid save cannot drop the shelves). The phone grid is its own model, so these are separate from the laptop canvas's `rak:` shelves. A shelved patient leaves the grid (`gridIds`), is listed on the shelf in the order put there, and returns to the grid on Keluarkan or when the shelf is removed (first free cell, reading order). `PhoneCanvas`: "+ Shelf" in Atur (max 6 per view), `ShelfDrawer` (fold, rename in Atur, Hapus), dropping a held block on a shelf is hit-tested against `[data-phone-shelf]` rects. Sticky notes cannot be shelved. `BoardPage` merges the current view's shelves into the full list (`mergeScope`) through refs so one view's save never sends the other's stale copy.
+- **Tests.** `phoneShelf.test.ts` (sanitise, add limit, rename, fold, put/take off, remove, merge by view), `analysis.test.ts` (names, WhatsApp text), `floor.test.ts` (Usul in the select, clear), `printSettings.test.ts`, `printHtml.test.ts`, `docx.test.ts` (label and colour in line and legend); fixtures gain `analysisTitles`.
+- **Checked.** Rendered `PhoneCanvas` and `MarksField` in a throwaway Vite harness (not committed) at 390 px and 760 px: shelf added, a block dragged onto it and listed, the tag cards at both widths; no console errors. Typecheck, lint, tests pass.
+- **Not done / not verified.** Not tried signed in or against Firestore, and the Analisis rename was not seen rendered (it needs the rules deploy above to save). Shelf rows cannot be dragged out or reordered on the phone yet (Keluarkan only; order is the order they were put away). The Warna select and the Atur cetak fields were not rendered by this session. A shelf name is not synced with the laptop canvas's shelves.
+
+## `2026-10-26.4` — Phone canvas: 3 columns minimum; room for the add button
+
+- **Symptom (owner, screenshot).** On his phone the `.3` canvas showed 2 columns, wide blocks, and the last sticky note sat under the floating + button. He wanted 3 columns.
+- **Root cause.** `.3` added a `width >= 400 ? 3 : 2` step to `PhoneCanvas` (`columns`), and a 390 px phone has a ~358 px surface, so it fell to 2. The surface had only `pb-4`, which the floating button overlaps.
+- **Fix.** `columns` is `640 → 5, 480 → 4, otherwise 3`. The chip row of a patient block is `overflow-hidden whitespace-nowrap` with tighter padding so Pulang / EKG / reminder fit at about 114 px. The outer wrapper is `pb-24`.
+- **Side effect.** A grid saved while the phone showed 2 columns has no block in column 3; blocks saved in column 3 earlier are placed again by `placeGrid` only if they were moved on a 2-column screen. Atur > Rapikan packs gaps.
+- **Not changed.** A large gap between rows is a saved cell, not a bug.
+- **Not verified.** Not rendered by this session; typecheck, lint and the board tests pass. The chip row may be tight at 3 columns on the narrowest phones.
+
+## `2026-10-26.3` — Phone canvas blocks redesigned; view mode skips empty leading grid (entry added afterwards)
+
+- **Why this entry exists.** `1914514` bumped `APP_VERSION` to `.3` without a `CHANGELOG.md` entry, so the test "the newest entry in CHANGELOG.md is the running version" failed on `main` and the GitHub Actions run stopped at "Run npm test" (deploy skipped). This entry was written afterwards from that commit's message and diff, by a different session than the one that made the change.
+- **What the commit does (from its diff).** `phoneGrid.viewOffset(grid)` returns the top-left of the used cells (`{c:0,r:0}` for an empty grid); outside Atur `PhoneCanvas` draws blocks shifted by it, so leading empty rows and columns no longer push them to the middle. Stored cells are never changed, Atur still shows the full grid. `PhoneCanvas.tsx`: taller blocks (104 px), 2 columns on narrow phones, a patient block with bed + DPJP chip, name, progress bar, discharge/EKG/reminder chips and the pemantauan ring; the sticky note gets a header band and a muted empty state. Tests: `viewOffset` (used top-left, empty grid).
+- **Not verified.** The visual redesign was not rendered by this session; only the changelog/version consistency was fixed here. `npm run verify` passes with this entry.
+
+## `2026-10-26.2` — List Maker Setelan: grouped, hierarchy, two-tap removals, visible save failures
+
+- **Symptom (owner).** The Setelan tab (id `anggota`, `MembersPanel`) was five equal blocks with 12px faint headings and long grey paragraphs; the owner-only invite and delete sat among everyday editor settings.
+- **Root cause.** Removing a member (`removeMember`) and leaving the list were a single tap, and a role change rewrote access at once, on a tab whose members can read full SOAPs; "Hapus list" had a confirm, these did not. Every write was a bare `void promise`, so a refused write (rules, permission) showed nothing and the control looked applied.
+- **Fix.** `MembersPanel.tsx`: four groups (Tim, Nama dan residen, Tampilan list, Zona berbahaya) built from the shared `Section`/`Callout`/`Button`; helper text cut to the facts; the nickname list folds (`<details>`, chevron) above 5 senders. New `TwoTapButton` (`components/common`): first tap asks a question naming the person, second confirms, resets itself after 6 s and on Batal, keeps the question open on failure. `run()` wraps role change, cancel invite, junior roster and nickname writes: "Tersimpan ✓" on success, a warn callout "Perubahan belum tersimpan" with a plain reason on rejection. Pure decisions live in `domain/floorList/membersView.ts` (`saveErrorMessage`, `memberRole`, `confirmQuestion`, `collapseNicknames`).
+- **Unchanged.** Data model, `firestore.rules`, permissions, the header (Chief, Chief Bangsal), Atur cetak, `MarksField` (keeps its own write handling, so a refused mark write is still silent), and the invite and delete-list flows.
+- **Tests.** `membersView.test.ts` (error wording, owner is editor, question names the person, fold threshold). No component test: vitest here runs `.test.ts` in node only.
+- **Checked.** Rendered the real component in a throwaway harness (not committed) at 390 px and 1100 px as owner and as an editor: grouping, hierarchy, the confirm state and the fold open/closed.
+- **Not done / not verified.** Not tried signed in, against Firestore, or on a ward phone. The refused-write callout was not seen rendered (the harness has no Firebase, so the write never settled). Chief, Chief Bangsal, Atur cetak and Catatan Visite still live outside Setelan: a links block (or moving them in) is the next step if "scattered" is still the problem.
+
+## `2026-10-26.1` — List Maker: "usul H-1" is a proposal, tracked apart from H-1
+
+- **Root cause.** `dischargeFlag` matched `\b(?:usul|rencana)\s+H\s*-?\s*1\b` and `H-1 … hari ini` for one result, `tomorrow`. "Usul H-1 hari ini" (a resident proposing, the supervisor not yet agreed, possibly not visiting that day) became the same chip, the same red mark and the same "Rencana H-1" row in Analisis as a decided H-1. `floor.ts` already names this exact risk ("a proposal read as a decision"), but the roster only fixed it for colour, not for the Plan reader.
+- **Fix.** `report.ts`: `readPlan` splits an usul line from a firm one; `dischargeFlag` ignores usul lines, `usulH1(body)` reports an usul only when no firm discharge line stands next to it. `floor.ts`: `RosterPatient.usulH1` (ISO day marked, '' = none); `suggestionFor` returns `'usul'` (once, not while a colour already says more); `suggestionActions` / `suggestionWords` hold the chip's answers for the Atur panel and the top-of-list `DischargeSuggestions`; `colourFields('h1' | 'today')` clears an open usul, `'none'` ("Tanpa warna") leaves it; `effective` carries `usul: true` while open. When the accepting SOAP ("H-1 hari ini") arrives with an usul open, the normal H-1 chip is relabelled "Usul disetujui — tandai H-1" and logs "H-1 (usul disetujui)". Nothing is applied without a tap. Batalkan usul is in the patient's Atur panel.
+- **Analisis.** `MoveKind` `usul` (matched before the `H-1` rule so "Usul H-1 …" log lines no longer count as "Rencana pulang"); `daySummary.usulH1` with days waited; a tile, a block and a WhatsApp-summary section (empty sections keep their heading, as the others do).
+- **Print (opt-in).** `DenahPrint.usulMarker` (default off, per device, in Atur cetak → Denah). `forPrint` strips the flag unless on, so no print path can show it by accident. On: amber `[usul]` after the line in PDF and Word, never red, plus a legend entry only when a patient has one. The text list is unchanged (it carries no colours).
+- **Behaviour change to know.** A new patient whose only Plan line is an old "Usul H-1" is no longer flagged "plan pulang …" in the paste review (`doubtFor` reads `dischargeFlag`); the 36-hour silence rule still applies. The test that encoded the old reading now uses "Rencana H-1".
+- **Tests.** `floorList.test.ts` (usul vs firm vs both vs outside the Plan), `floor.test.ts` (`suggestionFor`, actions, `colourFields`, `usulOpen`/`usulDays`, `effective`), `analysis.test.ts` (kind, day summary, WhatsApp text), `printSettings.test.ts`, `printHtml.test.ts`, `docx.test.ts` (marker off/on, legend).
+- **Not done / not verified.** Not tried in a browser, on a ward phone, or against Firestore. `firestore.rules` has no per-field whitelist for `floors/{id}/patients/{key}`, so no deploy is needed (read from the rules, not run). Only "usul H-1" is read as an usul; "usul pulang besok" / "usul rawat jalan" still read as firm. The marker is on the denah/DPJP printouts only. No way yet to mark an usul by hand when the Plan does not say it.
+
+## `2026-10-25.4` — Riwayat: restore points read only when opened
+
+- **Root cause.** `ListMakerPage` subscribed to the 30 newest restore-point meta docs whenever an edit member was on Riwayat, although the "Titik pulih" list is a collapsed `<details>`. 30 reads per open (after the 30-minute resume window), unused unless the list was opened.
+- **Fix.** `EditionsPanel` now owns `useRestorePoints` and enables it on the first `toggle` open of the details (`RestorePointList.onOpen`). The "Pulihkan list ke edisi ini…" button used to depend on the loaded list (`openPoint`); it now calls `readEditionPoint` (`where editionId == …`, limit 1, one read) on tap, or uses the list if already loaded, and says so when the edition has no point. The `points` prop is gone.
+- **Not done / not verified.** Not tried in the browser or against Firestore (the `editionId` equality query needs no composite index, but rules were not checked). The button now shows for every edition for editors, not only those with a point. No unit test: the change is wiring around Firestore reads.
+
+## `2026-10-25.3` — List Maker Riwayat: grouped by day, paged reads
+
+- **Symptom.** With a long history the Riwayat tab became one endless list (60 buttons), and the phone layout pushed the open edition far below it.
+- **Root cause.** `EditionsPanel` rendered every live edition as a flat list, and Riwayat raised the shared editions listener from 10 to 60 docs (`ListMakerPage`). Firestore bills per document returned, so every first open (and every re-open after the 30-minute resume window) cost 60 reads, even if only the newest was looked at.
+- **Fix.** `groupByDay` (`editionGroups.ts`) groups by list date; the newest day starts open, others shut. Riwayat now shares the 10-doc live listener (`EDITIONS_PAGE`), so opening it adds no reads; "Muat edisi lebih lama" reads the next 10 once with `readOlderEditions` (`startAfter` cursor on `createdAt`, no listener). Loaded older pages are dropped when a newer edition arrives, so no gap opens behind the live window. Desktop list scrolls inside its own 70dvh column. Analisis keeps its 60.
+- **Also fixed (reads on save).** `pruneRestorePoints` read every restore point (~31) after each Tempel and each saved edition. It now does one `getCountFromServer` and reads only the surplus, oldest first (the old code deleted the newest of the surplus, leaving the oldest behind).
+- **Tests.** `editionGroups.test.ts`: grouping, order, late-saved edition under its own date, empty.
+- **Not done / not verified.** Not tried in the browser or against a real Firestore. Restore-point listener (30 meta docs on Riwayat for editors) is unchanged, and so is Analisis (60). Deleting an older loaded edition only removes it locally plus the server write; no reload.
+
+## `2026-10-25.2` — List Maker: an edited SOAP is "current" by its edit time
+
+- **Symptom.** Tn. Irwan (420 Bed 2): SOAP edited on 25/10 but the box read "Laporan 24/10/2026 15:29 · diubah · belum ada SOAP hari ini". The two sent lists confirm the edit (only the junior changed, Yudi → Imelda).
+- **Root cause.** "Ubah SOAP" deliberately re-saves with the ORIGINAL `sentAt` so a re-paste of the same message cannot undo the edit (`pasteDiff`). But `soapState` (the "SOAP baru" / "lama" badge) read freshness from `sentAt` alone, so an edit could never be 'baru' and, the next day, was always 'lama'.
+- **Fix.** `FloorPatient.editedAt` (local stamp, set in `SoapFloat.save`, read in `readPatient`); `soapStamp()` = edit time if later than `sentAt`; `soapState` and `SoapBadge` use it. `sentAt` and `pasteDiff` are unchanged, so a newer WhatsApp message still replaces the edit and a re-paste still doesn't undo it. A paste's `updatedReport` carries no `editedAt`, so it clears.
+- **"SOAP baru only for the editor?"** Not by code: `soapState` runs in `rosterView` for every member, and `SoapBadge` has no role check (ListPanel, FloorDenah). Edits never produced 'baru' for anyone (the bug above). Could not be reproduced from the repo: other candidates are a stale roster/editions snapshot on that device, or `lastSent` (the newest saved list's time on the viewer's clock) already being later than the SOAP.
+- **Tests.** `floor.test.ts` `soapState`: edit after the last list → baru; edit before it → none.
+- **Not done / not verified.** Not tried in the browser. Edits made before this version have no `editedAt` and still read as the old message time (edit again to refresh). Did not find why the second member sees the badge and the first does not.
+
+## `2026-10-25.1` — List Maker: hand colour ages by date; numbered multi-patient SOAP
+
+- **Root cause 1 (colour).** The hand mark was a stage (`colour: 'h1' | 'today'`), and `colourOn` lets a hand mark win over `dischargeDate`. A patient marked H-1 stayed red on the day itself and every day after. The board fixed the same flaw earlier (`discharge.ts`: stage → `dischargePlannedFor`); the floor roster never got it.
+- **Fix.** Setting a colour now writes the date it means, `colour: 'none'` + `dischargeDate` (`colourFields(mark, listDate)`: H-1 → date+1, pulang hari ini → date, none → ''), from the "Warna" select, the Atur-panel chip and `DischargeSuggestions`. `colourOn` is unchanged: red the day before, green on and after. The select shows `colourMark(entry, date)`, so it follows the date. Marks already stored as `colour` with no date are dated once on read (`readRosterPatient` → `legacyColourDate`, from the local day of the last "H-1" / "Pulang hari ini" log entry); with no such entry they stay as they were.
+- **Root cause 2 (MAA).** `readReports` splits a message only on "atas nama" openings. This SOAP has one opening and two numbered patients ("1. Ny. … / RM …", "2. Tn. … / RM …"), so it was read as ONE patient: the first, filed under the first DPJP found (AAU). Patient 2 (DPJP MAA) was never read. The room is on its own "Kamar 421 Bed 4" line, which `readPlace` (opening line only) missed, and the name kept its "1. ".
+- **Fix.** A single opening plus two or more `NUMBERED_IDENTITY` lines (`N. Tn|Ny|… … RM …`) splits into one part per patient, each with the shared header; the DPJP is then filed per part. `roomLine` reads a "Kamar …" line under the identity when the opening names none; `readIdentity` drops the list number. `dpjp.ts` was already right (`asrul apris` matches MAA).
+- **Tests.** `floorList.test.ts` (two numbered patients: room, bed, DPJP aau/maa, body split; one numbered patient stays one); `floor.test.ts` (hand mark ages red → green; legacy dating).
+- **Not done / not verified.** Not tried in the browser or on a ward device. A numbered SOAP whose identity lacks a title (Tn./Ny./…) or an RM is still read as one patient. "Tanpa warna" now also clears the planned date (colour and date are one thing). Legacy marks without a log entry are not migrated.
+
+## `2026-10-24.6` — List Maker: Chief Bangsal handover suggestions, shared Catatan Visite; mini window survives tab changes
+
+- **Workflow (owner).** Admitted in jam dinas (Mon–Fri 07.00–16.00) → Chief Bangsal at once. Admitted outside it (weekday 16.00–07.00, weekend, tanggal merah) → the previous chief (IGD/previous room; Chief Jaga for a Poli preadmission) until the next jam dinas.
+- **Rule (`domain/floorList/chiefHandover.ts`).** No entry time or source needed: suggest when now is jam dinas, the floor has a Chief Bangsal, the patient is `dirawat`, not held by a division, and its effective chief is not the target (`gantiChief` if set, else Chief Bangsal; "dr. Kirana" = "Kirana" via `rosterName`). `chiefDismissed` hides it until the next 07.00 block; for a patient with no chief, any dismissal is permanent (owner: "confirm first, abaikan for good"). No silent fallback to Chief Bangsal in `effective()`. Never applied without a tap; accept logs "Chief → X (saran jam dinas)" and clears `gantiChief`.
+- **Data.** `FloorDoc.chiefBangsal`, `RosterPatient.chiefDismissed`; `RosterChange` `'fields'` widened (chief, gantiChief, chiefDismissed) for "Terima/Abaikan semua". `firestore.rules`: `chiefBangsal` added to the editor field list; new `floors/{id}/visitNote/{noteId}` (members read; owner/edit write `main` only, body ≤ 200 000 chars; owner delete). `deleteFloor` removes the note. **Rules must be deployed.**
+- **Mini window root cause.** `NotePage` owned the Document-PiP window, and its unmount cleanup (`useEffect(() => () => mini?.win.close(), [mini])`) closed it whenever the user left Catatan; the portal also unmounted with the page. **Fix:** `store/useMiniWindow` + `components/common/MiniWindowHost` rendered in `App.tsx` beside `<Routes>`; `openMiniWindow(title)`. The mini window's ⋯ now navigates the main window to `/catatan?n=id` (the menu sheet is NotePage-local).
+- **Catatan Visite.** `NoteEditor`'s body split into `useNoteBody` + `NoteBodyView` (`components/notes/NoteBody.tsx`): same TipTap schema, same `useTextSync` three-way merge and conflict dialog. `FloorVisitNote` uses them with `locked = !editable` (viewers read-only, the rules agree). Pop-out on ≥1024 px, Sheet below.
+- **Tests.** `chiefHandover.test.ts` (clock edges, Fri night → Mon, name variants, gantiChief, division, dismissal block vs permanent); `access.test.ts` pins the two rules changes as text.
+- **Review fixes (same version).** (1) `samePerson` first reused `rosterName`, whose prefix / one-letter match against a single name merged different chiefs ("Ari"/"Arif", "Rizky"/"Rizka") and hid their handover; now equal letters, or the same first name with only initials after it. (2) The "dr" strip ate the start of "Drajat"; now only "dr." / "dr ". (3) `MiniWindowHost` moved outside the routes' `<Suspense>`, so a lazy route loading in the main tab cannot hide the window's portal. (4) The popup fallback (no PiP) is closed on the main tab's `pagehide`, so sign-out on a shared ward device does not leave the shared note open. (5) PiP refusing (`requestWindow` rejects) falls back to a popup; if no window opens at all, List Maker shows the note in a Sheet. (6) The window's "may edit" is read live from the list (`useMyFloors` + viewer flag, as List Maker does), not frozen at open: someone switched to "Lihat saja" meanwhile gets a read-only note instead of typing text the rules refuse. (7) A failed read (removed from the list, offline without cache) shows a message instead of "Memuat…" forever. (8) `visitNote` rule: `keys().hasOnly(['body','updatedBy','updatedAt'])` and `updatedBy == request.auth.uid`, so a writer cannot stamp someone else's uid or add fields.
+- **Not done.** No holiday list (Abaikan instead), no configurable hours, no entry-time/Poli-vs-IGD tracking. No component tests (the repo has no harness). Concurrent editing in Catatan Visite relies on the existing `useTextSync` merge; not exercised with two real devices. Only one mini window at a time (a Document-PiP limit): opening Catatan Visite replaces a popped-out Catatan.
+
+## `2026-10-24.5` — Local preview on the Firebase emulators (dev tooling)
+
+- **Root cause.** The Claude preview pane does not keep IndexedDB between sessions, so Firebase Auth lost the Google login and the app sat behind the sign-in gate, which made the UI impossible to check. Nothing in the app clears auth (only the explicit sign-out does); the pane's storage is the cause (inferred, not observed directly).
+- **Fix.** `npm run emu` starts the Auth and Firestore emulators (project `demo-plano`, state kept in git-ignored `.emulator-data/`, firebase-tools pinned through `npx`, not added as a dependency). `npm run dev:emu` runs Vite with `--mode emulator`. In that mode only, and only on a loopback host, `src/data/emulator.ts` swaps in a demo config, connects both emulators and signs in a fake Google user (the emulator accepts a JSON id token), so `firestore.rules` and `AccessGate` are exercised for real. Production and `npm run dev` take the old path; `emulator.test.ts` pins the guard. New `.claude/launch.json` entries: `plano-emulators`, `plano-emu`.
+- **Needs Java** (the Firestore emulator). Data starts empty: create a few fake patients once, they persist across restarts.
+- **Not done.** No seed script (the patient schema is large; fake patients are made in the UI).
+
+## `2026-10-24.4` — Board card: visible text for tooltip-only cues (clarify)
+
+Source: design critique P1 "meaning on touch is carried by tooltips and glyphs". Narrowed to what could change without a domain decision.
+
+- **Root cause.** Several card marks carried their meaning only in a `title` attribute, which a phone never shows. The ones that had no readable text of their own were the ⚑ count and the "+n" overflow chip.
+- **Fix.** `StatusRail`: `⚑ 3` is now `3 cek`, with an `aria-label` carrying the full sentence (the unicode flag is gone). `FlagRow`: `+2` is now `+2 lagi`.
+- **Already fine, left alone.** SOAP state (visible words), next checklist step (visible, truncated), discharge chip (visible short form plus sr-only phrase), reminder chip (visible label, ○/✓), fold/open buttons (aria-label).
+- **Not done.** (1) `KJS · Kardio` / `KJS · TS` still explain themselves only in `title` ("kita konsulen, DPJP utama bukan kita"): that is a clinical wording decision, so I did not invent visible text; options are a longer chip or moving it to the peek view. (2) DPJP initials still show the full name only on `title`. (3) No coach mark for swipe-right, swipe-left and long-press: it needs persisted "seen" state and a decision on when it returns. (4) Not seen rendered (sign-in gate); "3 cek" widens the status rail slightly and was not checked at 320px.
+
+## `2026-10-24.3` — Board card hierarchy (distill)
+
+Source: design critique of the board (P2 "card overload flattens hierarchy"), decisions confirmed with Avi: DPJP and RM stay in the identity band; flag row capped at 3 with "+n"; diagnosis change on one line.
+
+- **Root cause.** Every mark added to the card since the first version had a good reason and a place, so the card grew to about 20 atoms with no tier. Each fix was local (a badge wrapped, a strip added), so no change ever removed anything and the loud elements (Pemantauan, Chief, KJS, discharge) competed.
+- **Identity band.** Pin (★) and the Chief tag left the band. They are now one muted line (`11px`, 70% opacity) after the body, outside `ClampedBody`, with the text "Chief: …" so it still reads as a label and is never clipped on a short canvas card (the failure the 2026-10-10 comment records). The solid Chief pill is gone.
+- **Flag row.** `MAX_FLAGS = 3`. Reminders and `KJS · Kardio` always show; discharge chip, EKG and `KJS · TS` fill the remaining budget in that order; the rest collapse to `+n` (title: "buka pasien untuk melihatnya").
+- **Diagnosis change.** `DxChangeLine` is one truncated line, in words ("2 baru · 1 diubah · 1 dihapus"), not "+2 −1", which Avi found unreadable on 2026-10-10. The spelled-out rows remain in the `title` and on the patient page.
+- **Not done.** Not seen rendered (sign-in gate). `+n` and the Chief label are `title`/text only: a hidden chip cannot be tapped from the card. The 28px fold/eye buttons, the tooltip-only cues, and the 11px type are separate passes (`adapt`, `clarify`, `typeset`). No component test covers the flag cap; the cap logic is inline in `FlagRow`.
+
+## `2026-10-24.2` — Pemantauan strip: dark-mode contrast and edge bleed
+
+Source: design critique of the board (impeccable `colorize` pass).
+
+- **Root cause (contrast).** The Pemantauan strip hardcoded `text-white` on `var(--danger)`. In dark mode `--danger` is lifted to `#f87171`, and white on it is about 2.8:1, below the 4.5:1 floor. `check-contrast.mjs` never saw the pair because it only compares `--*-fg` against `--*-bg` variables, and this one was a Tailwind class on a token.
+- **Root cause (bleed).** Both strips used `-mx-3 -mt-3` (12px), written when the card padding was 12px. After the compact pass the card is `p-2.5` (10px) or `p-2` dense (8px), so the strips overshot the border by 2-4px.
+- **Fix.** New `--pemantauan-bg` / `--pemantauan-fg` tokens in `tokens.css` (white on `#dc2626` in light, near-black on `#f87171` in dark), so the existing contrast script now verifies the pair in both themes. The strips' negative margins and horizontal padding follow the `dense` prop (`-mx-2`/`px-2` dense, `-mx-2.5`/`px-2.5` otherwise).
+- **Decision, not changed.** Pemantauan stays red. It was moved from amber on purpose (amber collided with the H-1 discharge strip, see the comment above the ring in `PatientCard.tsx`). DESIGN.md was out of date on this and is corrected.
+- **Not done.** WIP tags in `TabBar` are still red. The strip is still 11px uppercase (typography is a separate pass). Not checked on a rendered board: the app is behind Google sign-in.
+
+## `2026-10-24.1` — Bug reports and feature suggestions to /admin
+
+Request (Avi): users can report a bug or suggest a feature; reports appear on the admin page, and a bug report carries what is needed to fix it.
+
+- **Send.** Pengaturan → Akun & aplikasi → "Laporkan masalah / saran fitur" (`FeedbackForm`). Writes `feedback/{id}` through `feedback.repo.ts`: `uid`, `email`, `kind` (`bug`/`fitur`), `text` (≤ 4000), `status: 'baru'`, `createdAt`, `device` (version, user agent, viewport, online, installed app) and, for bugs only, the session log. Fire-and-forget via `trackWrite`, so it queues offline. The form asks for no patient names or MRNs.
+- **Error capture (the "bug sources").** New session-log kind `error`. `installErrorLog` (main.tsx) records uncaught errors and unhandled rejections; `ErrorBoundary.componentDidCatch` records crashes (React swallows those before `window.onerror`). `describeError` writes message, route and the top three `file:line:col` frames, capped at 400 chars; consecutive duplicates and ResizeObserver-loop noise are skipped. Quoted text is cut from messages (a JSON/parse error quotes its input, which can be a note) except short quoted identifiers such as `reading 'body'`. Tests in `src/lib/sessionLog.test.ts`.
+- **Admin.** /admin gains "Laporan & saran" (Baru/Selesai). A row shows kind, sender, time, version and error count; expanded, the device and each recorded error. "Salin untuk Claude" copies `feedbackForClaude(report)`: one Markdown block with description, device, errors and the full session log, to paste into Claude Code. "Tandai selesai" sets `status: 'selesai'`.
+- **Rules.** `match /feedback/{id}`: create by `seesLists()` (list viewers too) as themselves (uid and token email), fixed key set, `kind` in bug/fitur, `status == 'baru'`, text 1–4000, `log` ≤ 40 (the session log LIMIT, now exported); read/update admin only; no delete. `feedback.test.ts` checks the bounds match the client. **Rules need deploying** (firestore-deploy workflow) before reports go through; until then a send is refused and the form says so.
+- **Not done.** No screenshot attachment (could carry patient data; would need the board-image compression path). No source maps, so frames name built chunks (`PatientPage-xxxx.js:1:2345`), not source lines; SPEC 18 keeps production maps off. No notification to the owner on a new report (no Cloud Functions); check /admin. Error messages that are not quoted could in principle still contain text from a note.
+- **Not verified.** Not run in the browser pane (needs a signed-in session and the deployed rules); covered by unit tests, typecheck and build only.
+
+## `2026-10-23.7` — Card title without the list number
+
+Checked with a filled test note (clearly fake, "DATA UJI", typed into the test account's "Catatan baru" in the pane) and 3/8 checklist ticks: board card, patient page, Salin preview, Tindakan → Catatan lainnya.
+
+- **Card title "1. CHF NYHA II" (bug).** With no identity name, `displayName` falls back to the first line of `patient.preview` (the assessment). `firstMeaningfulLine` stripped `- `/`* ` bullets but not `1.`/`1)` numbering, so the title read as a list item. It now strips a leading 1–2 digit number followed by `.` or `)` and a space; `1.5 L/hari` is kept. Display only; stored text untouched. Tests in `identity.test.ts`.
+- **Looked right:** step-3 yellow card with progress dots and "⚑ 3"; patient header, "Periksa lagi 3", "Isi identitas" offer from the note; Salin preview (436 chars, monospace); Catatan lainnya lists Ekspor ke Word, Pembuka & penutup, Buat versi SOAP, Ubah ke format bangsal, Rapikan SOAP.
+- **Reported, not changed.** The section jump row shows only Identitas, A, P: `S: …` and `O: …` with text on the same line were not detected as boundaries. Parser behaviour; needs real-note corpus before any rule change.
+- **Not checked.** Desktop width with the filled note (pane captures were zoomed/garbled), dark mode with the filled note, a card title once identity is filled. The fake note stays in the test account.
+
+## `2026-10-23.6` — Visual check fixes after the revamp
+
+Checked signed in (desktop app browser pane, test account, one empty patient): board, patient page, Tindakan sheet, Salin and Settings at 375 px and 1024 px, light and dark.
+
+- **Board search squeezed (bug).** The toolbar row was `lg:flex-nowrap` with search `min-w-0 flex-1`; at 1024 px the other controls (now larger after the text step-up) left search ~30 px ("Car…"). Row now wraps below `xl`, search has `min-w-[12rem]`.
+- **Segmented selection invisible in dark (bug).** Active segment used `bg-surface` (#131a24) on a `bg-bg-subtle` (#0f151d) track. Now `bg-surface-raised` + `ring-border-strong`; light mode unchanged (both white).
+- **Card header band** `bg-black/10` → `bg-black/[0.05]`: read as a grey bar on the new slate canvas.
+- **Settings search placeholder** shortened; it was cut off at 375 px.
+- **Console TypeError on a new account (bug).** `reconcileProfileSeeds` ran on the first profile snapshot, which arrives before `seedSettingsIfMissing` writes `settings`, and `reconcileSeeds` read `seedBaseline` of undefined (uncaught rejection). Now it returns until a snapshot with settings arrives; nothing was lost before, the next snapshot reconciled.
+- **Not checked.** A patient with a real note (Salin preview, filled cards, the Catatan lainnya rows that need a note), coloured checklist-token cards, tablet width (640–1023 px), Helper/List Maker/Calculator/Documents screens. Screenshots at 1024 px were low resolution in the pane.
+
+## `2026-10-23.5` — "Gagal masuk" after a successful Google popup
+
+Report (Avi): cannot sign in from the desktop app's browser pane; earlier, approved users stuck on "Gagal masuk. Coba lagi.".
+
+- **Root cause (reproduced in the pane via the new `signin-error` log).** The popup sign-in SUCCEEDED; saving the user failed. Console: `Error: Database is closing/hidden` from `IndexedDBLocalPersistence._openDb` ← `setCurrentUser`. Firebase Auth (12.17.1) sets `isHiding` on `visibilitychange: hidden`/`pagehide` and refuses every IndexedDB write until the page is visible again. A popup that hides the opener (the pane; very likely a new tab on Android Chrome too) means Google's answer arrives while the page is hidden, the write throws a plain `Error` (no `auth/` code), and the screen shows the generic message. Approval timing was coincidence: the user's retry happened to run while the page stayed visible.
+- **Fix.** `signInWithGoogle` calls `setPersistence(auth, browserLocalPersistence)` (not awaited, so the click's user activation is kept; Auth's queue orders it before the popup's write). localStorage has no hidden check. On the next start `PersistenceUserManager.create` finds the user in localStorage, migrates it to IndexedDB (first in the hierarchy) and removes the localStorage copy, so the long-term store is unchanged. Regression test `src/store/signInPersistence.test.ts`.
+- **Not verified.** Not tested on a real Android phone. The full pane sign-in needs the owner to pick the Google account. The redirect fallback is unchanged.
+
+## `2026-10-23.4` — Sign-in failures are logged
+
+Report (Avi): an approved account sometimes cannot sign in and stays on the sign-in screen with "Gagal masuk. Coba lagi."; also seen for new users right after approval.
+
+- **What the message means.** That exact text is the `describeAuthError` default for an error with NO `code`, i.e. not a Firebase Auth error. Sign-in itself never reads approval: there is no blocking Cloud Function, and a pending account signs in and lands on AccessGate's "Menunggu persetujuan", which opens live on approval. So approval timing cannot produce this message on its own.
+- **Reproduced in the desktop app's browser pane only.** The pane has no popup windows: `signInWithPopup` navigated the app's own tab to Google's account chooser, the opener page was gone, and no result ever came back. That is the pane, not Plano; sign in in a real browser to test there.
+- **Root cause for real devices: not found.** Candidates, unconfirmed: the popup reported as closed (Chrome's COOP "would block window.closed" warnings appear in the console during the popup) and the redirect fallback then failing on GitHub Pages, as described in `signInWithGoogle`.
+- **Change.** `signInWithGoogle` now `console.error`s the failure and writes a `signin-error` session-log entry (code, or the error's name; no email or token). Shown in Pengaturan → Riwayat sesi as "Gagal masuk dengan Google". The no-code message now names the error type.
+- **Not done.** No fix for the real-device failure, because it isn't known yet. Next step: the Riwayat sesi screenshot from an affected device.
+
+## `2026-10-23.3` — Design revamp, lazy routes, Tindakan/Settings regrouping
+
+Avi accepted ten review items (startup load, header blur, card memo, large files, phone board default, first-run, Tindakan sheet, Settings, small text, ad-hoc buttons) and asked for a professional medical-grade visual pass.
+
+- **Startup load — cause.** `App.tsx` imported all 13 routes eagerly, so every cold start parsed one ~1.2 MB app chunk plus React and Firebase. Now only Board, Patient and NotFound are eager; the rest are `React.lazy` behind one `Suspense`. All JS is still precached by the SW (`globPatterns`), so lazy routes open offline. A chunk that fails to load (old tab after an update) lands on the existing ErrorBoundary "Muat ulang".
+- **Blur — cause.** `backdrop-blur` on the sticky TopBar, patient header, List Maker header, FormatToolbar and the Sheet overlay made low-end GPUs re-blur on every scrolled frame, behind a background that was already 92–95% opaque. Replaced with solid surfaces.
+- **Card redraws — cause.** No component was memoised and BoardPage passed fresh closures (`toggleSelected`, the inline preview handler, the drag handler) each render, so every card redrew on any board state change. `PatientCard` and `StickyNoteCard` are now `memo`; those callbacks are stable (`useCallback`; the drag handler goes through a latest-ref wrapper because it reads current cards). `cards` is still rebuilt when any patient changes, which redraws all cards then.
+- **Design tokens.** Shell is now layered: cool slate `--bg` (#f3f5f8) under white `--surface`, blue-black ink, accent #1559c7 (dark #6aa3ff). New elevation tokens `--shadow-card/pop/sheet` (Tailwind `shadow-card/pop/sheet`); all `shadow-sm/md/lg/xl/2xl` mapped to them. Shared `ui.tsx`: Button gets `quiet` variant and `icon` size, rounded-lg, press feedback, filled-soft danger; inputs get a focus halo; Segmented/ListGroup/ChoiceChip refined; Section labels use `fg-muted` instead of `fg-faint`. Real logo in sidebar and on a carded sign-in screen.
+- **Text.** `text-[11px]`→`text-xs`, `10px`→`11px`, `9px`→`10px` everywhere (sed over `src/`).
+- **Buttons.** Patient header actions moved to `PatientHeaderActions.tsx` on the shared Button (back/⋯/compare now icons); board toolbar, "Pasien baru", selection bar and the phone view toggle (now `Segmented`) use Button. Copy-sheet main button aligned to the primary style. Most of the ~400 raw buttons elsewhere are untouched.
+- **Large files.** PatientPage 3,087 → 2,792 lines: header actions and the Banner/FindingTag/MarkerChips/DpjpSideCard helpers moved to `src/components/patient/`. The main `PatientPage` function is still ~2,600 lines; BoardPage and HelperPage not split.
+- **UX.** Phone board defaults to Daftar (`visite.board.phoneView` must now be `canvas` to get the canvas). Empty board shows a three-step first-run card. Tindakan sheet: Pasien status first, then four daily note actions; Ekspor/Pembuka/Versi/Format bangsal + AI fold into "Catatan lainnya"; "Zona berbahaya" folds (opens while a delete is being confirmed). Settings: new top group "Utama" with Tampilan, Format catatan, Preset salin, Privasi, Akun (moved, not duplicated).
+- **Not done / not verified.** Signed-in screens were not seen in a browser (Google sign-in), unless noted in the session; no on-device performance measurement; no route split for BoardPage/HelperPage; most raw buttons not migrated; no visual check of every screen after the text-size bump (tight rows may wrap).
+
+## `2026-10-23.2` — Settings no longer rewritten on every load
+
+Report: a friend's Plano does not keep her settings, notably which SOAP parts "Salin dari hari sebelumnya" clears.
+
+- **Suspected root cause (not reproduced on her account).** `reconcileSeeds` decided "dirty" with `JSON.stringify(baseline) !== JSON.stringify(current)`. Firestore returns maps in sorted key order, `snapshotOf` writes them in insertion order, so after one round trip the baseline always looked changed. Every profile snapshot therefore made `reconcileProfileSeeds` write templates, phrases, `carryForwardClearSections` and aliases back from that snapshot. On a device holding an older snapshot (offline cache, second device) that write can put the old list back over a newer choice.
+- **Fix.** Compare with `canonicalJson` (keys sorted) in `src/domain/seedSync.ts`; test added for a reordered baseline.
+- **Not done / not verified.** Not reproduced against real Firestore or her account; the key-order behaviour is from reading the SDK, not observed. `reconcileProfileSeeds` still writes all seeded fields when something legitimately changed (could write only changed fields). Her `seedBaseline` was not inspected: an old baseline without `carryForwardClearSections` re-adds the seeded S/TTV once per account, which would also look like "not saved". If it persists, I need her Pengaturan export and the console line "[settings] write rejected" if any.
+
+## `2026-10-23.1` — Simpler app icon
+
+Avi: new icon that matches the app's idea/function.
+
+- **Why.** The previous icon was the full logo tile (heart, ECG, checklist, wordmark); the detail turned to mush at 16–64 px. New mark = one bold navy "P" (Plano) with a red ECG pulse in its bowl (clinical + notes), same navy/red/cream palette as before.
+- **How.** `scripts/make-icons.py` now draws the master itself (Pillow, 4x supersampled) instead of reading `scripts/icon-master.png`, which is deleted. Optional argv[1] sets the output dir. Same five outputs in `public/icons/`, same rounded / maskable / opaque-apple-touch handling.
+- **Not done:** no dark-mode icon variant; manifest `theme_color`/`background_color` still `#ffffff`. Not checked on a real phone home screen. Pillow could not write into the repo from the sandboxed shell, so the PNGs were rendered to the scratchpad and copied in.
+
+## `2026-10-22.2` — New app logo
+
+Avi: replace the app logo with the new Plano mark (navy bar, heart + ECG, checklist, wordmark).
+
+- **Icon.** Master is now `scripts/icon-master.png` (clean square crop of the supplied tile, edge band repainted to the cream `#f2e9db`). `scripts/make-icons.py` (Pillow; replaces `make-icons.mjs` and the SVG master) renders `icon-192/512` (rounded), `maskable-512` (content scaled into the 80% safe circle on cream), `apple-touch-icon` (opaque square; the old one was transparent-cornered and iOS paints transparency black) and `favicon.png`. `index.html` favicon link is now PNG; `icon.svg`/`favicon.svg` removed.
+- **Not touched:** manifest `theme_color`/`background_color` stay `#ffffff` (splash screen is white behind the cream icon).
+
+## `2026-10-22.1` — Firestore quota; post-PCI check; list viewers; H-1 panel; Toggle; mini window; new icon
+
+Avi: reads at 82–87% of the 50K/day free quota with fewer than 10 users; plus six feature asks.
+
+- **Quota — root causes.** Reads scaled with screen time, not with edits:
+  - Presence heartbeat wrote every 30 s while a patient page was merely open, and every write is a read on every listener of that doc. Now it beats only while the note has unsaved typing (`presenceDue`), first keystroke immediately.
+  - The 30-revision listener ran on every patient-page open. Now the recent-revisions listener runs only while Riwayat is open (`subscribeRevisions(..., withRecent)`).
+  - `pruneRevisions` read ~40 revision docs on each autosave. Now a `getCountFromServer` (1 read per 1,000 entries) gates it; it reads and deletes only past cap + 10.
+  - List Maker subscribed to 60 editions on every open. Now 10, and 60 only on Riwayat/Analisis.
+  - **Not done:** the floor roster listener (every patient ever on the floor) — paste needs departed patients to recognise readmissions. Next candidate if quota stays high.
+- **SOAP check `post-pci-labs`.** A planned PCI/PTCA/POBA/angioplasti (not cancelled, not "post") or a body "post PCI H-n/hari ke/POD" asks for DR, Ur, Cr in the plan and HbA1c anywhere in the note. Level `cek`.
+- **List viewer.** Access status `viewer` ("Hanya list" in Admin): the app opens straight to List Maker read-only, with a bar holding only sign-out. Rules: `isViewer()`/`seesLists()` grant read on floors and their patients/editions/restores/parts/days, plus accepting an invite or leaving. Rules not compiled locally; deploy via firestore-deploy.yml.
+- **H-1 panel.** `DischargeSuggestions` lists Plan-derived H-1/pulang suggestions above the denah/list, with Tandai, Abaikan and open.
+- **Catatan Toggle.** `@tiptap/extension-details@3.31.4` (persisted open state). `/toggle` and Sisipkan → Toggle turn the current line into the toggle title.
+- **Mini window.** ⧉ on wide screens pops the open note into a Document Picture-in-Picture window (Chrome/Edge desktop; `window.open` popup elsewhere). The editor is portalled; popovers/slash menu use the editor's own document.
+- **Icon.** New master `public/icons/icon.svg` (orange gradient, white P with an ECG trace). PNGs rendered by `scripts/make-icons.mjs` (replaces the old V-glyph Python generator). Favicon matches.
+
+## `2026-10-20.1` — Card preview with A sub-headings; Residen list view prints; "+ Sticky Note"
+
+Avi: (1) a board card showed the whole SOAP; (2) "the holder choice between
+boxes and list should carry to the printed/exported file"; (3) rename
+"+ Catatan" to "+ Sticky Note".
+
+- **Card preview — root cause.** `buildPreview` used the A section's
+  `text`. `parseSections` is a boundary detector that treats every
+  "Label :" line as a section, so in a note whose assessment reads
+  "Diagnosa Utama : / Diagnosa Sekunder : / Problem :", those sub-headings
+  took the lines, and A's own text was just a newline. An empty A means
+  "no assessment yet", which falls back to the whole note from S down.
+- **Card preview — fix.** For an `a` section, the preview takes the span
+  `regionsOf` gives the A group: from the heading to the next boundary
+  (Terapi/Plan), with the sub-headings inside. It is the same span
+  Salin-per-section copies, so there is no new parsing rule. Tested on an
+  anonymised copy of the note's shape.
+  - The preview is cached on the patient at write time, so a card already
+    showing the full SOAP corrects itself on the next save of that note.
+- **Residen print.** `DenahPrint.residentsList` (per device, in the print
+  settings). The Kotak/Daftar switch on screen and the new checkbox in
+  Atur cetak write the same value. The PDF (`grid(cells, 1)`) and Word
+  (`residentTables(…, asList)` → one column) read it.
+  - The 19.1 per-device key `plano.listmaker.holderView` is dropped, so a
+    "Daftar" set yesterday shows as Kotak once.
+- **Rename.** The board's + Tambah item, the phone's Aksi lain entry, the
+  phone sheet title and the menu tooltip now say Sticky Note.
+- **Not done.** No migration of stored previews: re-saving is the
+  refresh.
+
+Verify: typecheck, lint (0 warnings), 2573 tests (182 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-19.1` — CVCU/HCU/ICU list read; Residen "Tidak di-FU" last + list view; Catatan toolbar richer, drag handle removed
+
+Avi:
+- "CVCU list pasien is made by a different person each day, so the DPJPs
+  can't be read" (with the 19-10 05.30 list).
+- "Tidak ada yang pegang should be the last box; rename it Tidak di-FU."
+- "Add the ability to turn the holder boxes into a vertical list like before."
+- Catatan: "no need for the drag to move a line; the header toolbox is
+  rudimentary, richen it."
+
+- **CVCU list — root cause.** `readListMessage` starts a patient only on a
+  line that begins with a ward room ("415 Bed 1/…") or a DPJP code, and
+  takes the DPJP from section headings. The CVCU list has neither:
+  - the place stands on its own line ("1. CVCU Bed 1");
+  - the identity is on the next line;
+  - the DPJP is written inside the identity, a little differently each day.
+  The real 19-10 list gave **0 patients**.
+- **CVCU list — fix.** A unit place line ("CVCU Bed n", "CVCU VIP 1",
+  "CVCU Super VIP", "HCU Bed n", "ICU bed n") starts a patient and the next
+  non-blank line is its identity. `unitIdentity` reads that line by content,
+  not position, and rewrites it into the shape `listPatient` already
+  handles:
+  - the first DPJP code named is the DPJP ("dr. PT - dr. AHA", "dr MAA",
+    "dr/ PT", "Prof.PK", bare "/ ARB");
+  - the last bracket that names someone holds the residents, junior then
+    chief ("( Pemantauan )" and "( )" are not residents);
+  - a fully bracketed short entry ("(Nama RM 123/ Pasien dr MAA)") keeps
+    its name;
+  - "(BTKV)" marks a BTKV patient;
+  - "Kosong" beds, entries with neither a name nor an RM ("Pasien BTKV -
+    dr. NP"), and unit headings ("ICU : 2 pasien") are skipped.
+  - A unit room has no floor, so on a ward floor these patients show under
+    "Lantai lain" instead of being filed.
+  - `readPlace` reads the same units for SOAPs ("… di CVCU Bed 9") when no
+    ward room is named, so a SOAP and a list entry land in the same room.
+  - The real list now gives 19 patients (all occupied beds), each with the
+    DPJP written. Tested on an anonymised copy (18 tests).
+- **Residen order.** `residentGroups` keyed the unheld patients as a
+  "junior" named "Tidak ada yang pegang", so the box sat wherever its first
+  patient fell in the route order. They now have their own `unheld` field,
+  and `holderBoxes` gives the one order (juniors, divisions, then "Tidak
+  di-FU") used by the app, Word and PDF alike.
+- **Residen list view.** Kotak | Daftar switch, remembered per device
+  (`plano.listmaker.holderView`).
+- **Catatan.**
+  - The ⠿ handle (`BlockHandle`) is **deleted**; ↑/↓ stay on touch screens.
+  - The toolbar is grouped: Undo/Redo · block style (Teks, Judul 1–3,
+    Kutipan) · lists · B/I/U/S · colour + highlighter panel · Sisipkan
+    (divider, date, date + time as dd/mm/yyyy HH.mm) · Bersihkan format.
+  - The dropdowns are portalled and fixed, because the row scrolls
+    sideways on a phone and would clip them.
+  - Strike and blockquote are turned on, and Highlight (3.31.4, multicolour)
+    is added with translucent `--hl-*` tokens that read on both themes.
+- **Wrong turns.**
+  - The identity code pattern first matched "dr" and "prof" in lowercase
+    only, so "Prof. IM" won over "dr. AFG" as the DPJP.
+  - A harness check seemed to show Judul 2 erasing its text. It was the
+    harness: End does not collapse a selection in headless Chromium, so
+    Enter replaced it. With → it keeps the heading.
+- **Not done.**
+  - The day-counter banner after "Salin dari hari sebelumnya" stays. The
+    checker's own day-counter rule compares with the calendar day before
+    only, so after a gap (copying from a note older than yesterday) the
+    banner is the only warning. Merging the two means pointing the checker
+    at the last written note; that was not asked for.
+  - The CVCU list was tested on one day's format; new variants may need
+    another look.
+
+Verify: typecheck, lint (0 warnings), 2568 tests (182 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-18.2` — Catatan editor rebuilt on TipTap: Notion-like shortcuts, nesting, `/` menu, moving lines
+
+Avi: "revamp the Catatan tab; it feels clunky, especially the checklist and
+bullet point. Make it Notion-like." He wanted typing shortcuts, nested
+lists, a `/` menu with block handles, and better checklist behaviour.
+
+- **Root cause.** The editor was a `contentEditable` driven by
+  `document.execCommand`, with no document model. Every list behaviour the
+  browser gets wrong (Enter and Backspace in a list, ticking, lists split by
+  edits) was repaired after the fact in `checklistDom.ts` (~460 lines).
+  Nesting, block moves and a slash menu would each have been one more DOM
+  repair, which is the class of bug this editor kept producing.
+- **Fix.** TipTap 3 (ProseMirror), pinned 3.31.4, lazy-loaded with the
+  editor (chunk 46.8 KB gzip; main bundle unchanged).
+  - `components/notes/editor/schema.ts`: our own `checklist` /
+    `checklistItem` nodes write the SAME HTML as before
+    (`ul.cl > li[data-checked]`). That is why checklistProgress, notePlainText,
+    search and previews keep working, and why no note is migrated.
+  - `legacyHtml.ts` reads old markup: `<input>` checklist rows; `<font
+    color/size>` becomes colour and font-size spans.
+  - Shortcuts (`- `, `1. `, `[] `, `[x] `, `#…###`, `---`). Tab/Shift+Tab
+    nest. Enter on an empty item lifts it. Backspace at the start of an item
+    makes it text.
+  - Pasting several lines into a list gives one item per line. Paste is
+    plain text only, as before.
+  - `commands.ts`: tick by the drawn box (pointerdown, prevented, so the
+    phone keyboard does not open; does nothing when read-only); `moveBlock`
+    (↑/↓ on touch screens); `sinkDone` (⋯ → "Pindahkan yang selesai ke
+    bawah").
+  - `slash.ts` + `SlashMenu.tsx`: the `/` menu, Indonesian labels with
+    English aliases. It opens only after a space or at line start, so
+    `TD 120/80` does not open it.
+  - `BlockHandle.tsx`: a ⠿ drag handle on desktop.
+  - Sync: `useTextSync` unchanged. Only a user edit saves (`onUpdate`), so
+    opening a note never writes it (tested on every legacy fixture).
+    `replaceContent` puts another device's version in without a save and
+    keeps the caret, clamped.
+  - CSS: strike-through moved from the ticked `li` to its own `> p`, so
+    nested unticked rows under a ticked row are not struck. Added headings,
+    rule and placeholder.
+  - `checklistDom.ts` and its test are **deleted**.
+- **Wrong turns.**
+  - TipTap's own TaskItem always renders an `<input>` in a `<label>`, and
+    `extend()` cannot drop its NodeView, so we use our own nodes.
+  - `@tiptap/extension-drag-handle` statically imports the collaboration
+    packages (yjs), so we use our own ProseMirror `view.dragging` handle.
+  - The spec's custom `legacySize` mark became TipTap's FontSize (same look).
+  - `editor.commands.keyboardShortcut()` misplaced the caret after a lift in
+    tests; tests press keys through `handleKeyDown` (verified correct).
+- **Checked in Chromium** (harness with the real engine and UI, 1280 and
+  390 px). A legacy note opens with no save. `[] beli obat` → Enter → Tab
+  nests. `/che` shows the menu. Clicking a box ticks it with focus
+  unchanged. ⠿ drag moves a row to the top. ↑ on the phone reorders. No
+  console errors.
+- **Not done / unverified.**
+  - Android keyboard behaviour on a real phone (Backspace on an empty
+    item, IME composition with the `/` menu).
+  - A device still on the old build shows TipTap-saved checklists with
+    slightly taller rows until it updates.
+  - The final review was a self-review, not an independent reviewer.
+
+Verify: typecheck, lint (0 warnings), 2545 tests (180 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-18.1` — Sisipkan: A, T + Plan, Laboratorium; board "+ Tambah" menu
+
+Avi: "More sisipkan bagian: Mohon izin kami assess dengan; Mohon izin kami
+terapi dengan and Plan; Laboratorium header according to the patient's
+lantai"; "combine Gambar, Penanda, Shelf and Catatan in 1 button to save
+space in the main header".
+
+- **Three new snippets** (`domain/format/snippets.ts`):
+  - `laboratorium`: `*Laboratorium PJT Lt. N (dd-mm-yyyy)*`, built exactly like
+    the EKG heading (`ekgPlace` + the note's clinical day; blank `...` with no
+    ward).
+  - `assess`: `*Mohon izin kami assess dengan:*` + an empty bullet, the
+    templates' own wording.
+  - `terapi-plan`: `*Mohon izin kami terapi dengan:*` + bullet, blank line,
+    `*Plan:*` + bullet. Without the templates' "Pantau tanda vital" line: a
+    block dropped into an existing note should not carry a plan item nobody
+    chose.
+- **Caret placement.** `insertSnippet` always left the caret after the
+  block. That was fine for the old blocks, which end where you keep typing,
+  but wrong for T + Plan: the caret would sit under Plan, not under terapi.
+  A snippet can now name `caretAfter` (the text the caret follows); the
+  offset accounts for the line break added mid-sentence (tested).
+- **Menu order** follows the note (S → O → studies → A → T/Plan). The menu
+  gets `max-h` + scroll: 8 items opening upward overflowed the top of a short
+  screen, which `overflow-hidden` with no max-height would have clipped.
+- **Board header.** Root cause of the crowding: each canvas layer (drawing,
+  stickers, shelves) portalled its own button into the header row, so every
+  new board feature cost one header slot. Now the header has a second slot
+  inside one menu (`components/board/BoardAddMenu.tsx`), and those layers
+  portal there: Catatan (page-owned), Shelf, Gambar, Penanda. Undo and Rapikan
+  stay in the row; they act on the arrangement and are not "add" actions.
+  - The panel is always mounted and only hidden, because unmounting it
+    would remove the portal target.
+  - Closing on an item click is a native DOM listener on `[data-closes-menu]`
+    (pattern 4). React events from a portal bubble through the React tree,
+    not the DOM tree, so a React `onClick` on the panel never sees them.
+  - The Penanda picker opens inline under its item instead of hanging below
+    its own button.
+- Checked in Chromium (harness with the real CanvasDrawing and
+  CanvasStickers): the menu opens; Penanda expands; a marker, Shelf, or a
+  click outside closes it; Gambar shows "Selesai menggambar" while drawing;
+  no console errors.
+
+Not done: the phone board's "Aksi lain" sheet is unchanged (it never had
+these four in its row). A Penanda picker left open stays open the next time
+the menu opens.
+
+Verify: typecheck, lint (0 warnings), 2516 tests (176 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-17.1` — Shelf: reorder inside, one set per board view, renamed; List Maker sticky tabs; Tempel box movable
+
+Avi: "Unable to drag to reorder the items inside Rak"; "the Rak should be
+different between Pasien saya and Titipan (standalone), and rename it to
+Shelf"; "in List Maker make the header float to ease tab switching, but not
+big enough to obstruct the view"; "the floating Tempel box should be
+draggable and resizable".
+
+- **Reorder inside a shelf.** Root cause: the drop handler treated a drop on
+  a shelf as "put on this shelf" only. A drop on the card's own shelf
+  deliberately kept its old `shelfAt` (its order), and nothing read where in
+  the drawer it was dropped. Now the drop target carries an index (rows
+  whose middle is above the pointer, `data-shelf-row`). `shelfAtFor` gives a
+  `shelfAt` between the new neighbours (tested), so a drop on the same or
+  another shelf lands where it was dropped. An accent line shows the place
+  while dragging. The lifted card's row leaves the list as it is lifted, so
+  the line is drawn against the rows as they are then.
+- **One set of shelves per view.** A shelf has `scope` (`mine` /
+  `temporary`; absent = `mine`, where the first ones were made).
+  `shelvesOf(layouts, scope)`; `addShelf(…, scope)`; BoardPage passes its
+  scope. They share one layout map, so the other view's shelves are kept,
+  just not drawn.
+- **Renamed Shelf**: button "+ Shelf", default title, every label. A stored
+  default title "Rak" reads as "Shelf"; a name typed by hand is kept.
+- **Sticky tabs.** The tab row is now its own component (`ListMakerTabs`),
+  a direct child of the page body: `sticky top-0` inside the header stuck
+  only within the header's own box and scrolled away with it. It is one
+  compact strip (40 px) with a translucent background; the lists, date and
+  chiefs scroll away as before.
+- **Tempel box moves and resizes** (≥ 640 px; a phone keeps the bottom
+  sheet), remembered per device. The drag/resize/keep-on-screen geometry
+  was inside SoapFloat. It now lives in `lib/floatGeometry` (tested), used
+  by both windows rather than copied.
+- Checked in Chromium (harness): three cards on a shelf, C moved to the top
+  and to the middle; Titipan starts with no shelves and gets its own; tabs
+  pinned at the top after a 1500 px scroll and switchable; Tempel box moved,
+  resized, same place after reload.
+
+Not done: the phone board still has no shelves (its own grid).
+
+Verify: typecheck, lint (0 warnings), 2510 tests (176 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-16.5` — List Maker: restore points, Tempel over the list, print setup, residents page; board shelves
+
+Avi: (1) save the list's state with an edition so a mis-imported WhatsApp
+export can be undone; (2) a Tempel button in the List tab opening a floating
+paste box; (3) view and change the printed PDF/Word — orientation, font size;
+(4) when the denah and DPJP boxes grow, the residents' list is pushed to page
+3 — it should follow the DPJP boxes; (5) a shelf on the canvas to store
+folded cards (discharged, papers not finished).
+
+**1. Restore points** (`domain/floorList/restore`, tested).
+- Root cause: a paste is a batch of writes over the shared roster with no
+  record of what it overwrote, so a bad import could only be fixed patient by
+  patient, by hand.
+- Two kinds of point. `touched`: saved just before a Tempel save — the
+  patients that save will change, as they were, plus the keys it adds. Undo
+  puts back only those, so a colleague's edit to another patient in between
+  survives. `active`: saved with each edition — every patient on the floor.
+  Restoring returns the floor to that list. Patients changed since are put
+  back, later arrivals erased, patients who left since return.
+- A patient who left and came back after the point isn't in an `active`
+  point. It is named and left alone (`stuck`), not guessed at.
+- The plan is computed against the LIVE roster and shown grouped before
+  anything is written. The restore saves its own `touched` point first
+  ("Sebelum pemulihan"), so it is undoable. The change log is ignored when
+  comparing; a restored patient gets a log line.
+- Storage: `floors/{id}/restores/{point}` meta + `parts/{n}` JSON text (300k
+  chars per part: a full floor can pass 1 MiB). Newest 30 kept, older pruned
+  after each save. New rules: edit members create/delete, members read, no
+  update. `deleteFloor` now removes restore points too (they hold patient
+  data).
+- `saveEdition` returns the id synchronously (`doc()` + `setDoc`) so the
+  point can name its edition offline. It was `addDoc`, whose id arrives only
+  after the server confirms.
+- UI: "Batalkan tempel ini…" after a Tempel save; "Pulihkan list ke edisi
+  ini…" on an edition; "Titik pulih" list in Riwayat. The dialog lists
+  dihapus / dikembalikan / masuk lagi / dibuat lagi / tidak diubah.
+
+**2. Tempel in the List tab** (`PasteFloat`): the same `PastePanel` in a
+non-modal floating box (bottom sheet on a phone), so the list behind updates
+as it saves.
+
+**3. Print setup** (`domain/floorList/printSettings`, `PrintSetup`,
+`lib/printPreview`).
+- Settings: list orientation/columns (1–4)/size; denah orientation/size/
+  residents on a new page. Per device (localStorage, one store so every
+  export button follows). Sizes 5–12 pt in half points; denah holders 2.5 pt
+  above the text, as before.
+- `docx.ts` and `printHtml.ts` take the settings. The defaults reproduce the
+  previous layout except (4). Denah Word table widths now follow orientation.
+- Preview: the printout's own HTML in an iframe, laid out at the page's text
+  width, then cut into A4 pages. Denah: blocks are table rows. Rows tied by
+  a `rowspan` cell (nurse station, 411) are one block, because Chromium's PDF
+  keeps them together. A row-by-row preview broke a page later than the real
+  PDF did. List: one box a page tall whose columns overflow to the right,
+  page k showing columns k·n…; checked against Chromium's PDF for four
+  setting combinations — page counts match (3/4/5 denah, 4/5 list).
+
+**4. Residents follow the DPJP boxes.** Root cause: an unconditional page
+break before the residents (`pageBreakBefore` in Word, `.page` in the PDF),
+written when the denah fit on one page. With a longer denah the DPJP boxes
+spill onto page 2 and the break left page 2 mostly empty. Now optional (off
+by default): in the test fixture, 3 denah pages instead of 4.
+
+**5. Shelves on the canvas** (`canvasLayout`, `CanvasBoard`).
+- A shelf is an entry `rak:…` in the same layout map (so it is stored and
+  mirrored to the account with the arrangement), with `title` and `closed`.
+  A card on a shelf carries `shelf` + `shelfAt` (order). A card whose shelf
+  no longer exists is simply back on the canvas.
+- Drag a card's handle onto a shelf (the shelf lights up) to put it away;
+  drag a row's ⠿ out, or ↥ Keluarkan, to put it back. The shelf moves and
+  widens like a card, closes to its header, and is renamed in place.
+  Removing a non-empty shelf asks first, then puts its cards under it.
+- `placeAll`/`tidy` take known heights. Placement assumes 260 px per item, so
+  new cards would have auto-placed inside a tall shelf, and Rapikan would
+  have stacked rows into it.
+- Checked in Chromium (harness canvas): add, drop two cards (target lit),
+  rename, close (52 px), drag one out to a point, Keluarkan the other.
+
+Wrong turns:
+- The preview's denah page 1 came out empty: `instanceof HTMLTableElement`
+  is false for a table in the iframe (another window's constructor), so the
+  whole plan was one unbreakable block. Checked by tag name now.
+- The row-by-row preview disagreed with the real PDF (rowspan, above).
+
+Not done:
+- Restore and the Tempel box were not exercised against live Firestore here
+  (no login in the sandbox). The domain is unit-tested; the rules are new and
+  deploy with this push.
+- The phone's board has its own grid and does not show shelves; shelved
+  cards still appear there.
+- A card can only be put on a shelf by dragging (no keyboard path yet).
+
+Verify: typecheck, lint (0 warnings), 2505 tests (175 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-16.4` — Desktop tabs: full-height hit area; dead Tailwind opacity classes
+
+Avi (screenshot, dark theme): "This tab looks weird, the half size makes it
+hard to click, and the clicked effect looks weird."
+
+Two root causes, neither in the 16.3 drag code:
+
+- **Half-height tabs.** The tab had `h-[calc(100%-4px)]`, but its parent (the
+  tablist) had no height of its own (`items-end` in the strip, auto height). A
+  percentage height against an auto-height parent resolves to `auto`, so each
+  tab was its content's height (~28 of 44 px). The empty band above it was the
+  strip's drag region: pressing there dragged the window instead of choosing
+  the tab. Fix: the tablist `self-stretch`es to the strip's height, plus
+  `-mb-px` so the tabs reach over the strip's bottom border; tabs are `h-full`.
+  The active tab (opaque `bg-bg`) now covers the border and joins the page.
+- **The bright outline on inactive tabs.** 16.3 styled them
+  `border-border/60 bg-bg/40 hover:bg-bg/70`. The theme colours are bare CSS
+  variables (`border: 'var(--border)'` in tailwind.config.js), and Tailwind 3
+  cannot apply an opacity modifier to those: the classes **generate no CSS**.
+  The border fell back to preflight's `#e5e7eb` (near-white in the dark
+  theme) and the fill to transparent. This had been found once before
+  (`--accent-soft`, see tokens.css) and fixed case by case, so it came back.
+  - **Guard:** `src/styles/tailwindAlpha.test.ts` reads the var-backed colour
+    names from tailwind.config.js and fails on any `<utility>-<colour>/<n>` in
+    src. It found five more dead classes, all now written as
+    `color-mix(in_srgb,var(--x)_N%,transparent)` arbitrary values:
+    `TopBar` and `PatientPage` sticky headers `bg-bg/95` (they had been fully
+    transparent under the blur), `FormatToolbar` `bg-surface/95`,
+    `CensusVerifier` `ring-accent/40` / `ring-danger/40` (fell back to
+    Tailwind's default blue ring), `NotePage` `border-danger/40` (fell back to
+    grey); and on the board's patient cards, `text-token-fg/50`–`/60` (six
+    places: secondary lines meant to be dimmed rendered at full strength),
+    `border-token-fg/10` (a divider that fell back to near-white) and
+    `ProgressStrip` `bg-token-accent/25` (an invisible track). The dimmed text
+    is set at 70 %, not the authored 50–60 %: half-strength text on a tinted
+    card would fall below readable contrast.
+  - Inactive tabs are now a soft fill (`--fg` at 7 %, 12 % on hover), no border.
+- The tab button's focus ring is drawn inside (`-outline-offset-2`), since the
+  tablist clips overflow.
+
+Wrong turn considered: making every theme colour alpha-capable
+(`color-mix(... <alpha-value> ...)` in the config). Rejected: every colour in
+the app would then depend on `color-mix` (Chrome 111 / Safari 16.2); on an
+older phone the whole UI would lose its colours, where now only a tint does.
+
+Checked in Chromium (installed mode emulated, dark): tabs 40 px tall from the
+strip top to the page edge; a press 3 px below a tab's top edge opens it.
+
+Not done: light-theme screenshot of the strip (same tokens; no change expected).
+
+Verify: typecheck, lint (0 warnings), 2487 tests (172 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-16.3` — Desktop tabs: drag to reorder; larger tabs
+
+Avi (screenshot of the installed app): "Able for the tab to be draggable to
+switch the order. Enlarge the tab button size."
+
+- **Drag to reorder.** `moveTab(state, id, to)` in `domain/appTabs` (tested).
+  The strip, as in Chrome: pressing a tab activates it; past a 6 px slop the
+  tab follows the pointer (`translateX`, pointer capture), and when its middle
+  passes a neighbour's middle the two swap, the drag origin shifting by the
+  neighbour's width so the tab stays under the pointer. The × does not start a
+  drag; a drag is not a click.
+- **Larger.** Strip 36 → 44 px; tabs 220 → 240 px (min 96), text xs → sm;
+  × 20 → 24 px; + 28 → 36 px.
+- **Inactive tabs look like tabs.** Avi's screenshot showed a second "Aktif"
+  tab at the far left reading as stray text: inactive tabs had no border and
+  no background. Now a faint background and border; hover brightens.
+- Checked in Chromium (strip forced on): three tabs, the first dragged 540 px
+  right ends last with the others shifted; a click still activates; strip 44 px.
+
+Verify: typecheck, lint (0 warnings), 2485 tests (171 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-16.2` — Browser-like tabs in the installed desktop app
+
+Avi (screenshot of Plano installed from Chrome on Windows): "I want it to
+have a tab like a browser (only for installed app desktop)".
+
+- **Why not Chrome's own tabs.** Tabbed application mode for installed apps
+  (`display_override: ["tabbed"]`) shipped in Chrome 126 on ChromeOS only;
+  the Intent to Ship says other platforms are not planned (low on the
+  backlog). On Windows the app window has one page, so the tabs are Plano's.
+- **Model** (`domain/appTabs.ts`, tested): a tab is a place in the app (path
+  + query); the active one is what the router shows; switching is a
+  navigation (`replace`, so Back stays inside the tab's page). Open after the
+  active tab; Ctrl/⌘+click and middle-click open behind; closing activates the
+  right neighbour (else the left), the last tab goes back to the board;
+  Ctrl+Tab / Ctrl+Shift+Tab cycle; at most 12. Named by the page's title
+  (`AppShell` already sets it, initials-only privacy included), and by the
+  page (Aktif, List Maker, Pasien…) until the page has been shown. Stored per
+  device (`plano.desktopTabs`), read defensively. On launch: at the board the
+  stored tabs; at a page a tab already shows (a reload) that tab; a link from
+  elsewhere a new tab.
+- **Strip** (`components/common/DesktopTabs.tsx`, around the app in
+  main.tsx): only when installed (`display-mode: standalone` or
+  `window-controls-overlay`) with a mouse and ≥ 900 px; a browser tab or a
+  phone renders the app as before. The manifest now offers
+  `display_override: ["window-controls-overlay"]`: with Chrome's title-bar
+  chevron on, the strip sits IN the title bar (`env(titlebar-area-*)`),
+  empty space drags the window (`app-region: drag`, tabs `no-drag`); off, a
+  36 px bar under the system title bar.
+- **Height.** Every full-height screen used a bare `100dvh`; now
+  `var(--app-h, 100dvh)` (AppShell, ErrorBoundary, PatientPage panel, the
+  auth screens), and the strip sets `--app-h: calc(100dvh - var(--tabs-h))`
+  only while it is shown. SOAP boxes (List Maker) are kept below the strip.
+- Checked in Chromium (strip forced on; a headless browser cannot be
+  installed): open / Ctrl+click / middle-click / switch / Ctrl+Tab / close /
+  reload behave as above; the app box runs from 36 px to the bottom edge.
+  Not checked: the title-bar placement on a real installed window — Avi's
+  install may need Chrome to pick up the new manifest (it re-reads it on
+  launch, throttled; reinstalling forces it).
+
+Verify: typecheck, lint (0 warnings), 2484 tests (171 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-16.1` — Several SOAP boxes; Atur beside the SOAP; history by day; "baru" on the local date; SOAP-reader fixes
+
+Avi: (1) "the automatic tag doesn't work on manually inputted patients";
+(2) "improve the SOAP parser of List Maker"; (3) Atur pasien takes too much
+height — open it to the side; (4) several floating SOAP boxes on desktop;
+(5) Riwayat perubahan needs a height limit and grouping by day.
+
+- **(1) Auto tags on manual patients.** Avi named the DPJP rule (YP/AAU). Not
+  reproduced: a hand-entered patient with DPJP YP gets the rule's tag in a
+  unit test, through `rosterView`, and in the rendered List Maker; the
+  manual form stores `dpjpId`, `readPatient`/`readMarks`/`writeMarks` keep
+  it. Asked Avi for a screenshot. Found and fixed on the way, same area: the
+  "Pasien baru" rule (no previous list) compared `addedAt` — UTC — with the
+  list date. A patient added 00:00–08:00 WITA (the 04:00 list-making hours)
+  carried the day before and never got "Baru". Now `localOf(addedAt)`. The
+  new test fails on the old code under TZ=Asia/Makassar and passes now.
+- **(2) SOAP reader audit.** Every SOAP in the Lt. 4 (Sept, 402) and Lt. 5
+  (Oct, 114) exports through `readReports` (scratchpad only): all have RM,
+  name, DPJP; the DPJP agrees with the report's own "DPJP …" line in all
+  516. Three defects, fixed with invented-fixture tests:
+  - "Kamar 510 Bed bed 4" read bed "bed" → a doubled "bed" is skipped.
+  - U+2060 (word joiner) kept before "Tn." in the identity and name →
+    `clean()` strips zero-width characters (as the Sensus maker does).
+  - A consultation answered with an echo ("konsul byname dari TS Geriatri …
+    Pasien dikonsulkan untuk evaluasi echocardiography") has no
+    Diagnosis/assess heading → empty A/P on the list. `listBody` now falls
+    back to the "Saat ini evaluasi kardiologi …" / "Kesimpulan:" paragraph.
+  False alarms checked and left: names written without Tn/Ny (read
+  correctly), "Kesadaran menurun …" as a diagnosis (not S/O leaking).
+- **(3) Atur pasien beside the SOAP.** Wide screen: the box grows to the left
+  by 340 px and the controls are a column beside the SOAP (which keeps its
+  height); closing shrinks it back; the remembered size is the SOAP's own.
+  Phone: the controls take the SOAP's place, button "Kembali ke SOAP".
+- **(4) Several boxes.** `ListMakerPage` keeps `openKeys` (front-most last,
+  at most 4 — the oldest closes); a phone keeps one. Each box: a cascade
+  slot (32 px down-left per slot, kept while open), z-index by front order,
+  pointer-down brings it forward, Esc closes the front one only; the
+  back button closes them one by one (the overlay stack). Boxes render in a
+  fixed order (by slot): re-ordering elements on a click would move the DOM
+  node and drop the drag that click started.
+- **(5) History by day.** `movesByDay` (tested): days newest first, each
+  newest first. Each day a `<details>` with a sticky heading ("Senin,
+  12/10/2026 · 39 perubahan"); the newest open, older folded; the whole list
+  in a box of `max-h-[60vh]` that scrolls by itself. The 150-row cap is gone
+  (folded days keep it short).
+- Checked in the harness (Chromium): 3 boxes open, focus/z-order and Esc
+  behave; Atur beside the SOAP at 1440 px; the phone swap at 390 px; the
+  grouped history box at 540 px of a 900 px screen.
+
+Verify: typecheck, lint (0 warnings), 2475 tests (170 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-14.7` — PDF list: fill columns top to bottom on the last page; 2026-10-14.6 reverted
+
+Avi: "it doesn't matter if the column falls in the middle of a SOAP. The
+last page spread the SOAP evenly through the 4 columns, which is wrong; it
+should continue to the bottom like a normal column."
+
+- **I misread the complaint in 2026-10-14.6.** I took "misleading" to mean
+  "a column must never begin mid-SOAP" and built whole-patient blocks with
+  "↳ lanjutan" pieces. That was not the problem, and it cost 2 extra pages.
+  Reverted: `listBlocks.ts` and its test removed; `docx.ts`, `printHtml.ts`,
+  `build.ts` and their tests back to 2026-10-14.5.
+- **Root cause of the real complaint:** CSS multi-column defaults to
+  `column-fill: balance`; in print the last page's remaining text is
+  balanced across all four columns, so a short tail of one patient became
+  four thin slivers. **Fix:** `column-fill: auto` on `.list`: every page,
+  the last included, fills column 1 to the bottom, then column 2, and so on.
+- Word never balanced (a single section with columns fills in order), so
+  the Word list needs nothing; it is as in 2026-10-14.5.
+- 2026-10-14.6 was never committed in Avi's repo (his last commit was
+  2026-10-14.5), so its "Yang baru" entry is removed: it described a change
+  no user ever had. Its CHANGES.md entry stays as the record.
+- Checked: the real Lt. 4 list printed by Chromium — 3 portrait + 6
+  landscape pages (as before 2026-10-14.6); the last page fills column 1 and
+  2 to the bottom, ends part-way down column 3, column 4 empty.
+
+Verify: typecheck, lint (0 warnings), 2470 tests (170 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-14.6` — List printouts: a patient's SOAP never starts a column without its patient
+
+Avi (PDF, last page): "why does it go like that? very misleading and prone
+to misread SOAP".
+
+- **Root cause.** The printouts flowed the list message line by line into
+  4 columns; nothing tied a patient's lines together. Any column or page
+  break could fall mid-SOAP, and on the PDF's last page the browser
+  *balances* the columns (CSS default `column-fill: balance`), spreading one
+  patient's Plan / TS BTKV / TS Kardiologi / I across all four. Columns 2–4
+  began "- Pro AVR…", "- Omeprazole…", "- Heparin…" with no patient line —
+  the last one directly above "dr. AAU : 0 pasien". Word had the same
+  splits (it does not balance, but breaks wherever the column ends).
+- **Fix: print blocks, not lines** (`domain/floorList/listBlocks.ts`).
+  - The message is cut into blocks: the opening; one per patient (from its
+    "*n. …*" line); the KJS list.
+  - A DPJP heading is merged INTO its first patient's block. "Keep with
+    next" was tried first: two empty headings in a row (Prof. IM 0, Prof.
+    PK 1) chained the requests and Chrome broke inside the patient instead.
+    Only merged into a block still starting with its own patient line (a
+    first version cascaded several empty headings onto one patient — caught
+    by a test). Empty DPJPs (0 pasien) stay their own block.
+  - A patient over 52 estimated printed lines (≈ 55 characters per line at
+    6.5 pt; a column holds ≈ 65) is cut into pieces; every piece after the
+    first starts "↳ lanjutan 406/PT/Tn. X" (grey, italic in the PDF).
+  - The KJS list is labelled "↳ lanjutan 🫀 Prof. MZ : …": "KJS" at the
+    top of a column did not say whose consultations they were.
+  - PDF: `.blk { break-inside: avoid }`, `column-fill: auto` (fill in
+    reading order). Word: every paragraph of a block but its last
+    `keepNext`, all `keepLines`; one empty paragraph between blocks.
+- **Checked on the real Lt. 4 list** (scratchpad only): the first line of
+  every column of every list page, extracted from the printed PDF (31
+  columns) and the Word file rendered by LibreOffice (32 columns) — 0 begin
+  mid-SOAP; each begins with the opening, a DPJP heading, a patient line or
+  "↳ lanjutan". Cost: more white space at column bottoms (PDF list 6 → 8
+  landscape pages, Word 6 → 8). A "lanjutan" label can fall mid-column
+  where a piece ends early; it is redundant there, never wrong.
+
+Verify: typecheck, lint (0 warnings), 2477 tests (171 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-14.5` — List printouts landscape; Analisis day summary as a WhatsApp message
+
+Avi: "the exported Word and PDF for the LIST PASIEN in landscape, smaller
+font to fit more content"; "copy this list into a WhatsApp message (add DPJP
+and remove the time)".
+
+- **List printouts.** Word list: A4 landscape (`w:orient="landscape"`),
+  4 columns, 6.5 pt (`LIST_FONT_HALF_POINTS` = 13, was 15), margins 700
+  twips (was 1000). PDF: the list page uses a CSS named page
+  `@page listpage { size: A4 landscape }` (`.list { page: listpage }`),
+  4 columns, 6.5 pt; the denah/residents pages stay portrait in the same
+  file. A landscape column (≈ 6.6 cm) is about as wide as the old portrait
+  one (≈ 6.3 cm), so lines wrap as before; the fourth column and smaller type
+  are the gain. Checked: Chromium print of a real Lt. 4 list → 3 portrait +
+  6 landscape pages; the Word file through LibreOffice → landscape, 4
+  columns. Named pages need Chrome/Edge 85+ or Safari 18.2+; an older
+  browser prints the list page portrait in 4 columns (still readable).
+- **WhatsApp summary.** `daySummaryText(day, ward)` in `analysis.ts`: the
+  panel's sections in the panel's order, each patient "420/4 KS/Tn. X" (the
+  ward lists' shape) with what happened after a dash ("ke CVCU", "baru",
+  "dikembalikan ke list", "417/1 → 420/2"); no clock times; empty sections
+  keep their heading with "-". DPJP code: the patient's own, else the code
+  written on the list (TM/…), else the first KJS consultant (a division-held
+  patient). Button "Salin ringkasan untuk WhatsApp" above the blocks;
+  `AnalysisPanel` takes `ward`.
+
+Verify: typecheck, lint (0 warnings), 2470 tests (170 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-14.4` — Denah: pinch to zoom the plan only (phone)
+
+Avi: "make the denah zoomable by finger without clicking Muat di layar, …
+without zooming all the page, so only the denah gets zoomed".
+
+- **Root cause:** the plan had two fixed sizes (fit, or desk size via the
+  button) and nothing handled a pinch, so the browser's own pinch zoomed the
+  whole page (header, tabs, everything) and the plan stayed at fit inside it.
+- **Fix:** `DenahCanvas` handles the pinch itself.
+  - The plan box sets `touch-action: pan-x pan-y`: one finger scrolls as
+    before; a pinch that starts on the plan is no longer the page's.
+    `touchmove` (non-passive) and Safari's `gesturestart/change` are
+    cancelled during a two-finger gesture.
+  - Scale is continuous from fit to `MAX_ZOOM` = 2× desk size, anchored at
+    the fingers' midpoint: sideways scroll of the plan box, vertical scroll
+    of the page's scroller (#main), applied after layout. At a limit, the
+    two-finger pan is applied directly (no re-render happens to apply it).
+  - The box holds a sizer of `880·scale × height·scale`, so the page's
+    layout follows the zoom; `relative` stays (the sr-only labels, 13.6).
+  - The buttons stay as shortcuts (Perbesar = full size, Muat di layar =
+    fit); a hint "Cubit dua jari untuk memperbesar" beside them.
+  - Stored as the scale ('0' = fit); old '1'/'0' values still read.
+  - Pure maths in `domain/floorList/pinch.ts` (clamp, stored value, anchor),
+    unit-tested.
+- **Checked** in Chromium at 390 px with real touch events (CDP): spreading
+  the fingers 3× took the plan from 0.41 to 1.22; `visualViewport.scale`
+  stayed 1 (page not zoomed); #main stayed 390 px wide; the anchor scroll
+  matched the formula (400 px sideways, 240 px down). "Muat di layar"
+  returned to fit. Not tried on a physical iPhone.
+
+Verify: typecheck, lint (0 warnings), 2468 tests (170 files), version,
+contrast, a11y, build — green.
+
+## `2026-10-14.3` — Sensus AI: a stored result goes stale when the rules or the prompt change
+
+Avi: "The Sensus Maker AI still [puts] 4. 501/… RM 1739354 as prof MZ
+patient" (after 2026-10-14.2 fixed the rules).
+
+- **Root cause — the AI cache key covered only part of the AI's input.**
+  The AI result is stored per DPJP under a key of code, date, address,
+  style and the pasted text. But the prompt also carries the rules' patients
+  for that DPJP and the patients with no DPJP code, as a checklist. Before
+  2026-10-14.2 the rules put IM's 501 under MZ; an AI run then got 501 on
+  MZ's checklist and confirmed it. After the fix, the text was the same, so
+  that stored result kept being shown as current.
+  **Fix:** the key now also holds the rules' patient keys for the DPJP, the
+  no-code patient keys, and `SENSUS_AI_REVISION` (bumped whenever the
+  instructions change). Any of them changing makes the result stale: the
+  page shows its "berubah sejak hasil AI terakhir — Susun ulang" notice
+  (wording now names the app's reading of the list as a reason).
+- **Prompt:** the heading rule gave two examples, both "dr. X : n pasien".
+  It now lists the spellings seen ("Prof. IM 1 Pasien", "Dr.AHA  (1 pasien)",
+  "Prof. MZ ( 3 Pasien)", "dr.AFG: 2  pasien"), says each DPJP heading ENDS
+  the section above, and that the summary counts at the top are not headings.
+- **Safety net, now tested on this case:** if the AI still files 501 under
+  MZ, `checkAiCensus` lists it as "Hanya AI · Aturan: pasien IM".
+- Not verified against the live model (no key in this environment); the
+  cache fix does not depend on the model.
+
+Verify: typecheck, lint (0 warnings), 2463 tests (169 files), version, contrast, a11y,
+build — green.
+
+## `.gitignore` (no version bump — nothing shipped)
+
+- **Deploy failed after 2026-10-14.2 (Avi: "failed to push").** The push
+  went through; the GitHub Pages build failed at `check:version`, whose
+  stray-file guard rejected `Claude outputs/plano-2026-10-14.2.zip`. Root
+  cause: the repo had no `.gitignore`, so the delivery zip (left in place
+  when deleting it was not permitted) was offered and committed like any
+  other file. Fix: `.gitignore` for `Claude outputs/`, `node_modules/`,
+  `dist/`, `coverage/`, `.env*`, OS clutter. The zip is removed from the
+  folder; its deletion goes in the same commit.
+- The guard did its job: a stray file stopped the deploy instead of shipping.
+
+## `2026-10-14.2` — Sensus & List Maker: heading shapes of the 14-10 Lt. 5-6 list
+
+Avi (Sensus): "Diagnosis and plan doesn't get parsed, check also from
+previously sent"; "Prof. IM 1 Pasien … gets recognized as Prof MZ patient".
+
+- **Root cause — the readers match headings by a closed set of spellings.**
+  Each list writes them its own way; every new spelling is silently treated
+  as body text. In the 14-10 Lt. 5-6 list:
+  - DPJP heading with the count right after the code: "Prof. IM 1 Pasien",
+    "Prof. PK 3 Pasien". `SECTION_RE` wanted ":" or "(" after the code, so
+    the heading was missed and the patients stayed with the heading above:
+    IM's patient under MZ, PK's two under AHN. Now "<code> <n> pasien" too.
+  - Assessment heading bulleted ("-  Mohon izin pasien kami assess dengan :")
+    or with words between "izin" and "kami" ("Mohon Izin prof, pasien kami
+    assest dengan:"). `ASSESS_HEAD_RE` was anchored to "mohon izin (pasien)
+    kami assess": KS and MZ patients printed "Diagnosis: -". Now a leading
+    bullet and up to 30 characters between are allowed. A bulleted
+    "- Mohon izin … terapi" heading also ends the block (bullets were never
+    a stop, so it would have been read as a diagnosis).
+  - No heading at all: CVCU Bed 1 writes the bullets straight under the
+    patient. Taken as the diagnoses only when they are the first lines under
+    the patient and not drug orders (a bullet after "_Sementara diterima_"
+    is not).
+  - "A/" as the heading (Lt. 4, 11-10 evening, from the chat export): read
+    only as the first line under the patient, so a consultant's "TS … A/"
+    block further down is never taken as cardiology's diagnosis.
+- **List Maker, same cause.** `LIST_DPJP_HEAD` missed the count in brackets
+  ("Dr.AHA  (1 pasien)", "Prof. MZ ( 3 Pasien)"): AHA's patient filed under
+  AFG, MZ's third under PK. `LIST_PATIENT` took one dot only, so "1..519",
+  "2..516" (two MZ patients) were lost. A block with diagnoses and no
+  heading (Lt. 4, 09-10 and 11-10) came through as raw text with no
+  Diagnosis section: `headlessDx` puts the heading in when the block starts
+  with a bullet or "A/".
+- **Audit** (real lists, scratchpad only): today's six lists and the five
+  Lt. 4 lists in the chat export. Every patient left without a diagnosis now
+  has none in the source: IM 501 (an operative-risk note only), drug orders
+  written under "Diagnosis:" (reported as before), a pediatri line with
+  nothing under it, and a short "Pasien Baru" copy whose full block is
+  read. List Maker: Lt. 5-6 now 21 patients (was 19), all on the right DPJP.
+- **Plan is not in the census.** By design since 2026-10-08: the census
+  shape follows the residents' sent censuses (identity + diagnosis). Not
+  changed here.
+
+Wrong turns: first assumed "diagnosis and plan" meant the List Maker (the
+census never prints a plan) and audited that first; Avi then said it is the
+Sensus. Both readers had the same blind spots, so both are fixed.
+
+Verify: typecheck, lint (0 warnings), 2461 tests (169 files), version, contrast, a11y,
+build — green.
+
+## `2026-10-14.1` — Sensus: several lists in one box; unnumbered patient lines
+
+Avi: "the sensus maker can't detect this format" (the RSWS list of 14-10,
+then the six morning lists as one text).
+
+- **Root cause 1 — a box was assumed to be one list.** `parseSource` takes
+  the kind and the place from the FIRST "List Pasien" header it finds. With
+  IGD, RSUH, RSWS, Lt. 5-6, CVCU and Lt. 4 pasted into one box, all 73
+  patients were filed as "IGD PJT", and the census covered only IGD. Each
+  list read alone was correct (RSWS 19 = its own "Total : 19"), which is why
+  the RSWS list by itself looked fine in tests and wrong in use.
+  **Fix:** `splitLists` cuts a box at each list header before parsing;
+  `SensusMaker` parses every part as its own source, keeps `texts[i]` beside
+  `sources[i]` so "Bandingkan" still points at the right lines, and the box
+  header shows "6 list dalam satu kotak" with a per-list line under it. The
+  cut is placed, in order of trust: at a WhatsApp message stamp or a hand
+  "/////" break; after the previous list's "Tabe terima kasih" line; else by
+  walking back from the header over blanks, separators, "-", section
+  headings, patient lines and greetings to the first heading — so the
+  RSWS/RSUH "Pasien Baru / Pulang / Pindah / Meninggal" block, which sits
+  ABOVE their greeting, stays with its list. "List Pasien Lt. 6 0 pasien"
+  inside the Lt. 5-6 list is a floor section, not a new list. A box whose
+  kind was chosen by hand is not split (the choice says what it is); a box
+  with one list comes back unchanged, so stored line spans don't move.
+- **Root cause 2 — a patient was only ever read from a numbered line.** The
+  14-10 IGD list numbers none ("IGD Redzone Bed 1 Ny. … / RM … / dr MAA ->
+  dr AHA"): 0 of 4 patients read. The Lt. 6 dr. YP patient ("511 bed 3/ny.…/
+  7-3-1990/") was lost the same way. **Fix:** `isBareEntry` — a line that
+  starts with a place (room number, IGD, zone, bed, kamar, Lontara, PCC,
+  CVCU/HCU/ICU), has a "/" and names a person, RM or birth date is a patient;
+  it also ends the previous patient's diagnosis block. "Bed 10/ Pasien
+  Pulmo", doses and vitals do not qualify.
+- **Box count.** It showed entries (RSWS 20: one patient is in "Pasien Baru"
+  and again below). Now `patientCount` counts by RM: 19, as the list says.
+- **"(Ai)"** — a two-letter resident tag was kept on the census line (the
+  nickname rule wanted 3+ letters). Now 2+.
+- Checked against the real 14-10 paste (scratchpad only, not committed):
+  IGD 4, RSUH 6, RSWS 19, Lt. 5-6 21, CVCU 22, Lt. 4 20 — matching each
+  list's own totals; CVCU's "26" includes 4 Pedi/BTKV-Pedi beds with no
+  patient line. Same result with the "/////" breaks removed.
+
+Wrong turns: first ran the RSWS list alone through `parseSource` — it read
+all 19, so the bug looked like it was elsewhere; the combined paste Avi sent
+next showed the one-box assumption. One old test asserted that an
+unnumbered "512 bed 2/Tn…/dr.ARB" line yields NO patient; its purpose was
+to stop "512" reading as patient 51, and the zero was the side-effect that
+dropped the YP patient. Rewritten to assert the room stays "512 bed 2".
+
+Not done: a WhatsApp multi-message copy prefixes each message's first line
+with "[stamp] Name:"; the split handles it, but a "Pasien Baru" heading on a
+stamped line is not recognised as a heading inside the parser (none of the
+current lists hit this).
+
+Verify: typecheck, lint (0 warnings), 2452 tests (169 files), version,
+contrast, a11y, build — green.
+
+## `2026-10-13.15` — List Maker revamp (phone head, readable List, export card, grouped controls); colour palettes
+
+- **Phone layout broken (Avi).** Root cause: one wrapping flex row held the
+  floor chips, the date (fixed 10 rem) and the chief box (fixed 18 rem), and
+  the six tabs were equal flex items in one row — on 390 px the last tab was
+  cut off and the date/chief wrapped unevenly. Fix: `ListMakerHeader` — the
+  lists in a scroll strip, date + chiefs in a grid that fits any width
+  (stacked under 420 px), tabs that keep their word width and scroll only
+  when they cannot fit (all six fit at 390 px). Measured: page width = screen
+  width at 390 px in every view checked.
+- **List tab, "a headache to see".** Root cause: every patient card carried
+  its full set of controls (≈12 inputs and buttons) at all times, so the
+  list could not be read as a list. Now one compact row per patient — room/bed
+  chip, DPJP code chip, identity (red/green), residents, notes, SOAP badge,
+  tags — and ONE "Atur" button that opens that patient's controls under the
+  row (one at a time). Tapping the row opens the SOAP, as on the denah.
+- **Export UI.** One card: Jam list + Simpan edisi first, then "Kirim /
+  ekspor" as four labelled tiles with icons (Salin teks — untuk WhatsApp,
+  Word: List, Word: Denah, PDF — denah + list). The WhatsApp preview is a
+  collapsible "Pratinjau pesan WhatsApp". Sticky beside the list on a wide
+  screen.
+- **Controls grouped by purpose** (`PatientControls`): Residen (Junior,
+  Chief, Pemegang, Operkan ke, Ganti chief — each with a visible label),
+  Rencana pulang (Warna, Tanggal), Tag, Status pasien. The status actions
+  each have their own colour: green "✓ Pulang", amber "↗ Pindah ruangan…",
+  accent "⇄ Kamar/bed…"; Hapus stays small at the end. Same component in the
+  SOAP window's "Atur pasien".
+- **"Anggota" → "Setelan"**: the tab holds members, the junior roster, the
+  floor's colours, nicknames and delete.
+- **Colour palettes** (Pengaturan → Tampilan → Warna aplikasi): accent
+  Biru, Toska, Ungu, Hijau, Oranye, Merah muda, Grafit; background Standar,
+  Kertas hangat (light), Hitam pekat (dark, OLED). `data-palette` /
+  `data-surface` on <html>, set before first paint (index.html) and by the
+  store; tokens in tokens.css; `check-contrast.mjs` checks every palette
+  (text on accent, accent as text) and background in both modes — all
+  ≥ 4.5:1. Found on the way: in dark mode every primary button was white
+  text on #5b9cff (2.8:1). New `--on-accent` token (white in light,
+  near-black in dark) replaces `text-white` on all 53 accent fills. The
+  default light accent is a shade darker (#0b5ed7) so it reads as text on
+  the subtle grey and on warm paper (the old #0d6efd was 4.2:1 on grey).
+- Checked by render at 390 px and 1440 px, dark/light, Toska and
+  Ungu + Hitam pekat.
+
+### Verify
+```
+npm run verify → typecheck, lint, 169 files / 2443 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.14` — Local save time; delete a saved list; handover boxes; "Tidak ada yang pegang"; division patients as KJS
+
+- **"disimpan 10:56" for a list saved at 18:56 (Avi).** Root cause: stored
+  times are ISO UTC ("…T10:56:…Z") and the panel sliced the text as if it
+  were local. Same slice on "Sudah keluar" (leftAt). Fix: `localOf(iso)`
+  (floor.ts) converts to the device clock; both places use it.
+- **A saved list could not be deleted; the 19.00 list was saved twice.**
+  Riwayat had no delete, and rules allowed it to the owner only. Fix:
+  "Hapus edisi" (two taps, small) for the owner and edit members — rules
+  updated, **needs the push**; `deleteEdition`. The duplicate came from a
+  second tap while the first write was pending: "Simpan edisi" now rests
+  2.5 s after a save and refuses a list identical (date, time, text) to the
+  last edition ("sudah tersimpan"). The write is not awaited (offline it
+  resolves only on server ack).
+- **Two cardiology DPJPs on one patient (utama ZD + KJS Aritmia MZ)** are
+  not duplicated: one roster patient; full line under the utama, a grey
+  reference in the consultant's KJS part (app, Word, PDF), "+ 1 KJS" in the
+  consultant's count; the WhatsApp list keeps its KJS line as sent.
+- **A patient of another department held by a division** (Papalangi,
+  Manutte in Prof. MZ's box — the list writes "MZ/…" but MZ is the
+  consultant): `effective()` now files a division-held patient as the
+  KJS of the DPJP on its line (`dpjpId` null, that DPJP in `kjsDpjpIds`,
+  code kept in `dpjpCode` so the line still reads "MZ/…"). They leave MZ's
+  own list for its KJS part and count "+ n KJS". Input: any line or hand
+  entry with "KJS ARITMIA" and no ward junior is held by Divisi Aritmia
+  automatically; otherwise Atur pasien → Pemegang → Div. Aritmia.
+- **Operkan ke Tmn Lain / Ganti Chief.** Per patient now
+  (`RosterPatient.operkan`, `gantiChief`; Atur pasien inputs with the
+  roster names), shown on the List card. Word residents page: the two
+  hand-written blocks became a two-box table filled from those notes, with
+  room to write; same in the PDF and under the app's Residen section.
+- **Holders stand out:** the junior's name in the residents table is 10 pt
+  (patients 7.5 pt) in Word and PDF, 14 px in the app.
+- **"(belum diisi)" → "Tidak ada yang pegang"** (`NO_JUNIOR`).
+- Tests: division filing, handover lines and holder size in Word, label.
+
+### Verify
+```
+npm run verify → typecheck, lint, 169 files / 2443 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.13` — A pasted SOAP finds a hand-entered patient without an RM
+
+- **Avi: "can a pasted WhatsApp SOAP update a manually entered patient?"**
+  Since 13.11 yes — when the hand entry had an RM (both are filed under
+  "rm:<n>"). Root cause of the gap: a hand entry WITHOUT an RM is filed under
+  "manual:<room>:<name>", so the group's SOAP (filed under "rm:<n>") never
+  met it and Tempel proposed a second patient. Fix: `pasteDiff` finds the
+  roster entry by key, else by RM (an updated entry keeps its first key, so
+  the next SOAP is found by its RM), else — for hand entries without an RM
+  only, and never from a list line — by name (titles ignored, `nameKey`) in
+  the same room.
+- Tags: unchanged — every floor tag prints in Word/PDF unless its "Ikut
+  dicetak" box is unticked; the blue "SOAP baru" badge never prints.
+- Test: found by name in its room, then by RM; another room or a list line
+  is not matched by name.
+
+### Verify
+```
+npm run verify → typecheck, lint, 169 files / 2441 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.12` — Manual patients look like reports; screen-only marks; Denah + List PDF; Analisis tab; slaber check
+
+- **Why manual patients looked different (Avi).** Root cause: a hand entry
+  had its own text shape — "Diinput manual oleh …", the identity, then
+  "Diagnosis:/Terapi:/Plan:" — so the SOAP window read other sections and
+  jump chips than for every report from the group. Fix: `manualFullText`
+  writes it as a ward report (opening with room/bed "… atas nama:",
+  identity, "DPJP Utama :", the group's assess/terapi/plan headings);
+  `readReport` reads it back to the same key, room, DPJP and body (tested).
+  Entries stored before are shown in the new shape when read (`readPatient`),
+  no migration. "Diinput manual" stays as provenance.
+- **A mark that must not be printed.** Root cause: every floor mark went to
+  Word. A working mark (Avi's "SOAP updated" mark) was printed for the
+  consultants. Fix: `FloorMark.print: false` ("Ikut dicetak di Word/PDF"
+  in Anggota → Warna list); `printedTags()` is what Word and the PDF use.
+  The 13.11 "SOAP baru" badge is screen-only by construction (never in
+  `patientRuns` or the print page).
+- **PDF: Denah + List** (List tab). `denahListHtml()` builds one printable
+  page — floor plan, DPJP boxes (KJS references), legend; residents table
+  on a new page; the list message in three columns on the next — and
+  `printDocument()` prints it from a hidden frame: the browser's "Save as
+  PDF" makes the single file. No PDF library. Checked with Chromium's print
+  engine on the Lt 4 data: 9 A4 pages, layout as the Word files.
+- **Analisis tab** (new). Read only from what Plano keeps (roster logs,
+  status, leftAt, editions): tiles (di lantai, masuk, pulang, pindah
+  ruangan, rencana pulang hari ini, H-1); lists for the date (rencana pulang
+  hari ini / H-1 still on the floor, sudah pulang, pindah ruangan, pindah
+  kamar, masuk); 7-day counts with the census of each day's last saved list;
+  change history (7 days, filter by kind). `domain/floorList/analysis.ts`.
+- **Cek dengan slaber perawat** (in Analisis). Opens the nurses' handover
+  Word file (`docxDocumentXml`, the zip reader's new file filter) and
+  `readSlaber` reads its table: date, shift, rows (room/bed, name, RM, DPJP
+  column; our DPJPs by name via the new `dpjpsNamedIn`, or any Sp.JP =
+  cardiology). Two traps found on the real sheet: vital-sign tables nested
+  in cells ended rows early (nesting-aware `topLevel` parsing), and rows
+  merge cells differently so a column number drifts (cells found by
+  content: the RM/TTL cell, the "DPJP" cell). Summary rows without an RM are
+  skipped. `checkSlaber` (by RM, else name without titles): cardiology on the
+  sheet but not on the list (with "di Plano: pulang/pindah" when known), on
+  the list but not on the sheet, room/bed differs. On the 12-10 night sheet:
+  41 patients read, 16 cardiology.
+- Tests: manual text round-trip; screen-only mark; print page (colour,
+  printed tags only, no SOAP mark, escaping, order); analysis (kinds, day,
+  week); slaber (nested table, drifting cells, summary row, RM spellings,
+  comparison) — fixtures invented.
+
+### Verify
+```
+npm run verify → typecheck, lint, 169 files / 2440 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.11` — A single copied SOAP is read; hand-entered patients take SOAPs; "SOAP baru" marks
+
+- **Baca "had no response" (Avi's attachment: one SOAP copied on its own).**
+  The message was read fine (Tn. …, 415/2, floor 4, DPJP ARB) — the bug was
+  after it. Root cause: a message copied by itself (long-press → Salin) has
+  no "[time] name:" line, so `sentAt` was ''. `pasteDiff` only replaces a
+  stored SOAP with a NEWER one; '' is never newer, so a patient already on the
+  roster counted as "tidak berubah", Simpan stayed disabled, and nothing
+  visibly happened. Fix: an untimed message is taken as sent now (stated in
+  the result); the same text again is "unchanged" whatever its time (so a
+  re-paste does not churn); an update with no sender keeps the stored sender
+  (the junior read from the sender's nickname does not go blank). Baca now
+  always answers: "Tidak ada pasien terbaca" (with what is needed) or
+  "Semua pasien sudah sama dengan yang tersimpan".
+- **Hand-entered patients could not take a SOAP.** Root cause: `pasteDiff`
+  treated `stored.manual` as "never replace" (meant for pediatri patients
+  without reports), so a real SOAP pasted later was ignored; and the SOAP
+  window had no edit for them ("Ubah SOAP" is for WhatsApp text). Fix: a SOAP
+  replaces a hand entry (a list line still does not); the SOAP window shows
+  "Ubah isi" for a hand entry, opening the same form as the List tab.
+- **"SOAP baru" (Avi: mid-day re-paste, need to see which SOAPs are now the
+  newest).** `soapState(report, date, lastSent)`: "SOAP baru HH:MM" when the
+  SOAP arrived after the last saved edition; "SOAP dd/mm" (grey) when there
+  is none yet on the list date. Not for hand entries or list lines. On List
+  cards, denah lines and in the SOAP window. `rosterView` takes the last
+  edition's time (local stamp).
+- Tests: manual replaced by a SOAP not by a list line; same text unchanged;
+  sender kept; soapState cases; the readmit fixture now has new text (its
+  identical text is, correctly, unchanged).
+
+### Verify
+```
+npm run verify → typecheck, lint, 166 files / 2430 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.10` — Floor marks become tags (auto rules); one full line per patient in Per DPJP; KJS-only patients kept
+
+- **Tags, not line colour (Avi).** 13.7 let a floor mark colour the whole
+  identity, so a mark and red/green competed for the same text: one won, the
+  other was lost. Root cause: marks were stored in the discharge-colour field
+  (`colour = "m:<id>"`). Fix: `colour` is red/green only again; marks are
+  `RosterPatient.tags` (set by hand) + `tagsOff` (a rule-set tag removed for
+  this patient), shown as `[label]` in the mark's colour after the line
+  (List chip, denah, Word run, legend). Any number per patient. Readers turn
+  a 13.7 `colour: "m:<id>"` into a tag; edition patients' `mark` is read as a
+  tag.
+- **Auto rules (Avi: "every new patient, NP patients, YP and AAU…").**
+  `FloorMark.auto`: `baru` (not on the last edition dated before the list
+  date; without one, added on that date), `dpjp` (chosen DPJPs), `btkv`,
+  `kjs` (has a KJS DPJP), `divisi`, `tanpa-junior`. Edited per
+  mark in Anggota → Warna list (DPJP chips for `dpjp`). `tagsOf()` resolves
+  hand ∪ (rule − off) in the floor's order.
+- **Same patient in two DPJP boxes.** A KJS patient whose own DPJP is ours
+  is now a short grey reference in the consultant's KJS part
+  ("420 Bed 2/Tn. X → ZD"), app and Word; full line only when the KJS box is
+  the patient's only box. Counts unchanged ("+ n KJS"); the WhatsApp list
+  keeps its KJS lines as sent.
+- **KJS-only patients vanished (point 5).** Two root causes:
+  1. the list reader skipped every line under a "KJS" heading, assuming
+     the patient also appears under its own DPJP — not so when the utama is
+     another department ("TM/…"). Now KJS lines are read: merged into the
+     patient's own line (consultant added to `kjsDpjpIds`) or kept with
+     `dpjpId: null` and the consultant as KJS. An unknown leading code is
+     kept as `dpjpCode` and printed (`dpjpCodeOf`), never a DPJP box;
+  2. a SOAP with an other-department utama and our DPJP only as a consultant
+     ("DPJP KJS Aritmia: Prof. MZ") was filed as MZ's own patient (first
+     cardiologist found). Now `dpjpId: null`, `kjsDpjpIds: [mz]`.
+- **Division holder narrowed.** 13.9 read "KJS Aritmia" from any text, so a
+  ward patient of ZD with an Aritmia consult would have left the ward's
+  blocks. Now automatic only for a patient the ward does not report on
+  (from a sent list or entered by hand) with no junior written: "KJS
+  <divisi>" → that division; only a consultant DPJP → "KJS". A SOAP from the
+  floor group = the ward follows it. Hand setting unchanged.
+- Tests: tags (H-1 keeps red, rules, per-patient off, "baru" with and
+  without a previous list, deleted mark), rules parsing/matching, division
+  rules (list vs SOAP vs junior), KJS line kept/merged, unknown code,
+  other-department SOAP filing, Word tag run and KJS reference.
+
+### Verify
+```
+npm run verify → typecheck, lint, 166 files / 2427 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.9` — Patients held by a division; numbered residents; small delete; control panel on the denah
+
+- **"(belum diisi)" for a division consult (Avi's screenshots).** Root cause:
+  the model knew only two holders — a ward junior or nobody. A patient of
+  another department consulted to a cardiology DIVISION (e.g. KJS Aritmia)
+  is held by that division's resident, is listed but not followed up by the
+  ward, so it fell into "(belum diisi)" and the single-chief fallback added
+  it to the chief's count. Fix: `RosterPatient.division` ('' = read from
+  the text, '-' = ward residents, else the division). `divisionOf` reads
+  "KJS [divisi] Aritmia|Intervensi|Imaging|Vaskular|Prevensi|Pediatri" in
+  the identity/opening (KJS BTKV is not a division). `effective()` gives a
+  division patient no ward junior/chief (only what is set by hand).
+  `residentGroups()` (new, shared by the app and Word) puts them in their own
+  "Divisi Aritmia (n, tidak di-FU)" block, counted for no junior or chief;
+  the "belum ada chief" hint skips them. Set or override per patient in the
+  new "Pemegang" select.
+- **Residents numbered** (Word residents table and the app's Residen cards):
+  "1. …", "2. …", the count beside the name.
+- **Delete is small.** The 13.7 full-width red button sat beside Pulang;
+  now a small grey "Hapus" text button at the card's meta line / far right of
+  the SOAP window's actions. Still two taps.
+- **Control panel for a patient tapped on the denah.** The List card's
+  controls moved into `PatientControls` (junior, chief, colour, planned
+  discharge, holder, Pulang, Pindah…, Kamar/bed…, Plan suggestion), used by
+  the List card and by the SOAP window ("Atur pasien", two columns there);
+  Pulang/Pindah close the window. The junior/chief datalists render once per
+  page (`RosterDatalists`) instead of inside the List tab.
+- Checked by render: phone and desk SOAP window with the panel, list cards,
+  Residen with a division block; Word residents page via LibreOffice.
+- **Not done:** the WhatsApp list text does not mark division patients
+  specially (their identity already says "KJS ARITMIA").
+- Tests: divisionOf (text, by hand both ways, BTKV), effective for a division
+  patient, residentGroups, Word numbering and division cell.
+
+### Verify
+```
+npm run verify → typecheck, lint, 166 files / 2418 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.8` — Word denah: residents as a table; in-app Per DPJP reverted
+
+- **Misread request (13.7).** Avi's image meant the **Word** denah's residents
+  page, not the in-app Per DPJP section. The 13.7 Per DPJP card restyle is
+  reverted: every DPJP box again, centred title, numbered lines. Search still
+  filters the lines.
+- **Word denah, page 2:** the residents were a list of blocks separated by
+  "=====" lines. Now a three-column table, one cell per junior: the name and
+  count in bold on top, then each patient's line (room/bed, DPJP code,
+  identity, residents, colours as before). The chiefs line stays above; the
+  hand-filled "Operkan ke Tmn Lain" and "Ganti Chief" blocks stay under it.
+  The page break sits on the chiefs line, or on an empty paragraph when there
+  is none (a table cannot carry it). Checked by rendering a denah from the
+  Lt 4 export through LibreOffice: 8 juniors in 3 rows, each row kept whole.
+- Test: the residents page holds a table with each junior and the count.
+
+### Verify
+```
+npm run verify → typecheck, lint, 165 files / 2414 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.7` — Delete a patient; doubtful patients in a pasted export; floor colours; search; Per DPJP as cards; phone sideways scroll
+
+- **Phone: the page scrolled sideways in "Perbesar" (Avi's screenshots).**
+  Root cause: the patients' sr-only colour labels are absolutely positioned,
+  and the denah's zoom scroller had no positioned ancestor, so they were laid
+  out against `#main` at their x in the 880 px plan and `#main` grew
+  sideways (pattern #24, one level deeper). Fix: the DenahCanvas scroller is
+  `relative` (the containing block) plus `overscroll-x-contain`. Measured at
+  390 px: `#main.scrollWidth` 757 → 390, zoomed and fitted. The new Anggota
+  colour rows hit the related flex min-content trap (an input with
+  `width:auto` contributes its intrinsic ~218 px to the grid track): flexible
+  inputs are `w-0 flex-1 min-w-0`; measured 437 → 390.
+- **Hapus pasien.** `DeletePatient` (two taps: "Hapus" → "Hapus {nama} dari
+  list? Ya, hapus / Batal") on each List card and in the SOAP window header;
+  `deleteRosterPatient(floorId, key)`. Rules: `patients/{key}` delete was
+  owner-only, now owner **or edit member** — **needs the push**. Pulang still
+  keeps the record; delete is for duplicates and mistakes. The SOAP window's
+  actions moved to their own row so the confirm never squeezes the title.
+- **Tempel: patients already gone, from an export spanning days.** Root
+  cause: `pasteDiff` treated everyone in the paste as on the floor now, and
+  proposed every unknown patient ticked. An export of three days carries
+  SOAPs of patients discharged since. Fix: `PasteDiff.doubt` (key → reason),
+  judged against the paste itself (its newest message is "now"):
+  1. a newer sent list in the paste (list messages within 3 h of the last
+     one = one list) does not include the patient;
+  2. the Plan said pulang/rawat jalan hari ini on an earlier day, or H-1 two
+     days or more before;
+  3. no report for > 36 h while others kept coming.
+  Being on the newest list clears 2 and 3. Doubtful patients are proposed
+  **unticked** with the reason shown. On the Lt 4 export (9–12 Oct) the 20
+  flagged patients are exactly those with no SOAP on the 12th and absent
+  from the 12th 04.12 list; every patient on that list stays ticked.
+- **Floor colours (Avi: "more customizable colour options").** Red/green
+  stay fixed (everyone reads them the same). `FloorDoc.marks: {id, label,
+  color}[]` edited in Anggota → "Warna list"; `colour` on a patient may be
+  `m:<id>`. Colours come from a fixed palette (`floorList/marks.ts`: blue,
+  purple, orange, pink, teal, brown, grey) — each with light/dark CSS tokens
+  `--mark-*` and a Word colour; `check-contrast.mjs` now checks each as text
+  on its 8 % tinted card in both modes (all ≥ 4.9:1). A hand-set mark wins
+  over the planned discharge date, like a hand-set red/green. Shown on the
+  List card (tint + label chip), the denah (colour + [label]), the Word
+  denah (colour + legend) and the in-app legend. A deleted mark shows
+  nothing. Rules: `marks` added to the editor's allowed fields — **needs the
+  push**. Readers validate (`readMarks`, `readRosterPatient` accepts
+  `m:\w+`, `readPatient` reads a stored edition's mark).
+- **Search on List and Denah.** One box above both tabs (kept when
+  switching). `searchWords`/`matchesSearch`: every term must start a word in
+  name, identity, RM, room/bed ("417", "417/2", "417 bed 2", "4172"), DPJP
+  code, residents, KJS BTKV, colour word (H-1, pulang, a mark label) or the
+  diagnosis/plan; digits match anywhere; a hyphen/slash term is a phrase
+  ("pre-op" never matches "Prednison … operasi"). List: only matching cards,
+  "n dari m". Denah: the plan keeps every bed but dims the rest and outlines
+  the matches; a "Hasil cari" block on top (tappable — the phone plan is
+  small); Per DPJP and Residen show matches only.
+- **Per DPJP like the Residen cards (Avi's image).** One card per DPJP with a
+  patient: name bold top-left with the count ("8 + 2 KJS"), then each line
+  with room/bed prefix, as the Residen section. DPJPs without patients are
+  one line ("Tanpa pasien: …") instead of a wall of empty boxes. The Word
+  denah's DPJP tables are unchanged (the printed sheet).
+- **Wrong turns:** search first split "pre-op" into two loose words — 6/34
+  hits on the real export, mostly "operasi"; now a phrase. The mark row's
+  first layout overflowed at 390 px (above).
+- **Not done:** the Word denah does not hide empty DPJP tables; marks are not
+  carried into the WhatsApp text (it has no colour).
+- Tests: doubt reasons (plan pulang, H-1, silence, newer list incl. a list
+  split over two messages, SOAP after the list), marks (read, ids, effective,
+  wins over date), Word mark colour and legend, search terms.
+
+### Verify
+```
+npm run verify → typecheck, lint, 165 files / 2414 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.6` — Floor junior roster; resident names normalised to it
+
+- **Why:** lists and SOAPs spell residents freely (a name split by a space,
+  one letter off, short forms, case), and the denah's Residen blocks
+  grouped by the raw string, so one person became two blocks. A parser can't
+  know the right spelling; the floor can. **Fix:** `FloorDoc.juniors`
+  (comma-separated, like `chiefs`), edited in Anggota → "Roster junior
+  lantai" (owner and edit members; rules: `juniors` added to the editor's
+  allowed fields — **needs the push**). `rosterName(name, roster)`: equal
+  ignoring case/spaces/punctuation; else a prefix (3+ letters) or one edit
+  apart (5+ letters); applied only when exactly one roster name fits.
+  `effective()` maps the junior against juniors ∪ chiefs and the written chief
+  against the same, so it is display-time: stored reports are untouched and
+  existing patients are corrected immediately. The chief fallback (single
+  floor chief) is unchanged.
+- ListPanel: junior input gets a `floor-juniors` datalist.
+- `ChiefsField` takes label/id/noun so the same chips box serves both.
+- Tests: matching (spacing, case, typo, prefix), refusal on ambiguity or no
+  match, `effective()` with and without a roster.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2404 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.5` — List import: a trailing " - KJS BTKV" is a note, not part of the resident
+
+- **Bug (Avi's 13-10 04.00 list):** "…/RM x/dr. Didi/FU Ari - KJS BTKV" gave
+  junior "Ari - KJS BTKV", so the denah's Residen section split Ari, Imelda,
+  Indah and Qalb Y into a second "- KJS BTKV" block each. Root cause: the
+  note-stripper removed only bracketed "(KJS …)"; this list writes the note
+  bare after the residents. Fix: a trailing " - KJS …" (to the end of the
+  line, no slash) is removed before the line is split; `btkv` is still read
+  from the original text. On that list: 13/13 patients with the right room,
+  DPJP, junior and chief as written (chief left empty where the line names
+  none, so the floor's single chief fills it).
+- "Qalb Y" is how the list spells the resident; it is kept as written.
+- Test: both shapes from the list, anonymised.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2401 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.4` — Phone denah drawn as the plan (scaled), not a stacked list; "FU" marks the junior in list import
+
+- **Phone denah** (Avi: "I want the view to be exactly like the denah on
+  the desktop"). Below `md` the plan used to render its columns stacked —
+  a list of rooms, no floor shape. Now one rendering for every width:
+  header rooms + the `planLayout` grid, inside `DenahCanvas`, which draws it
+  at a fixed desk width (880 px) and, on a narrower screen, scales it to fit
+  (`transform: scale`, height measured with a ResizeObserver so the page
+  below does not overlap). "Perbesar" switches to full size with horizontal
+  scroll; preference in localStorage (`plano.listmaker.denahZoom`). Tap
+  targets keep working when scaled; the SOAP box opens at full size. The
+  stacked-column code is removed. Checked at 390 px (fit and zoomed) and
+  1366 px; no horizontal page scroll.
+- **List import — "FU" marks the junior**: "… / RM x / FU Ari - dr. Didi" and
+  "- dr. Didi / dr. FU Avi" (chief written first). The FU segment is moved out
+  of the identity; when a "FU" name is present it is the junior and the other
+  name the chief, otherwise junior then chief as before.
+- Tests: both FU shapes.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2400 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.3` — Sensus: DPJP codes on the IGD and CVCU/HCU/ICU lists
+
+- **Bug — 6 of 30 patients on today's IGD + CVCU lists in "Perlu dicek"
+  (no DPJP).** Root cause: `segmentCodes` accepted a slash segment that is
+  exactly a code with an optional title and ONE bracket. The two lists also
+  write (a) the word DPJP before it ("/DPJP Prof PK", "DPJP Prof MZ"), (b) the
+  code after the RM with a space, not a slash ("RM 1724699 dr. AHN (Firah
+  -Malik)"), (c) several brackets after the code ("dr. KS (KJS BTKV) (Haliim
+  - Malik)", "(Arago- Malik) (Pemantauan)"). Fix: `CODE_RE` takes an optional
+  "DPJP" word and any number of brackets; `slashBeforeCode` turns "<RM
+  number> <title> CODE" into a segment (only after a 4+ digit number and only
+  with a title/DPJP word, so "(Ara - dr. Malik)" never moves). After: 30/30
+  assigned.
+- **Printed line:** `tidy` drops the CVCU resident pair "(Name - [dr.] Name)"
+  on the bed line and after the code; "(KJS BTKV)" stays.
+- Bed-only rows ("HCU Bed 1 / Pasien Pedi", "ICU bed 3 / BTKV Pedi",
+  "IGD Redzone bed 5 / pasien GH") stay out: no identity to list.
+- Tests: the three shapes (anonymised), resident-pair stripping.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2399 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.2` — Bare TS headings are sections (Salin Plan no longer carries consultants' orders); bare Plan past Selesai
+
+Audit (Avi: "have you learnt the SOAP for section recognition — Salin by
+section, header section?"): 517 reports (Lt 4 Sept, Lt 5 Oct, Avi's 13-10
+note) through `parseSections` → `regionsOf` (Salin per bagian) and
+`jumpTargets` (header bar).
+
+- **Bug — consultants' A/P/I copied as OUR Plan.** 496 of 500 TS heading
+  lines were not headings; in 328 of 517 reports the Plan region ran on into
+  the TS blocks. **Root cause:** a TS heading was a section only when bolded
+  (`*TS BTKV*`, wrapped-header rule) or with a colon; the corpus writes it
+  bare ("TS Neuro", "Ts EMD", "TS GH/"). The copy slicer, jump bar, tints and
+  frozen-text ranges all key off parser sections, so all four missed them.
+  **Fix:** `TS_BARE_RE` in `parseSections` — the whole line, "TS" + ≤6 words,
+  no digits, optional trailing ":" or "/", no bullet (a "- TS Gizi" item stays
+  a plan line). `CONSULT_HEADING` (slicer) and `TS_BLOCK_RE` (jump bar) are
+  now case-insensitive ("Ts EMD"). After: TS headings missed 496 → 0, Plan
+  regions containing TS text 328 → 0.
+- **Bare "Plan" after our Terapi/A** now also when a "Selesai :" or other
+  custom heading sits between them, but never inside a TS block (tracked as
+  last-own-heading + in-consult). Plan regions missing 33 → 5 (the rest have
+  their only "Plan" in odd places, e.g. after O).
+- Remaining (measured, not fixed): S missing 12, O missing 24 (notes that
+  start straight from the identity/DPJP lines into the exam), A missing 4,
+  Terapi missing 4 — the copy still works for the groups that exist.
+- Tests: bare/lowercase/slashed TS headings; bullet "- TS" not a heading;
+  Salin Plan stops at "TS Neuro" and Terapi + TS carries it.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2397 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-13.1` — Frozen counters (Selesai, STOP, TS blocks) out of the day-marker check; List Maker imports a sent List Pasien
+
+- **Bug — "3 hitungan hari belum berubah" on a note with one counter of
+  ours** (Avi's note, 13-10: our A "post PPM Replacement H-4" advanced; the
+  three flagged H-3 were "Ceftriaxone (H-3)" under Selesai, and TS Aritmia's
+  "Post PPM Replacement H-3" and "Ceftriaxone (H-3) --> STOP").
+  **Root cause:** the day-marker check treated every counter in the note as
+  a running count to advance. Finished therapy (how long it RAN) and a
+  consultant's pasted block (their count, their day) are frozen text by
+  design. **Fix:** `format/frozenText.ts` `frozenRanges()` — the Selesai
+  sub-list to its first blank line, any stopped line (`--> STOP`, `aff`,
+  `dihentikan`), and each TS block from its heading to our next S/O/A/Terapi
+  heading or the end; `checkSoap` drops counters inside them. Reusable for
+  any later check that must leave quoted text alone.
+- **List import (Avi: lists from people outside Plano).** `readListMessage`
+  (via `readReports`, so Tempel and exports get it for free), layout-free:
+  a DPJP heading sets the DPJP; a line starting with a room ("419 bed 4/",
+  "508 A/", "410/") — numbered, or unnumbered when it reads like an identity
+  — or a numbered DPJP code ("ZD/") starts a patient; residents from " - dr.
+  A / dr. B", "/dr. A - dr. B", "/dr.KS/nick" or "/ dr. A/dr. B"; KJS lines
+  skipped. Validated on all 22 list messages in the two exports: read counts
+  within 0–3 of each list's own JUMLAH header (the gap: KJS-only and garbled
+  lines), every patient with a DPJP.
+- **Precedence:** `FloorPatient.fromList`; in `latestOf` and `pasteDiff` a
+  SOAP outranks a list line whatever the time (a list line has A/T/P only).
+- Not changed: "Judul ganda: Analisis Gas Darah PJT (09-10-2026)" on the same
+  note is a genuine duplicate heading (two AGDs that day, no times).
+- Tests: frozen ranges + day-marker on the reported shape; list shapes A/B/C,
+  KJS skip, SOAP-over-list in `latestOf` and `pasteDiff`.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2395 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.15` — List Maker: per-list panel state, batched paste, legacy callout only with legacy data; SOAP box jump row; clearer per-DPJP counts
+
+- **Bug — "Menghapus…" shown on the next list after a delete.** Root cause:
+  the tab panels (Anggota, List, Tempel, Riwayat) were rendered at the same
+  position for every list, so React kept one instance and its state across
+  a list change — the delete confirmation, a half-read paste, a typed
+  edition time. Fix: every list-scoped panel is keyed by `floor.id`, so a
+  different list is a fresh panel. (The delete box itself was right; it was
+  the wrong list's box.)
+- **Bug — a saved paste "appears only after switching tabs".** Root cause:
+  `PastePanel` awaited each write in turn; with the offline cache every
+  await is a server round trip plus the rules' `get()` of the floor, so a
+  full export (~120 patients) kept "Menyimpan…" up for most of a minute
+  while the denah had already filled in from the cache. Fix:
+  `writeRosterBatch` — the whole paste as batched writes (≤400 per batch):
+  one round trip, all-or-nothing; the panel clears before the commit. The
+  legacy move uses it too. Harness: 120 patients from the Lt 4 export → one
+  batch call.
+- **Legacy callout** ("Pindahkan data lama") now appears only when
+  `readLegacy` finds old data (read once per empty list); it showed on every
+  new list.
+- **SOAP box jump row** (`soapParts` + `SoapParts`): parts at S, O, A,
+  Terapi, Plan (parser sections that own their line) and at each bare
+  "TS …" line (the parser does not read those as headings); an early short
+  "Diagnosis :" keeps its name. Tinted sticky headings, census-style chips.
+  Parts join back to the text unchanged (tested).
+- **Counts:** `countLabel` → "n pasien (k kardio, b KJS BTKV)", "n pasien
+  KJS BTKV" when all are BTKV, "+ n KJS" unchanged.
+- Not done: the delete flow is still untested against the live rules.
+
+### Verify
+```
+npm run verify → typecheck, lint, 163 files / 2389 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.14` — Parser hardening from two new exports (Lt 4 Sept, Lt 5 Oct): A/T heading spellings, floor/room reading, Super VIP, IGD, TS Lain; section parser coverage; specialty spellings
+
+Corpus: Lt 4 1–22 Sept (678 messages, 402 reports, 122 patients) and Lt 5
+5–12 Oct (145 messages, 114 reports). Kept in the session scratchpad only;
+nothing from them is committed — every new test fixture is invented.
+
+- **List Maker — empty Diagnosis/Terapi on 29 of 402 Lt 4 reports.** Root
+  cause: `ASSESS`/`TERAPI` were enumerations of word orders ("mohon izin
+  (pasien) (kami) assess dengan"), and the corpus has more — "Mohon izin dok,
+  pasien kami diagnosis dengan", "… asses pasien dengan", "assesstment",
+  "Mohon Izin Kami Asses:" with no "dengan". Fix: one pattern — "mohon
+  izin/ijin", up to 24 chars, an assess/diagnosis (or terapi / inisial
+  terapi) word, then "dengan" or a colon. After: 0 empty bodies on Lt 4, 1 on
+  Lt 5 (a consult with no A at all); 516/517 bodies start "Diagnosis:".
+- **Floor/room.** "Lt .4" (space before the dot) missed; "PJT Kamar 417"
+  has no floor word → floor from the room's first digit; "Kamar Super VIP" /
+  "Supervip" → `roomNamed(floor, 'Super VIP')` reads the plan's subtitle
+  (411 on Lt 4) instead of hardcoding it. **IGD reports** (no floor, no room)
+  used to pass the paste filter because a missing floor counted as a match —
+  `onFloorNumber` now requires the floor, and Tempel lists them as "tanpa
+  lantai".
+- **KJS TS Lain** was only "KJS" in the first 400 chars; 7 patients whose
+  DPJP Utama is Urologi / GH / Bedah Onkologi / KGEH / GER / Neuro / Bedah
+  Saraf were counted as Kardio FU. `otherDepartmentUtama`: a "DPJP … Utama"
+  line naming no cardiology DPJP and no BTKV.
+- **Section parser (Plano's own notes, checker, copy):** measured on the
+  same 516 reports — A missing 171 → 3, Terapi 144 → 5, Plan 120 → 17.
+  (1) new alias spellings; (2) "Mohon …" aliases accepted as a whole line
+  without a delimiter; (3) a bare "Plan"/"Planning" line only right after the
+  patient's Terapi/A. **Wrong turn:** a general "whole-line alias ≥5 letters"
+  rule split TS blocks at their own bare "Plan diagnostik" lines (konsulReply
+  jump-bar test caught it); narrowed to the two rules above. New aliases
+  reach existing users through seedSync's three-way merge.
+- **Specialties:** rheumatologi, gh/kgh/ginjal ht/interna gh, emd/endrokrin,
+  infeksi tropis/tropis, ger/kger. consult-not-in-dpjp on the corpus 130 →
+  122; the rest are TS answers genuinely missing from the DPJP list.
+- Corpus run of the 12.13 anticoagulant rule: 21 of 74 warfarin reports and
+  6 of 141 heparin-mentioning reports lack INR/APTT monitoring in the Plan;
+  spot-checked, all genuine (INR values in O only).
+- Not done: no Lt 5 denah (no plan drawn; List Maker stays Lt 4); 11 bare
+  "Plan" lines after other sections remain unread on purpose.
+
+### Verify
+```
+npm run verify → typecheck, lint, 162 files / 2386 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.13` — Anticoagulant monitoring check; warfarin rounding; sidebar DPJP card removed; List Maker: room/bed move, tinted cards, coloured list, any-DPJP manual patient, chief field, delete list
+
+- **SOAP checker — heparin/warfarin without monitoring** (Avi, 12-12).
+  `checkAnticoagulantMonitoring`: a RUNNING Plan/Terapi line with heparin/UFH
+  (not LMWH, flush or lock) and no APTT anywhere in Plan/Terapi →
+  `heparin-without-aptt` "Cek APTT/hari"; warfarin/Simarc/Notisil and no INR
+  → `warfarin-without-inr` "Cek INR/3 hari". Stopped lines and the
+  "Selesai :" sub-list are excluded. Wrong turn: Selesai with a colon is
+  parsed as its own section, so its heading never reaches `planLines`; the
+  sub-list is located in the body by offset instead (test caught it).
+- **Warfarin RSWS — rounding.** `spreadWeekly(total, step, mode)` with
+  `RoundMode` nearest/down/up and `roundedTotals()`; the card offers the
+  choice only when down ≠ up, labelled with each resulting weekly total.
+  Rounding is applied to the weekly total in the chosen step, so the ward's
+  weekend-first spread is kept.
+- **Sidebar DPJP card removed.** Root cause of the duplicate: the patient
+  page published `dpjpHint` to the shell AND renders the same facts itself
+  (`renderDpjpLine` above the note at every width, `DpjpSideCard` in the
+  panel layout). Two sources for one fact; the shell copy is gone with its
+  store field and effect.
+- **List Maker — room/bed move within the floor.** `writeRosterPlace` (leaf
+  writes `report.room`/`report.bed` via FieldPath, `placedAt`, log).
+  **Root cause it had to handle:** a colleague's later SOAP still carries
+  the old room, and `pasteDiff` would have proposed (ticked) moving the
+  patient back. `RosterPatient.placedAt` (local wall clock, the same clock
+  as `sentAt` — not ISO/UTC, which would compare 8 h off) suppresses the
+  move for SOAPs written before it; PastePanel now keeps the stored place
+  unless a move is confirmed (it used to take the report's place whenever
+  the move was not flagged).
+- **Tinted patient cards** (red/green by `discharge`, plus an sr-only label);
+  **coloured list** — `splitFloorList()` + `ListMessage` (checkbox "Warnai
+  per DPJP", jump chips, census tints; preference in localStorage; display
+  only).
+- **Manual patient for any DPJP:** no pediatri preselection or ordering;
+  DPJP required.
+- **Chief field:** chips inside one fixed-height box. Root cause of the row
+  shifting: `INPUT` carries `w-full`, which beat `w-28`, so the input wrapped
+  under the chips and grew the header row. Same class clash fixed on the
+  Pindah/Kamar inputs (`!w-*`).
+- **Delete list (owner):** `deleteFloor` reads patients/editions/days FROM
+  THE SERVER (an offline cache could miss documents and orphan patient data),
+  deletes them in batches of 400, then the floor doc. Rules: owner may delete
+  the floor and its subcollection docs (checked via the parent, hence the
+  order). **Needs the push.**
+- Tests: anticoagulant rule (fires, silences), rounding modes, hand placement
+  vs older/newer SOAP, `localStamp`, `splitFloorList`.
+- Not done: delete is not undoable; rules not run against the emulator.
+
+### Verify
+```
+npm run verify → typecheck, lint, 162 files / 2379 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.12` — List Maker: explicit roster; status by hand; SOAP only suggests; editions with free-text time; Pulang/Pindah note
+
+- **Design flaw — status was inferred from free text** (Avi, 12-12: "too
+  risky, high chance of mis-parse").
+  - **Root cause:** 12.8–12.11 had no notion of WHO is on the floor. The
+    view was recomputed from the reports of the last three days: red/green
+    from `dischargeFlag(plan)`, a patient dropped when the plan said
+    "pulang" or reports stopped. A proposal ("usul H-1") therefore read as a
+    decision, a late SOAP silently dropped a patient, and a transfer to
+    ICU/CVCU had no representation at all. Any regex fix would only move the
+    error; the missing piece was state owned by a person.
+  - **Fundamental fix:** an explicit roster, `floors/{id}/patients/{key}`
+    (`RosterPatient`: latest `report` + `status` dirawat/pulang/pindah,
+    `pindahKe`, `leftAt`, `colour` none/h1/today, `dischargeDate`, resident
+    overrides, `dismissed`, `log`). Every decision is a leaf write by a
+    person, logged with `arrayUnion`, undoable (Kembalikan). `effective()`
+    derives the list line; colour comes only from `colourOn()` (hand mark, or
+    planned date: red the day before, green from the day).
+  - **Paste is a reviewed diff** (`pasteDiff`): fresh (proposed, ticked),
+    updated (applied), moved room/bed (confirm, else `updatedReport` keeps
+    the old place), readmit for patients who left (unticked). A paste never
+    removes anyone. Edited reports survive a re-paste of the same stamp;
+    hand-entered patients are never overwritten.
+  - **SOAP as suggestion only:** `suggestionFor()` reads the Plan relative to
+    the report's day (yesterday's "H-1" → today; yesterday's "pulang hari
+    ini" → nothing), shown as a Tandai/Abaikan chip; dismissal is per report
+    stamp, so a newer SOAP can suggest again. `readReport`/`manualPatient`
+    now always set `discharge: null`.
+- **Editions:** `floors/{id}/editions/{id}` = date, free-text time (prefill
+  04.00/16.00/19.00 by hour), the message and the active patients as sent;
+  tab **Riwayat** re-exports Word from the snapshot. Rules: create only, no
+  update/delete.
+- **Pulang/Pindah note** (`leftSince` last edition → `leftNote`), separate
+  from the list, without residents.
+- **Chiefs** moved from the per-day doc to `floor.chiefs` (editor-writable
+  field list in rules now includes `chiefs`); per-patient choice via the
+  roster's `chief`.
+- **Migration:** a roster-less floor shows **Pindahkan data lama**:
+  `readLegacy` (days + `floor.manual`) → `latestOf` → `addRosterPatient`.
+  Colours and per-day resident edits are deliberately NOT carried over (they
+  were the inferred state this release removes). Old `days` docs are left in
+  place, read-only to the app.
+- Removed: `dayView`, `emptyDay`, `pastePlan`, `withEdits`, `FloorDay`,
+  `onFloor`, `GonePatient`, the day-doc writers.
+- **Rules:** `patients/{key}` (members read; owner/edit create+update;
+  `report is map`; status enum; no delete) and `editions/{id}` (members read;
+  owner/edit create; no update/delete). **Need the push to take effect.**
+- Tests: floor.test.ts rewritten for the roster (roles, chiefs, effective,
+  colourOn, rosterView, suggestionFor incl. relative day and dismissal,
+  pasteDiff fresh/updated/moved/readmit/edited/manual, leftSince/leftNote);
+  floorList.test.ts: colour no longer from the SOAP.
+- Not done: no confirm on Pulang (Kembalikan undoes it); the log is shown
+  only as "by" on left patients; editions are capped at the latest 60 in the
+  view; untested against the live rules emulator.
+
+### Verify
+```
+npm run verify → typecheck, lint, 162 files / 2373 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.11` — Scroll-past-the-shell fix; several lists; draggable/resizable SOAP box; Ubah SOAP; several chiefs; symmetric denah
+
+- **Bug — the page scrolled past the app into blank space** (Avi's
+  screenshot: sidebar lifted, empty area below).
+  - **Root cause:** the shell's root and `#main` were not positioned. Every
+    `position: absolute` descendant without a positioned ancestor is laid
+    out against the DOCUMENT; the denah's `sr-only` "(H-1)/(pulang hari
+    ini)" labels sit deep in `#main`'s content, so the document grew to the
+    content's height (measured: 2247 px in a 900 px window) and wheel scroll
+    chained from `#main` to the document. Only screens with such labels deep
+    down showed it — hence "sometimes".
+  - **Fix:** `relative` on the AppShell root and on `#main`, so every
+    absolute descendant on every screen is contained in the scroller.
+    Verified: document height = viewport on the denah, the open SOAP box and
+    the list (harness measuring `documentElement.scrollHeight`).
+  - **Wrong turn:** a minimal static reproduction did not grow the document;
+    only measuring the real components found it.
+  - New pattern #24: an absolutely positioned element with no positioned
+    ancestor inside a scroll container.
+- **Several lists per user:** the create form now opens from "+ List baru"
+  beside the list chips (name + denah ward), not only when there is none.
+- **SoapFloat (≥640 px):** drag by the header (pointer capture; buttons
+  excluded), resize from the bottom-right corner, min 320×220, clamped wholly
+  inside the window (the first clamp only kept the header visible; a box
+  moved down lost its resize corner off-screen — found in the render check);
+  geometry in localStorage `plano.listmaker.float`. Phone: bottom panel as
+  before. The page now keeps the OPEN patient by key and reads it from the
+  live view, so an edit shows in the open box at once.
+- **Ubah SOAP (edit members, not manual patients):** textarea over the
+  stored text → `readReports` again (same key and stamp, `edited: true`) →
+  `writeReports` to the report's sent date. `pastePlan` treats an edited
+  report as unchanged against a re-paste of the same stamp; a newer message
+  still replaces it.
+- **Several chiefs:** `FloorDay.chief` stays one string, comma-separated
+  (no migration); `chiefsOf(day)`; `withEdits`: one chief → every patient
+  without one, several → per patient (`edits.<key>.chief`). `ChiefsField`
+  chips; ListPanel datalist of the day's chiefs + "n pasien belum ada chief".
+- **Symmetric denah:** `domain/floorList/layout.ts` `planLayout` (left room i
+  and right room i share row i; the shorter side's last room spans to the
+  bottom; centre rooms get ≤3 rows at the bottom, the landmark the rest) —
+  used by the screen (CSS grid at ≥md, rows `minmax(3.5rem, auto)`) and the
+  Word denah (replacing its own row arithmetic), so the two cannot drift.
+- **Answered:** invites use the Google email the colleague signs in to Plano
+  with (matched case-insensitively against the sign-in token's email).
+- Tests: chiefs (one/several/edit/message), edited report vs re-paste and
+  newer message; Word denah vMerge test still green on the shared layout.
+- Not done: geometry is per device, not per account; the phone keeps a fixed
+  bottom panel; untested on a real phone/tablet.
+
+### Verify
+```
+npm run verify → typecheck, lint, 162 files / 2370 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.10` — List Maker: hand-entered (pediatri) patients; every report in a message is read
+
+- **Pediatri by hand (Avi, 12-12: "user will only add the diagnosis and
+  treatment and plan"):** the floor group has no pediatric SOAPs, so those
+  patients could not reach the list.
+  - `report.ts` `manualPatient({room, bed, dpjpId, identity, fields, sentAt,
+    sender, key?})` → a `FloorPatient` with `manual: true`, `manualFields`
+    {diagnosis, terapi, plan}, body "Diagnosis:/Terapi:/Plan:", red/green from
+    the plan, key `rm:<RM>` or `manual:<room>:<name>` (kept on edit).
+  - Stored on the FLOOR doc (`manual.<key>`, `writeManual`/`removeManual`,
+    FieldPath leaves), not a day: a day is read only for D-2…D and a manual
+    patient gets no daily report. `dayView` adds them from the day they were
+    entered; `onFloor` never drops a manual patient as 'tanpa-laporan'; a
+    later SOAP with the same RM replaces it (latest wins). Rules: edit
+    members may change `nicknames` and `manual`.
+  - `ManualPatientSheet` (Kamar from the plan, Bed, DPJP with pediatri first,
+    Identitas, three textareas); ListPanel: "+ Pasien manual (pediatri)",
+    "Ubah isi", "Hapus pasien manual"; "Diinput manual" in the row meta.
+- **Several openings in one message:** `readReports` splits a message at every
+  "atas nama" opening and reads each part (`latestOf` keeps the later part for
+  the same patient; `full` = the whole message). The one case in the floor's
+  chat (a summary then the full SOAP of the same patient) already came out
+  right because the body starts at the LAST assess heading; two different
+  patients in one message would have lost the second. PastePanel and
+  `latestPatients` use it.
+- **Answered (Avi, 12-12):** "Operkan ke Tmn Lain"/"Ganti Chief" stay blank
+  reminder blocks in the Word denah; Lantai 4 only for now.
+- Render check (scratch harness): sheet prefilled on "Ubah isi", save →
+  `writeManual` leaf; the patient on 421 bed 6 with the amber YP code. A
+  manual patient whose plan said "pulang hari ini" yesterday is correctly
+  gone today (caught while setting up the check).
+- Not done: no manual patient for other DPJPs' non-SOAP cases beyond the same
+  form (works for any DPJP); untested on a real phone.
+
+### Verify
+```
+npm run verify → typecheck, lint, 162 files / 2368 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.9` — List Maker → Word: List Pasien (3 columns) and Denah
+
+- **Request:** the 12.8 "Not done" Word export, laid out like Avi's printed
+  LIST and DENAH (31-08-2026).
+- **`domain/floorList/docx.ts`** (hand-written WordprocessingML in a stored
+  ZIP, reusing `escapeXml`/`inlineRuns`/`storeZip` from `soapDocx`):
+  - `buildListDocx(text)`: the `buildFloorList` message, A4, Arial 7.5 pt,
+    `<w:cols w:num="3">`, `*bold*` → bold, page number in the footer.
+  - `buildDenahDocx({ward, date, plan, patients})`: page 1 = one floor table
+    on a 4-column grid (420 | 421 across the top; left rooms | nurse station
+    (amber fill, vMerge) / 411 | right rooms; the shorter side stretches its
+    last room down) + DPJP tables three to a row (KJS under its DPJP);
+    rooms not on the plan under "Di luar denah"; page 2 (pageBreakBefore) =
+    chief counts, a block per junior, "Operkan ke Tmn Lain", "Ganti Chief".
+    Legend "Merah H-1 – Hijau Pulang Hari ini." in the footer.
+  - `patientRuns`: red FF0000 / green 00B050 text, amber FFC000 pediatri
+    code, residents bold black.
+- **`domain/floorList/beds.ts` `placeBeds`:** moved out of `FloorDenah`, so
+  the screen and the Word denah place patients identically (bed n, free slot,
+  overflow kept).
+- **Page:** "Word: List Pasien" / "Word: Denah" above the tabs
+  (`deliverFile`: share sheet on a phone, download otherwise).
+- **Checked:** both files from the real export rendered through LibreOffice →
+  PDF: denah page 1 fits one page, page 2 matches the reference, list flows
+  in three columns (4 pages for 14 patients with full TS blocks).
+- Tests: bed placement, run colours, 3 columns + bold, zip parts, every
+  vMerge continue follows a restart, legend, strays, page 2 blocks.
+- Not done: Word output untested in Microsoft Word itself (LibreOffice
+  only); "Operkan"/"Ganti Chief" are blank blocks to fill by hand; no PDF.
+
+### Verify
+```
+npm run verify → typecheck, lint, 162 files / 2362 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.8` — List Maker: floor list + interactive denah from the WhatsApp SOAPs, shared by role
+
+- **Request (Avi, 12-12):** a new full page that turns the floor group's SOAP
+  messages into the List Pasien (format of his 31-08 list: black text, bold
+  patient line "- dr. Junior / dr. Chief") and the DENAH (red H-1, green
+  pulang hari ini, pediatri code amber); tap a patient on the denah → full
+  SOAP in a floating box for the DPJP visit; shared with colleagues on their
+  own Plano accounts, each **View only** or **View and Edit**. Residents:
+  prefilled and editable.
+- **Source studied:** the group's export (4 days, 92 messages: 69 single-
+  patient follow-ups, 5 sent lists, chat) — kept in the scratchpad only;
+  fixtures are invented (patients AND resident nicknames).
+- **Domain (`domain/floorList/`):**
+  - `chat.ts` `splitChat`: iOS/Android/copied/markdown export headers (stamp
+    → ISO, never guessed), header-less pastes split at report openings (a
+    "Chief :" header stays with its report).
+  - `report.ts` `readReport`: place = LAST "Kamar" after "ke" (transfers);
+    identity = line after "atas nama"; RM labelled or bare 6+ digits (not a
+    date); DPJP filed = cardiology Utama → role Kardio → other (BTKV surgeons
+    never filed); KJS = Aritmia/Eko/Intervensi roles; BTKV = BTKV DPJP line,
+    "KJS TS BTKV"/"TS BTKV" in the opening, or any "DPJP … BTKV" line; body =
+    from the LAST assess heading ("Mohon izin [pasien] kami assess(t)") — else
+    a Diagnosis followed by therapy — to the first non-bulleted sign-off,
+    renamed "Diagnosis:"/"Terapi:", TS blocks kept; red/green from Plan lines
+    only. `latestOf`: latest per patient (RM leading zeros ignored), residents
+    carried from an earlier report. `onFloor(D)`: gone = 'pulang' (earlier
+    report said hari ini) or 'tanpa-laporan' (nothing since D-1); "H-1"
+    written on D-1 shows green on D.
+  - `build.ts` `buildFloorList`: group format (counts, every DPJP incl. 0,
+    blocks, `*KJS*` under the KJS DPJP), visit-route order.
+  - `floor.ts`: `FloorDoc`/`FloorDay`, `withEdits` (junior: edit > "Junior :"
+    > floor nickname > derived; chief: edit > message > day chief),
+    `dayView` (days D-2…D), `pastePlan` (per date latest, counts unique
+    patients, re-paste writes nothing).
+- **Data:** `floors/{id}` (owner, memberIds, roles, names, invites keyed by
+  email via FieldPath, inviteEmails, nicknames) and `floors/{id}/days/{date}`
+  (`patients.<key>` filed under the SENT date, `edits.<key>`, time, chief) —
+  all leaf writes (`floors.repo.ts`). On the real export a day is
+  125–185 KB.
+- **Rules:** read = members or invited email; owner manages the floor doc
+  (cannot transfer it); edit members may change only `nicknames`; an invitee
+  may add only themselves with exactly the invited role and remove only their
+  own invite; members may leave; days read by members, written by owner/edit
+  members; no deletes.
+- **UI:** `/list` (TabBar "List Maker", WIP): invites to accept, create a
+  floor, date/time/"Chief hari ini", tabs Denah | List | Tempel (editors) |
+  Anggota. `FloorDenah` (plan + DPJP tables + resident split + legend),
+  `SoapFloat` (non-modal floating panel; phone bottom panel; Back/Esc close),
+  `ListPanel` (corrections + message + Salin), `PastePanel` (textarea or
+  .zip/.txt via `lib/unzip.ts` — central directory + `DecompressionStream`),
+  `MembersPanel` (invite/role/remove/leave, sender nicknames).
+- **Render check** (scratch harness, real data, desktop 1366 + phone 390):
+  denah, floating SOAP beside the denah / bottom panel on phone, list tab.
+  Fixed from it: patient text inherited the faint bed-number colour; a
+  yesterday "H-1" showed red instead of green.
+- **Wrong turns:** first filing reports as "added" per message (70 for 31
+  patients) — now unique per patient; nickname from the sender's first
+  given name is wrong for some residents, hence the editable map.
+- **Not done:** Word export (List 3 columns, Denah) — next; Pediatri
+  patients (no SOAP in this group) can't be added by hand yet; "Operkan ke
+  Tmn Lain"/"Ganti Chief" blocks; only Lantai 4 has a drawn plan (other wards
+  list "Pasien <ward>"); multi-patient messages read the first patient only;
+  rules not tested in an emulator; untested on a real phone. **Rules deploy
+  on push before the page works.**
+
+### Verify
+```
+npm run verify → typecheck, lint, 161 files / 2353 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.7` — Pediatri "A - B" printed as two names; trio 6MWT confirmed
+
+- **Root cause:** 09.2 read the WhatsApp "A - B" as "(A) - B" (A = PPDS BTKV
+  with B) by analogy with the PDF sheet. Never confirmed; Avi (12-10): "I
+  don't know for now, just make the name multiple". A role nobody stated was
+  printed as "A (BTKV)/ B" in every Formasi.
+- **Fix:** `parsePediatriText.readPart`: the dash form gives `name: "A / B"`
+  and no `btkv`. The bracket form "(A) - B" (the sheet's own notation,
+  copied as text) keeps A as BTKV. Formasi prints "Pediatri : A / B"; the
+  Jarkom nickname match fails on a pair, so the Konfirmasi greeting is the
+  neutral one, which is right while the person is unknown.
+- **Not bumped:** `PARSER_VERSION.pediatri`. A text roster has no PDF items to
+  re-read, and a bump would only mark it legacy; Avi re-pastes instead
+  (said in CHANGELOG).
+- **Trio 6MWT** (`trio-6mwt`): confirmed by Avi (12-10); comment added at
+  the rule. No behaviour change.
+- Tests: the pair on a whole day and on a pagi shift; Formasi prints both
+  names with no "(BTKV)".
+
+### Verify
+```
+npm run verify → typecheck, lint, 158 files / 2328 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.6` — Sensus input and the AI key follow the account
+
+- **Root cause:** both were device-only by design, and sign-out clears every
+  device key (`clearDeviceUserState`, inverted allow-list). So the pasted
+  lists, AI results, "Perlu dicek" choices and Bandingkan ticks
+  (`plano.sensus.v2`) and the Anthropic key + switches (`visite.ai.*`) were
+  lost at every sign-out and never reached another device. Avi (12-10):
+  keep the sensus lists and ticks; sync the AI key too.
+- **Fix — keep sign-out clearing the device, move the durable copy to the
+  account** (not the reverse: leaving data behind at sign-out is what the
+  inverted allow-list exists to prevent):
+  - `users/{uid}/sensusInput/{date}` — one doc per tanggal sensus.
+    `domain/census/makerSync.ts` (pure): `dayPatch` writes `lists` whole
+    and `ai/extra/checked.<CODE>` as leaves (`null` → `deleteField`), drops
+    `undefined` (Firestore rejects it); `mergeRemoteDays` = account wins
+    except a dirty date, a `known` date missing remotely is removed, a local
+    never-synced date is kept for upload; `expiredDates` (> 7 days, deleted);
+    `tooBigToSync` (> 900 000 chars stays local, Callout shown).
+  - `hooks/useSensusInputSync.ts`: base = last server copy per date; writes
+    debounced 1.2 s per date; snapshots with pending writes ignored and dirty
+    dates never overwritten (echo of an older write would undo typing);
+    nothing uploaded before the first server-confirmed snapshot; pre-12.6
+    local days uploaded once after it; flush on unmount and on
+    `visibilitychange` hidden.
+  - `users/{uid}/private/ai` — `{key, flags}`, its own doc (not the profile:
+    stays out of Export data and of every screen's profile read).
+    `lib/aiSync.ts` (`scheduleAiPush`, 0.8 s debounce, `isAiPushPending`),
+    `hooks/useAiKeySync.ts` mounted once in `App` (refills localStorage,
+    fires `plano:ai-changed`; `AiSettings` re-reads on it). First server
+    answer with no doc uploads this device's key once.
+  - `firestore.rules`: `sensusInput/{date}` (owner, ISO id = `date` field,
+    ≤ 30 lists, delete allowed: transient) and `private/ai` (owner, key ≤
+    400 chars, flags map, no delete).
+- **Trade-off, stated to Avi:** any device signed in to the account can read
+  the key. Sign-out still clears the device copy and the offline cache.
+- **Interpretation:** "sync between accounts" read as "between my devices on
+  the same account". Sharing a key across different Google accounts would
+  need a shared store and is not done.
+- Not done: Sensus code/address/style/mode and heparin settings still
+  device-only (cleared at sign-out); no render check on the real app
+  harness; **the rules must be deployed (push triggers
+  `firestore-deploy.yml`) before the sync works** — until then writes are
+  refused and the Callout "List belum Synced" shows; local use is
+  unaffected.
+
+### Verify
+```
+npm run verify → typecheck, lint, 158 files / 2327 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.5` — Formasi: Saturday MALAM onsite line; onsite schedule is an account setting
+
+- **Root cause (both items):** 12.4 hardcoded two decisions in code: the
+  weekday → consultant map (`ONSITE_IGD`) and "never for a MALAM team". Avi
+  answered (12-10): the Saturday night team DOES carry the line, and the
+  schedule must be editable. A rota is configuration; a release is the wrong
+  unit of change for it.
+- **Fix:**
+  - `domain/jaga/onsite.ts`: `OnsiteDay {id, malam}`, `DEFAULT_ONSITE_IGD`
+    keyed by weekday string ('0' = Minggu), Avi's schedule with Saturday
+    `malam: true`; `onsiteSchedule(saved)` merges per day AND per field over
+    the default; `onsiteFor(date, shift, schedule)` returns null for a MALAM
+    team unless that day is flagged, and for an id not in the registry.
+  - `UserSettings.onsiteIgd` (synced on `users/{uid}`). Written one weekday
+    leaf at a time (`updateSettings` merges), never the whole map (pattern 5).
+  - `buildFormasi(..., onsite?)`; HelperPage reads the setting and passes it.
+  - `components/helper/OnsiteSchedule.tsx`: a `<details>` under "Ubah DPJP",
+    one row per weekday (Senin first): DPJP select (registry, or "tidak
+    ada") + "Tim malam juga"; "Kembalikan jadwal awal" when edited.
+- **Wrong turn avoided:** storing names as free text. The registry id keeps
+  the printed name identical to the rest of Plano; a consultant outside the
+  registry would need a registry entry first.
+- Tests: Saturday malam has the line, Friday malam doesn't, an edited
+  schedule is followed and an emptied day prints nothing, merge per field,
+  unknown id → null.
+- Not done: no render check of the editor (plain select/checkbox rows);
+  untested on a phone; consultants outside `DPJPS` can't be picked.
+
+### Verify
+```
+npm run verify → typecheck, lint, 156 files / 2310 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.4` — Formasi Jaga: DPJP Onsite IGD; one-line Utama dan Tindakan; post-midnight block before closing
+
+- `domain/jaga/onsite.ts` (new): `ONSITE_IGD` weekday → registry id (Avi,
+  12-10: Sen KS, Sel ZD, Rab AHN, Kam MAA, Jum AHA, Sab MZ; Minggu none),
+  `onsiteFor(date)`. The name printed is the registry's.
+- `buildFormasi`:
+  - "_DPJP Utama dan Tindakan: X_" when both names are equal (case/space
+    insensitive), else the two lines as before;
+  - "_DPJP Onsite: …_" after them, for `penuh` and `pagi` teams;
+  - the post-midnight block moved before "Mohon arahannya dokter" (Avi's
+    example).
+- **Decision:** no onsite line for a `malam` team (assumed to start after
+  21.00). If the Saturday night team should carry it, it is one condition.
+- Tests: onsite per weekday, Sunday, the Friday example's line order, the
+  split pair, the night team; three expectations updated to the new format.
+- Not done: the onsite schedule is code, not a Setting; a swap needs a
+  release (or a later edit field like the DPJP swaps).
+
+### Verify
+```
+npm run verify → typecheck, lint, 156 files / 2303 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.3` — Findings step through their occurrences; Terapi/Selesai compares identical lines
+
+### Stepping through a finding's places
+- `SoapFinding.occurrences` (new): every place a finding is about, in note
+  order. `duplicate-heading` now emits one finding PER heading with all its
+  places (was: the first pair only); `duplicate-line` and
+  `therapy-also-finished` carry both places.
+- PatientPage: a finding with ≥2 occurrences gets a cycling button:
+  "Tampilkan (n)" → place 1, "Berikutnya (k/n)" → place k, "Ke atas" →
+  `BodyEditorHandle.scrollToTop()` (new: caret to 0, `main` to top), then
+  the round restarts. Step state per finding (kind+message). Each place is
+  re-checked against the live text and searched for if it moved.
+- Checked in the harness: 3-occurrence heading → scrollTop 0 (first in view),
+  1656, 2888, 0, and the heading selected each time.
+
+### Terapi vs Selesai (Avi: false positive)
+- **Root cause:** 12.1 matched by DRUG (name up to the first number), so a
+  repeat course, e.g. "KCl … (pemberian kedua)" running and "KCl … (I)"
+  finished, which is a new order, was flagged.
+- **Fix:** compare the whole LINE (no bullet, single spaces, any case). Only
+  a line moved to Selesai without being removed above is reported. The
+  message names the line; `drugKey` removed.
+- Tests updated: the KCl repeat no longer fires; an identical Ceftriaxone line
+  does, with both places.
+
+### Verify
+```
+npm run verify → typecheck, lint, 155 files / 2297 tests, version, contrast, a11y, build: all green
+```
+
+### Housekeeping
+- The stray `new.md5.txt` committed in 12.2 is deleted from Avi's folder in
+  this delivery (his commit removes it).
+
+## `2026-10-12.2` — Sensus maker: unnumbered CVCU/HCU/ICU bed lines; DPJP handover arrow
+
+### CVCU list read as one patient (bug)
+- **Root cause:** `parseSource` admitted a line as a patient only through
+  `ENTRY_RE`, which requires a list number. The CVCU bed-line shape was
+  handled inside that branch ("1. CVCU Bed 15" → bed, patient on the next
+  line), so it assumed numbered beds, the shape of the list it was built
+  from. The 12-10 list writes "CVCU Bed 1" unnumbered: every bed but "1. ICU
+  5" was skipped, and since the diagnosis loop stopped only at numbered
+  entries, all later patients were swallowed as that patient's plan.
+- **Fix:** `isIcuBedLine` (CVCU/HCU/ICU start, no "/", short, no identity)
+  recognises a bed line numbered or not, in `pjt-icu` lists, both to open an
+  entry and to end the previous one.
+- **Handover:** `segmentCodes` reads "AHA->AHN" / "→" / "=>" as the code after
+  the arrow, only when both sides are codes ("5.9 -> 5.6" stays nothing).
+- **Checked:** the 12-10 paste (5 lists) parsed before/after: only the CVCU
+  list changed (1 → 16). The six earlier real samples (lt4, lt56, icu, igd,
+  rsws, rsuh): identical. Tests: 6 (invented names).
+
+### Verify
+```
+npm run verify → typecheck, lint, 155 files / 2297 tests, version, contrast, a11y, build: all green
+```
+
+## `2026-10-12.1` — Konsul DPJP/BB-TB/wording; checker: block-scoped duplicates, duplicate headings, Terapi vs Selesai, EKG ticked; CRLF
+
+### Konsul echo full study (bugs)
+- **DPJP Utama missing. Root cause:** `dpjpLinesFrom` in `composeKonsul.ts`
+  was a second DPJP-line reader keyed on the exact letters "DPJP"; 11.1's
+  `normaliseDpjpLabel` fixed the parser, not this copy, so "_DJPJP Utama_"
+  was dropped. **Fix:** the reader goes through `normaliseDpjpLabel` and
+  emits the corrected label. (`specialties.ts` already did; `markdownLite`
+  matches `DPJP` only as a fragment fallback.)
+- **BB/TB on an echo request. Root cause:** two decisions about measurements:
+  `missingKonsulMeasurements` asked only for 6MWT, `composeKonsul` added them
+  to every konsul. **Fix:** one predicate, `konsulNeedsMeasurements`, for both.
+- **Wording:** list style now matches Avi's example: "rencana pasien … tanggal
+  *d MMMM yyyy* dari *PJT Lantai n* atas nama:", with "/ Kamar r Bed b"
+  inside the bold identity (record, else the opening line). `CopySheet` passes
+  `formatDayMonthYear` (new). Preset note updated.
+
+### SOAP checker
+- **False "Baris ganda". Root cause:** duplicates were sought across a whole
+  section, and the O section holds many dated investigations; a paced
+  patient's identical EKG on two days was "pasted twice". **Fix:**
+  `isBlockHeading` (bold line, or a dated non-list line) resets the scope.
+- **CRLF. Root cause:** rules written with `.`/`$` fail on "\r" (noted in 10-10,
+  not fixed): no DPJP line matched → "TS HOM / TS Aritmia belum ada di daftar
+  DPJP" on a note listing both, and headings unseen. **Fix:** `checkSoap`
+  turns "\r" into a space at entry (offsets unchanged).
+- **New `duplicate-heading`:** the same dated heading twice (AGD 09-10 ×2).
+- **New `therapy-also-finished`:** a drug (name up to its first number) both
+  in our running Terapi and under "Selesai :". `SELESAI_HEADING` is now shared
+  with `insertTerapi`; a "Selesai :" parsed as its own section still counts.
+- **New `ekg-ticked-missing`:** context gains `date` and `ekgDone`
+  (PatientPage: `reminderDone` for the note's day includes `ekg`); fires when
+  no line has "EKG" and that date (d-m-yyyy, zero-padded or not).
+- Tests: 9 checker cases from the real note (anonymised), mutation-checked
+  (block reset, CRLF); 5 konsul cases incl. the DJPJP typo.
+
+### Verify
+```
+npm run verify → typecheck, lint, 155 files / 2291 tests, version, contrast, a11y, build: all green
+```
+
+### Not done
+- `therapy-also-finished` also fires when it is correct (first dose done,
+  second running): it asks, as every rule here does.
+
+## `2026-10-11.7` — Verifikasi List result regrouped per patient (Residency Helper format)
+
+### Why it was confusing
+- **Root cause:** the screen rendered the verifier's issues as they come out
+  of `runChecks`: one card per RULE, titled in the rule's English, grouped by
+  severity. A patient missing from three places was three cards (O1, O2, O3)
+  in one section and their count consequences in another; "room grid",
+  "views", "minitable" are the program's words. The spec §7 layout was
+  faithful to the rules and not to how the ward reads a census.
+- **Model:** Avi's Residency Helper report (pasted 11 Oct): one numbered item
+  per patient with a one-line verdict, the raw line, where absent, and what it
+  probably means; counts reconciled once with the patients behind them; the
+  clean count; closing advice.
+
+### Fix
+- `domain/census/readable.ts` (new, pure): `readableReport()` folds the OPEN
+  issues per matched patient into `PatientFinding`s (kind: hanya-denah,
+  kurang-di-bagian, sisa, hilang, beda-data), builds one `CountFinding` from
+  C1/C2/C3/C3T with per-DPJP rows and related names, words the remaining
+  rules (C5–C10, P1/P2) in Indonesian with their numbers, separates
+  cosmetic-only patients, counts clean patients (+ new ones vs the last run),
+  and writes advice. `readableText()` is the WhatsApp copy.
+  `transcriptionWarning()` translates the self-check strings.
+- **Rules untouched.** `verifier.ts` issues, ids, severities and history are
+  unchanged; answers still close only 🟡 items. "Meaning" lines say
+  "kemungkinan": they are the usual explanation, not a finding.
+- `CensusVerifier` renders the readable report; `IssueCard`, the severity
+  sections and the English markdown copy are gone from the screen
+  (`toMarkdown` stays exported, unused).
+- Tests: 12 (one item per patient not three, stale carry-over + advice, count
+  block + odd value + related names, header vs own breakdown, room mismatch
+  odd marking, cosmetic apart, new admissions, no jargon in the copy, weekday
+  label, ordering by kind, C8 linked, warnings). Invented names only.
+- Checked end to end in the harness with a stubbed API (both PDFs requested
+  at once; screenshots at 1280 and 390 px).
+
+### Verify
+```
+npm run verify → typecheck, lint, 155 files / 2278 tests, version, contrast, a11y, build: all green
+```
+
+### Not done
+- Severity order is the verifier's: a stale LIST entry (O4, medium) sorts
+  after high items, while Avi's example put it second.
+- Not run against real PDFs since the change.
+
+## `2026-10-11.6` — Census transcription: both PDFs at once, per-document progress
+
+### Why it was slow
+- **Root cause:** `CensusVerifier.run` awaited DENAH, then LIST PASIEN, so
+  the wait was the SUM of two long calls. Each call is dominated by output
+  (the whole ward re-written as tool input), and the self-check retry can
+  repeat either one. The sequential order was chosen to avoid 429s on
+  low-quota keys; it charged every user for that edge case.
+- **Fix:** `lib/sideBySide.ts` runs both at once; a call refused with 429
+  (`AiError.rateLimited`, new) is re-run once after the other finishes, i.e.
+  the old sequential behaviour only when actually needed. Any other failure
+  is thrown unchanged. 5 tests (concurrency, missing doc, quota retry, no
+  retry on 400, no loop on a second 429).
+- **Progress:** `extractCensus` takes an `onAttempt` callback; the panel shows
+  one line per document with elapsed seconds, attempt 2/2, done/failed, and
+  the quota wait.
+
+### Verify
+```
+npm run verify → typecheck, lint, 154 files / 2266 tests, version, contrast, a11y, build: all green
+```
+
+### Not done
+- Streaming the transcription (patients appearing as written): larger change,
+  and partial output must never be checked as if complete.
+- The result screen's wording and grouping (Avi: "too confusing"): waiting on
+  an example from the Residency Helper project, which this project cannot read.
+
+## `2026-10-11.5` — AI requests: one builder, no sampling parameters
+
+### Census transcription 400 (bug)
+- **Symptom:** with 11.4's error reasons, the failure read
+  "400 — invalid_request_error: `temperature` is deprecated for this model"
+  (model `claude-sonnet-5`).
+- **Root cause:** `askClaude`, `askClaudeTool` and `askClaudeStructured` each
+  built the request body by hand, and the two tool callers hard-coded
+  `temperature: 0` for "determinism". Whether a model accepts a sampling
+  parameter is the model's decision; when the census moved to a newer model
+  the parameter became an error. The duplication also meant the 11.4 error
+  fix had to be applied three times.
+- **Fundamental fix:**
+  - one `postMessages(body)` sends every request (headers, offline, 401/413/429,
+    `failure()` live there once); `toolInput()` reads the forced tool's input;
+  - the body type `MessagesRequest` has no sampling fields, so TypeScript's
+    excess-property check rejects `temperature`/`top_p`/`top_k` at compile time;
+  - no sampling parameter is sent. Temperature 0 never guaranteed identical
+    output; the forced tool, the schema, `selfCheckProblems` and the person's
+    check are what the results rely on.
+- Test: all three callers' bodies carry no `temperature`/`top_p`/`top_k`.
+- `src/lib/ai.ts` is the only file that calls `api.anthropic.com` (grepped).
+
+### Verify
+```
+npm run verify → typecheck, lint, 153 files / 2261 tests, version, contrast, a11y, build: all green
+```
+
+### Not done
+- Models differ per feature (census `claude-sonnet-5`, others
+  `claude-sonnet-4-5`); not unified, since nothing is broken there.
+
+## `2026-10-11.4` — Census jump scroll fix; Table 15 weekly adjustment; AI error reasons
+
+### Census jump scrolled short (bug)
+- **Root cause:** `jump` computed `head.offsetTop - container.offsetTop`. The
+  scroll container is the heading's `offsetParent`, so `offsetTop` is
+  already relative to it; subtracting the container's own offset made the
+  target too small by that amount, and the section landed below the fold.
+  The ref also sat on the sticky `<h4>`, whose `offsetTop` is wrong once it
+  is stuck.
+- **Fix:** the ref is on the `<section>`, and the target is measured with
+  `getBoundingClientRect` relative to the container plus its `scrollTop`.
+  That is independent of offsetParent chains and sticky state.
+
+### Warfarin RSWS: Table 15
+- Source: Table 15 "Maintenance warfarin dosing for out-of-therapeutic-range
+  international normalized ratio" (ESC guideline, its ref. 556), from Avi's
+  photo. **Guideline title not yet confirmed**; the Rujukan entry says so.
+- `WEEKLY_ADJUST_TABLE` holds the printed rows verbatim; `weeklyAdjustFor`
+  returns both neighbours for an INR in a gap (e.g. 1.55, 2.95).
+- Suggestion applies only to target 2,0–3,0 (the table's target). The chip is
+  starred; the doctor still chooses. The hold text goes into the Terapi line
+  only when the chosen % equals the suggestion.
+- Tests at every boundary (1.5, 1.6, 1.9, 2.0, 2.9, 3.0, 3.9, 4.0, 4.9, 5.0)
+  and gaps.
+
+### Heparin
+- `HEPARIN_SOURCES` adds Konstantinides 2019 ESC PE (Eur Heart J
+  2020;41:543–603), Web Addenda Web Table 2. Its aPTT adjustment table is
+  identical to Raschke 1993, already the default; no numbers changed.
+
+### AI errors (diagnostic)
+- **Root cause of the opaque "Gagal memanggil AI (400)":** on a non-OK
+  response the body (which carries `error.type` and `error.message`) was
+  discarded. `failure()` in `lib/ai.ts` now reads it and appends it
+  (truncated to 240 chars). Tested.
+- The 400 itself is not fixed: the likely cause is the census model id
+  (`CENSUS_MODEL` in `lib/censusExtraction.ts`) but it is unconfirmed until
+  the next failure shows the reason.
+
+### Verify
+```
+npm run verify → typecheck, lint, 153 files / 2260 tests, version, contrast, a11y, build: all green
+```
+
+### Not done
+- Confirm Table 15's guideline title.
+- Helper data on logout is cleared by design (`clearDeviceUserState`); no
+  change.
+
+## `2026-10-11.3` — Coloured, jumpable census message; RSWS (unofficial) warfarin tab
+
+### Census message
+- `splitCensusMessage` (`domain/census/compare.ts`) cuts the message at its
+  "*<place label> : n pasien*" headings, matched against `PLACE_LABEL`, so
+  only real place headings split. Tested.
+- `CensusMessage` renders:
+  - the intro;
+  - one section per place, tinted with the SOAP section tokens
+    (`--sec-*`), with a sticky heading;
+  - a chip row to jump to each place.
+  The text is unchanged; the copy still uses the raw message.
+- Used in Hari ini's result box and in Bandingkan → Teks lengkap.
+- In Teks lengkap, choosing a list scrolls the result to that list's first
+  covered place (`ParsedSource.covers`, else its entries' places).
+
+### Warfarin "RSWS (tidak resmi)"
+- **Source:** Avi's description of ward practice (11 Oct): start 1 × 2 mg,
+  INR every 3 days, dose given as a weekly schedule ("Senin–Jumat 2 mg,
+  Sabtu–Minggu 3 mg"). His "start heparin on 1x2 mg" is read as warfarin
+  (2 mg is a warfarin dose). No protocol document seen; the tab says so.
+- **What is NOT stated, so NOT suggested:** how much to change the weekly
+  total for a given INR. The doctor picks −20…+20% or types a total.
+  `domain/calc/warfarinRsws.ts`:
+  - `spreadWeekly(total, step)` rounds to the step and spreads evenly, extra
+    steps on Sunday, Saturday, then back through the week. It reproduces the
+    ward's 16 mg example exactly (tested).
+  - `describeSchedule` groups runs of consecutive equal days.
+  - The Terapi line carries the weekly total and the next INR date.
+- `RswsWarfarin` panel:
+  - Mulai / Sesuaikan;
+  - 7 day inputs;
+  - INR position for the 2–3 and 2.5–3.5 targets;
+  - the actual % after rounding is shown;
+  - the target stays required; hard stops still replace the dose.
+
+### Not done
+- A written RSWS protocol, if one exists, would replace "tidak resmi".
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2243 passed (153 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-11.2` — Sensus "Bandingkan": each list block beside its census row (Avi: "hard to compare the list and the extracted sensus")
+
+### Why it was hard
+The census is a finished message. The lists are long pastes in textareas
+capped at a few lines on a phone. Checking meant finding each patient in the
+paste by eye. The parser already knew which lines each patient came from but
+threw that away.
+
+### What
+- `CensusEntry.span` = [start, end) lines in the pasted list: the
+  bed/identity line through the diagnosis block (not the therapy and plan
+  the loop reads past). Recorded in `parseSource` and optional, so
+  hand-built entries are unaffected.
+- `domain/census/compare.ts` `compareCensus({sources, code, rows})`:
+  - each list's blocks in order, with owner (mine / other / unassigned) and
+    the census row they became, paired by the patient key the census and the
+    AI check already use;
+  - `missing` (mine, not in the census) and `unmatched` (census rows no
+    block accounts for);
+  - each row's number within its place, as the message numbers it.
+- `SensusCompare`: a third view, "Bandingkan".
+  - One row per block: the list lines verbatim on the left, the census row
+    (place #n, identity, diagnoses one per line) on the right.
+  - Coloured left bar, set inline because `divide-y` overrides border-colour
+    classes.
+  - Consecutive other-DPJP blocks fold into one line, with a toggle.
+  - Summary counts on top; unmatched rows at the end.
+  - Rows come from the rules entries or the AI patients (`aiAll`, including
+    hand-included ones), whichever mode is on.
+
+### Manual checking (Avi, mid-release: "I want to still manually check")
+The pairing is an aid, not a verdict.
+- Each census row, each of this DPJP's patients left out, and each
+  unmatched row has a "Sudah saya cek" tick. A "Dicek manual n/N" count sits
+  in the summary.
+- Ticks are stored per day and per DPJP in the sensus store
+  (`SensusDay.checked`, optional, read like `extra`; device only, pruned
+  with the day).
+- "Teks lengkap" sub-view: the raw pasted list (tabs per list) and the
+  census message as plain text, side by side on a laptop and stacked on a
+  phone, each scrolling on its own. Nothing is interpreted.
+
+### Not done
+- Lines the parser did not read as a patient at all do not appear as
+  blocks. Find in each list box is still the way to look for them.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2237 passed (152 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-11.1` — Day counters compared by their own line; DPJP label typos; hari rawat floor (three reports on Ny. B's note)
+
+### Root cause
+`checkSoap` flagged a counter as unchanged when today's marker TEXT
+appeared ANYWHERE in yesterday's markers. The counters were a bag of strings
+with no identity. On Ny. B's note, yesterday had "PPM Replacement H-1" and
+"Ceftriaxone (H-3)". After the ward's own +1 (H-2 for the PPM line), the PPM
+"H-2" matched any yesterday "H-2" from another counter, and the warning
+persisted. Only a value no counter had used made it go away, so Plano looked
+as if it wanted a different day.
+
+### Fix
+`unchangedDayMarkers(body, previous)` in `domain/dayMarkers.ts` gives each
+counter an identity: its LINE with the counter blanked to "§", lowercased,
+with bold/italic/underline and the bullet removed. A counter is unchanged
+only if yesterday had that same line with the same value. Duplicated lines
+(our assessment and the TS reply both list the diagnosis) are each checked.
+A line edited in any other way is not compared, because it was clearly
+touched. `checkSoap` uses this; nothing else read the old comparison.
+
+### Checked
+- On Avi's note (not committed: real patient data):
+  - unchanged: H-1, H-3, H-1 flagged;
+  - both PPM lines advanced and ceftriaxone advanced: nothing flagged;
+  - only our PPM line advanced: only the TS Aritmia copy (H-1) flagged.
+- New tests in dayMarkers.test and soapCheck.test use invented notes.
+
+### 2. Wrong primary DPJP ("DJPJP Utama")
+- **Root cause:** `detectDpjps` only considered lines containing the exact
+  letters "dpjp", and `dpjpSpecialties` used the same rule. "_DJPJP Utama :
+  dr. Zaenab …_" was skipped, so the next line ("DPJP Aritmia : Prof. …
+  Muzakkir Amir") became primary. That drove the sidebar card, the report
+  format, the poli and the reminders.
+- **Fix:** `domain/dpjpLabel.ts` `normaliseDpjpLabel`. A standalone word of
+  only d/p/j letters, length 3–5, containing both p and j, reads as DPJP.
+  Both readers use it. Real words cannot match (tested: DDP, PPD, DPP,
+  "adpjp").
+- The stored `dpjpId` updates on the next edit of the note. The page reads
+  the note directly, so it is right immediately.
+
+### 3. "Pembuka follow up, padahal hari pertama" on a patient days into the stay
+- **Root cause:** hari rawat counts from `admittedAt`, which DEFAULTS to the
+  day the patient was added to Plano (`createAndOpen`) and is never derived
+  from the note. Ny. B was added on 11 Oct, transferred from CVCU, with a
+  note already written for 10 Oct, so 11 Oct counted as "day 1" and the
+  opening check fired.
+- **Fix:** `stayStart(admittedAt, writtenDates)` in `clinicalDate.ts`. The
+  stay starts no later than the earliest written (non-IGD) day.
+  PatientPage's `hariRawat` (header, checker context) uses it.
+- Not done: `admittedAt` itself is still not inferred from the note (for
+  example "IGD PJT 07-10-2026" lines). That would be a guess; Identitas is
+  where it is set.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2234 passed (151 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.11` — Warfarin initiation calculator (anticoagulation release 2); heparin card asks for the indication (VTE vs ACS)
+
+### Warfarin: sources (every number traced)
+- **Nomogram:** Crowther MA, Harrison L, Hirsh J, "In response",
+  Ann Intern Med 1997;127:332–3, Figure "Dosing nomograms for 5-mg and
+  10-mg warfarin doses". Read from the PDF Avi supplied (page 333).
+  - Getting it took three PDFs. Crowther 1999 (Arch Intern Med 159:46–8)
+    only cites "published warfarin dosing algorithms (ref 6)". Ref 6 is
+    the letters page; the authors' reply prints the Figure.
+  - Only the 5-mg table is used (Ageno 2012: ≤ 5 mg for the patients a ward
+    mostly holds; Crowther 1999: 5 mg at least as effective).
+  - Data in `domain/calc/warfarinProtocol.ts`, with printed cells verbatim
+    and a test that parses them against the numbers.
+- **Target:** the 1999 trial enrolled "target INR of 2.0 to 3.0", so the
+  nomogram is offered only for that target. Target INR is a REQUIRED
+  choice with no default (Avi's rule 4). The other targets show guidance
+  only.
+- **From the 1999 paper:** evening dose and morning INR; daily INR until
+  2.0–3.0 on 2 consecutive days.
+- **From the reply:** the day-2 dose is reduced only for an excess effect
+  12–16 h after the first dose.
+- **Ageno et al., Chest 2012 e44S** (PMC3278051):
+  - starting doses 5–10 mg;
+  - "≤ 5 mg might be appropriate" in the elderly, impaired nutrition, liver
+    disease, heart failure and high bleeding risk;
+  - "An initial dose of 2 to 3 mg seems to be appropriate" for valve
+    replacement;
+  - daily INR in hospitalised patients;
+  - Table 1 potentiators, cardiology-relevant subset, levels kept.
+- **Kearon et al., Chest 2012 e419S, Rec 2.4 (1B):** heparin/warfarin
+  overlap.
+- **Whitlock et al., Chest 2012 e576S** abstract: mechanical-valve bridging
+  (2C); INR 2.5 aortic (1B), 3.0 mitral/double (2C).
+
+### Warfarin: design
+- `dayDose(day, inr)`: bounds as printed. "< 1.5" and "> x" are strict;
+  "a - b" is inclusive. Day 3's "2.0 - 2.5" and "2.5 - 3.0" share 2.5
+  with the same dose.
+- An INR in a printed gap (1.9 < INR < 2.0) returns BOTH neighbour rows
+  and the combined range. Rounding a dosing input would be a guess.
+- A range in the table ("5.0 - 7.5 mg") stays a range; Plano never averages
+  it. 0 is written as "tunda".
+- Day > 6: outside the table.
+- **Hard stops (ticks):** active bleeding, baseline INR prolonged, severe
+  liver disease.
+- **Lower-start factors:** ticks that print the Ageno sentence; no computed
+  dose. "Frailty" from the brief is not in Ageno's list, so it is not
+  offered.
+- **Interacting drugs:** chips from Ageno Table 1; any found in the open
+  note are highlighted and the list opens. No dose change: the table gives
+  none.
+- Same note handoff as heparin (prefill INR, Sisipkan ke Terapi). Stateless.
+
+### Heparin: the 5,000 U cap (Avi's question)
+- **Raschke 1993:** no cap; doses on actual body weight.
+- **ESC 2023 ACS** (Byrne et al., Eur Heart J 2023;44:3720–826, Table 6,
+  PDF supplied), verbatim: "Initial treatment: i.v. bolus 70–100 U/kg
+  followed by i.v. infusion titrated to achieve an aPTT of 60–80 s." There
+  is NO maximum bolus, NO starting infusion rate and NO adjustment table
+  there. The "max 5000 U / max 1000 U/h" Avi remembers is from earlier
+  guidance I could not open, so it is not used.
+- **Fix:** the card now REQUIRES an indication.
+  - VTE: Raschke, unchanged.
+  - SKA: bolus range 70–100 U/kg (no cap), infusion "titrasi ke aPTT
+    60–80 dtk", and an optional aPTT shown as below / in / above 60–80 s
+    (inclusive).
+  - Raschke's per-kg steps are NOT borrowed for ACS.
+  - Before this, the card gave the VTE bolus to every patient, ACS
+    included, without saying so.
+
+### Not done
+- ESC 2020 NSTE-ACS caps: only with that PDF.
+- RSWS protocols: neither the heparin nor the warfarin protocol is
+  confirmed.
+- The 10-mg warfarin nomogram: not offered.
+- Outpatient INR adjustment: out of scope by the brief.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2219 passed (150 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.10` — Heparin (aPTT) calculator, release 1 of 2 (Avi's anticoagulation brief; warfarin waits for his confirmation)
+
+### Protocol and sources (every number traced)
+- **Nomogram:** Raschke RA et al., Ann Intern Med 1993;119:874–81, Table 2.
+  Copied from the PDF Avi supplied (page 875) into
+  `domain/calc/heparinProtocol.ts` as DATA, with the printed cells kept
+  verbatim beside the numeric fields. A test parses the printed action text
+  and checks it against the numbers.
+- **Ratio, not seconds.** The paper gives both columns. Its seconds belong to
+  its own lab (plain Dade Actin, normal 20–30 s, "control" = upper limit of
+  normal = 30 s), and its discussion recommends "APTT ratios (actual
+  APTT/control APTT), as shown in Table 2" for other labs. Avi asked for
+  this: each lab has its own control.
+- **Row edges on a bound** are decided from the paper's own text:
+  - 1.5× is NOT therapeutic: "exceeding the 'therapeutic threshold' of
+    45 seconds (1.5 times the control APTT)"; 45 s sits in "35 to 45s".
+  - 2.3× and 3× belong to the lower row: 70 s is in "46 to 70s", 90 s in
+    "71 to 90s".
+  - 1.2× is strict ("<1.2").
+- **"then 4 u/kg · h"** is read as an INCREASE, as CHEST 2012 Table 3 words
+  the same row ("then increase 4 units/kg/h").
+- **Target 1.5–2.5×** (Avi's ward) as a Settings choice beside Raschke's
+  1.5–2.3×, cited to Garcia et al., CHEST 2012 e24S ("a therapeutic aPTT
+  range of 1.5 to 2.5 times control gained wide acceptance", citing Basu
+  1972). Choosing 2.5 moves only the edge between "no change" and
+  "decrease 2"; the other rows stay Raschke's.
+- **From the paper's text:** recheck at 6 h ("'Stat' APTT levels were drawn
+  every 6 hours"); no adjustment on an aPTT drawn < 4 h after the last
+  change; actual body weight. No dose cap and no rounding: none is in the
+  source.
+- **HIT:** the stop names the 4Ts score, from the ASH 2018 HIT guideline
+  abstract (Cuker et al., Blood Adv 2018;2:3360–92).
+
+### Design
+- `domain/calc/heparin.ts`: `startDose`, `apttRatio`, `matchRow`,
+  `adjustDose` (row, bolus, hold, new rate per kg and per hour, a
+  `rateFloor` flag when a decrease would reach ≤ 0, target in seconds),
+  `adjustProblems`, `heparinStops`, and `readCoagFromNote`.
+  - `readCoagFromNote` reads the newest `PT/INR/APTT` slash group in either
+    order, `APTT … (kontrol N)`, and `BB … kg`, with bold stripped. It only
+    prefills.
+- **Hard stops are clinician ticks, not computed thresholds:** active
+  bleeding, platelets low/falling or HIT suspected, baseline INR prolonged,
+  severe liver disease. No fetchable source gave a citable cut-off for "low
+  platelets" or "prolonged INR", and an invented one would be the worst
+  number in a dosing card.
+- **Settings → Heparin (aPTT):** lab control (s) and the target choice, per
+  device in `visite.heparin`, like Rentang rujukan lab. No Firestore, rules,
+  patient fields or migration.
+- **UI:** `HeparinCard` on the Kalkulator page (new "Antikoagulan" group)
+  and in the floating calculator's Klinis tab. Units are U/kgBB/jam (Avi)
+  with U/jam beside them.
+- **Into the note:** the existing cards had no note handoff, only "Salin
+  baris". New `domain/format/insertTerapi.ts` adds the line to the FIRST
+  Terapi section (ours; TS replies come later), above a "Selesai :" list. It
+  returns null when there is no Terapi section, and the card then says to
+  use Salin baris. Wired through `FloatingCalculator` → PatientPage
+  `activeNote.apply`, so it writes to whichever note is open.
+
+### Wrong turns
+- I first planned seconds rows (CHEST Table 3 reproduces seconds only) and
+  could verify only Raschke's 1.5–2.3× target from the abstract. The other ×
+  control cut-offs were not fetchable, so I stopped and asked rather than
+  guess. Avi supplied the full text, which has both columns.
+- The CHEST "1.6-2.7 to 3.7-6.2 times control" sentence was first quoted on
+  the card without its context. It now says it refers to heparin levels of
+  0.3–0.7 U/mL anti-Xa.
+
+### Not confirmed / not done
+- **The RSWS heparin protocol has NOT been confirmed.** The defaults are
+  Raschke 1993. A local protocol is another `HeparinProtocol` data object.
+- **Note:** `CalculatorPage` says dose calculators were made links because
+  "a dose has to match a protocol only the ward owns". This card is an
+  exception, mitigated by protocol-as-data, the visible matched row, the
+  ward-set target and control, and the disclaimer. Avi should decide
+  whether that is enough.
+- No mL/jam (concentration not given).
+- No 6-hourly reminder or history: stateless by design.
+- Warfarin (release 2) not started.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2176 passed (149 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.9` — Compact DPJP side card; Poli opens the week (Avi: "the DPJP box is taking too much space")
+
+### What
+- `renderDpjpSide` now renders `DpjpSideCard`. The name moved into the
+  header row (truncated, full name in `title`), saving a line.
+- Poli + Lalu (two rows, each with clinic and hours, often wrapping to two
+  lines) became one button row: the next clinic, relative day
+  ("Hari ini" / "Besok" / "Senin 12/10") and clinic. It toggles a
+  "Poli XX · 7 hari ke depan" list with clinic and hours per slot, from the
+  new `weekPoli(dpjpId, today)` (upcomingPoli limited to `inDays < 7`).
+- Kirim / Format / Rencana / Diagnosis rows are unchanged; the 6MWT stays
+  visible.
+- Not touched: the folded DPJP line above the note (classic layout).
+
+### Not done
+- The heparin/warfarin calculators (separate request): plan sent, waiting
+  for Avi's OK, as that brief asks.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2139 passed (147 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.8` — Furosemide: catheter reminder and urine-output requirement are two checks (Avi's correction of 10.7)
+
+### What 10.7 got wrong
+10.7 let "BAK kesan normal" silence the reminder entirely. Avi's rule:
+- the S is expected to read "BAK per kateter";
+- "BAK kesan normal" means the patient refused the catheter or the urine is
+  collected manually;
+- in EVERY case the urine is measured per day.
+
+So spontaneous voiding answers the CATHETER question. It does not answer the
+MEASUREMENT one, and one finding was carrying both.
+
+### Fix
+- `balance-without-catheter`: fires when neither a catheter nor a voiding
+  status is written. Voiding status: BAK normal/spontan/lancar/biasa/baik/
+  mandiri/ditampung, urinal, pispot, "menolak kateter". The message now says
+  what to write: "BAK per kateter", or that the patient refuses / the urine
+  is collected.
+- New `urine-not-measured`: with a furosemide or balance trigger,
+  `readUrineOutput(body)` must find a volume. Catheter or not, it fires
+  otherwise. Without a catheter it adds "(ditampung bila tanpa kateter)".
+- The "good note" fixture now carries a urine output: a complete note on
+  furosemide has one.
+- Both reported notes: no findings (Ny. H: per kateter + output; Tn. K:
+  spontaneous + output).
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2137 passed (147 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.7` — Periksa lagi false positives (two real notes), archived opens last SOAP, chief tag, readable diagnosis changes
+
+### Root causes
+1. **"H20" day counter.** `MARKER` accepts `H` + digits after any
+   non-alphanumeric character, so `cm H20` (H2O typed with a zero) is a
+   counter. Fix: negative lookbehind for a length unit (`cm`/`mm`). A counter
+   never follows one.
+2. **"Diagnosis menyebut Na 123, lab terbaru 121".** `readLabs` matched raw
+   text, and the ward bolds abnormal values in place
+   (`Na/K/Cl *123*/3.8/*92*`). The newest line failed the pattern and the
+   first match was an older line further down. The value was read from the
+   wrong DAY, plausibly, which is the worst kind of checker error. Fix: strip
+   `* _ ~` before reading; Hb also accepts a decimal comma.
+3. **Foley reminder on a patient who voids normally** (Tn. K: "BAK kesan
+   normal", output measured). The rule could only be silenced by a catheter
+   word. Fix: documented spontaneous voiding (`BAK … normal/spontan/lancar/
+   biasa/baik/mandiri`, urinal, pispot) also answers it.
+4. **Archived patient opened today's empty page.** `selected = routeDate ??
+   today` for every patient. Fix: without a date in the URL, an archived
+   patient opens its latest written (non-IGD) day, falling back to
+   `lastEntryDate`. `useEntryDates` moved above `selected` for this.
+5. **"Sejak kemarin: + X · − Y" unreadable.** It never said it was about
+   the diagnosis, "+/−" read as positive/negative, and a re-valued
+   diagnosis showed as one removed and one added. Fix: `previewDiff`
+   returns `changed` pairs, matched by diagnosis NAME. The name is the text
+   up to a bracket/dash/cause word or the first numbered/roman-numeral word;
+   "NSTEMI" ↔ "NSTEMI TIMI 4/7" pair by word prefix, min 4 chars. The card
+   shows a titled block "Diagnosis berubah dari kemarin" with Baru / Diubah /
+   Dihapus rows, max 3 + "n perubahan lagi".
+6. **Chief easy to miss.** It was an `opacity-60` line inside the body
+   (clipped first on a capped card). It is now an inverted pill "Chief dr. …"
+   in the identity band, outside the faded location row.
+
+### Checked
+- Both reported notes run through `checkSoap` (not committed: real patient
+  data). The H20 and Na findings are gone, and Tn. K's Foley reminder is
+  gone. New test file `soapCheckWardNotes.test.ts` uses invented values.
+
+### Not done
+- `dpjpSpecialties` fails on CRLF text (`.` does not match `\r`). It only
+  showed when the attached .txt was run directly; the editor stores LF.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2135 passed (147 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.6` — Card proposal pieces missing on Avi's canvas board (his screenshot, Urutan sendiri)
+
+### Root causes
+1. **No "Sejak kemarin" line anywhere.** `prevPreview` was captured only
+   when the stored preview was REPLACED by a later day's
+   (`previousPreviewFields`). Every patient whose today note was written
+   before 10.5 had no "before", so the line could not appear until
+   tomorrow's note. The data source was the event, not the state: the
+   previous day's note already exists and says exactly what the line needs.
+2. **On the canvas the line would have been clipped anyway.** It sat at the
+   end of `ClampedBody`, which a capped canvas card cuts from the bottom.
+3. **Normal/Ringkas did nothing on the canvas.** `renderCanvasItem` never
+   received `dense`, while the toggle was shown in that header. A control
+   with no effect.
+
+### Fix
+- `previousFromEntry(patient, date, previous)`: builds `prevPreview` from the
+  previous day's entry body. It applies only when that day is newer than
+  the stored `prevPreviewDate`, and never from IGD or the same day, so it
+  writes once. `healCardPreview` takes the previous entry (PatientPage
+  already loads it as `previous`), prefers it over the replaced preview, and
+  leaves `updatedAt` alone when only this field changes.
+- `DxChangeLine` is the first thing in the body.
+- `dense` is passed to canvas cards; their height bounds are re-measured as
+  usual.
+
+### Not done
+- A patient whose note is not opened today still gets no line. The board
+  does not read entries (pattern 16).
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2126 passed (146 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.5` — Card: diagnosis change line, ⚑ check count, Status order, Normal/Ringkas, swipe (Avi: "Continue all")
+
+### What
+- **Diagnosis change line.** `Patient.prevPreview` / `prevPreviewDate` hold
+  the card preview of the day before the current one. `previousPreviewFields`
+  copies them when the preview moves to a LATER day (in `touchEntryMeta` and
+  `healCardPreview`); it never copies from the same day or from IGD.
+  `buildCard` derives `dxChanges` with `previewDiff`, which compares lines
+  without bullets, case or spacing, and skips heading and "…" lines. The
+  line shows only for today's note and is never in initials-only mode. The
+  card renders at most 3 parts with "+n lagi"; the full list is in the title.
+- **Shared diagnosis heading rule.** `domain/sections/diagnosisHeading.ts`
+  (`namesDiagnosis`) is now used by both `pdfReport` and `buildPreview`, so
+  Ringkas and the card agree on which heading is the diagnosis
+  ("Mohon izin pasien kami assess…" included, "Plan diagnostik" excluded).
+- **⚑ check count.** The board holds previews only, so it cannot run the
+  checker per card (recurring pattern 16). Instead PatientPage writes
+  `checkCount` / `checkDate` for the latest written day. The write is
+  debounced 1.5 s, skipped when the value is unchanged, and leaves
+  `updatedAt` alone (it is not an edit). The card shows the count only when
+  `checkDate === today`.
+- **Status order.** `statusRank` (0 no SOAP, 1 stale, 2 today with the
+  checklist open, 3 complete) and `STATUS_LABEL`. Pinned cards stay first.
+  Every group heading now shows its count.
+- **Normal / Ringkas.** Stored in `visite.board.density` per device. Ringkas
+  shows one line of diagnoses and `p-2`, and hides the chief, labels and
+  change line. Not applied on the canvas, whose cards have user-set heights.
+- **Swipe** (`useSwipe` in PatientCard).
+  - Touch only, on the phone/tablet list; off in custom order and while
+    selecting.
+  - It locks horizontal only when |dx| > 2|dy| after 12 px, so vertical
+    scrolling never ticks.
+  - It commits at 96 px. Right ticks `progress.pendingItemId` via `setTick`
+    with the full done map for today. Left opens the preview.
+  - The click after a swipe is swallowed (`onClickCapture`), and the
+    long-press timer is cancelled.
+  - "Urungkan" shows for 5 s and unticks with the same map.
+  - `ChecklistProgress.pendingItemId` was added for the tick.
+- StatusRail: the count/next label truncates instead of overflowing when
+  ⚑ is present (seen in the harness on a 4-column laptop board).
+
+### Not done
+- Swipe on the laptop (mouse drags are text selection there).
+- A ⚑ count for notes that have not been opened since this release: the
+  count appears once each patient's note is opened.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2123 passed (146 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.4` — Patient card: status rail, one flag row (Avi accepted the 1 + 2 + 4 proposal; no hari rawat)
+
+### What was wrong with the card
+- "Belum: Visite pasien + TTV + EKG sesuai kebutuhan" was the longest line
+  and identical on every card each morning. It showed the NAME of the first
+  open step, not how far each patient was.
+- Whether today's SOAP was written was a 10 px line at the bottom of the
+  body ("Catatan dari hari sebelumnya"), and absent when it WAS written.
+- Reminders and the discharge chip sat in the name row and KJS in the
+  location row, each spending the name's width; EKG harian was computed
+  (`card.ekg`) and never shown.
+
+### What
+- **`StatusRail`** under the identity band: SOAP state (`soapState`: today
+  / stale / none, from `preview` + `previewIsStale`, so no note bodies are
+  loaded), then the checklist `ProgressStrip`, then `done/total · next step`
+  (`shortStepLabel`: the label up to its first " + ", ",", ";" or "(", max
+  28 chars). The full label is in the title, the patient page and the quick
+  checklist.
+- **`FlagRow`** after the body: reminders, discharge chip (stages without
+  the strip), EKG harian / hari ini, KJS · Kardio / KJS · TS. It is outside
+  `ClampedBody`, so it is never clipped on a short canvas card. Pemantauan
+  and pulang H-1/hari ini keep their full-width strips.
+- **Removed:** the bottom "Belum:" block and the "Catatan dari hari
+  sebelumnya" line (both now in the rail). Name row: name only (plus the
+  select box and drag handle). Location row: location, RM, DPJP, pin.
+- **Not changed:** hari rawat (Avi doesn't want it); the folded card; card
+  colours (still checklist progress); the canvas `fitHeight` measurement (the
+  rail is part of the fixed top, the flag row of the fixed bottom).
+
+### Not done (from the proposal)
+- "Periksa lagi" count on the card: it needs the full note body per card,
+  which the board does not load (it holds the preview only). Doing it would
+  be one note read per patient per board visit (recurring pattern 16), so it
+  waits for a precomputed field.
+- Phone: about 5 cards per screen with the test patients (was about 4).
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2114 passed (145 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.3` — Sensus history: one DPJP followed day by day
+
+### Why (Avi: "1 resident holds 1 DPJP's census for a certain time, so the list evolves; there needs to be a way to see the evolution each day")
+Each census was built from that morning's lists and forgotten. Who came in,
+who left, who moved from CVCU to the ward, whose diagnosis list changed:
+none of it was recorded anywhere but the WhatsApp scroll-back.
+
+Avi chose: both views, synced to the account, message unchanged.
+
+### What
+- **`domain/census/evolution.ts`**
+  - `CensusSnapshot`: one DPJP, one date; its patients (`SnapPatient`: RM
+    key, name, place, location, identity, diagnoses, KJS), the places the
+    day's lists `covers`, and the source (aturan/ai).
+  - `patientName` / `patientLocation` read the line shapes (Tn./Ny.;
+    "H. …" and "(BTKV) …" via a fallback at the first date/RM/age segment;
+    the DPJP code and "KJS …" labels are dropped from the location).
+  - `diffSnapshots`:
+    - **baru**, **keluar**, **pindah** (place or location changed, from →
+      to), **dx** (lines added/removed, ignoring bullets and spacing);
+    - **tidak-dicek** when the patient is missing but today's lists did not
+      cover their place: never reported as gone.
+  - `evolution` compares each day with the previous RECORDED day (a day
+    nobody sent is skipped, not "everyone left").
+  - `evolutionGrid`: patients × dates, current first, with H-days and the
+    place path (`PLACE_SHORT`: "CVCU → Lt. 4").
+- **Storage:** `users/{uid}/sensusDays/{CODE~date}`, whole-document set; the
+  same day re-copied replaces itself. Queried with a single equality filter
+  (no composite index). Rules: owner only, `patients` is a list ≤ 300, no
+  delete. **Deploys with the push.** Until then, saving the day is refused
+  and Riwayat stays empty.
+- **When a day is recorded:** on Salin (successful copy) or Simpan of the
+  census, never while lists are being pasted. A half-pasted morning would
+  record the missing list's patients as gone. AI mode records the AI census
+  as corrected (`snapFromAi`, same RM keys).
+- **UI**
+  - Header "Sensus ARB · dr. …" with the day's status (tercatat / berbeda —
+    Salin/Simpan untuk memperbarui / belum tercatat), and **Hari ini |
+    Riwayat · n**.
+  - `ChangeSummary` under the census: today against the last recorded day,
+    before sending.
+  - `SensusHistory`: Perubahan (per day, newest first) and Tabel (sticky
+    name column, last 14 days, inside a ScrollStrip).
+  - `SaveResultButton` gained `onSaved`.
+
+### Checked on Avi's real lists (8 → 9 October, ARB; scratchpad only)
+12 patients. Tn. Andi Tongkeng (Pasien Meninggal on the 9th) → Keluar. Ny.
+Kamsiani (Lt. 4, not pasted on the 9th) → Tidak dicek. Tn. Aris Riman →
+Pindah "RSUH IGD RSUH Bed 3 → RSUH Katinting 502 Bed 3". Two diagnosis
+updates (POH-2 → POH-3, Konstipasi added). The harness flow recorded both
+days via Simpan, then showed Riwayat · 2 in both views, on laptop and phone.
+
+### Not done
+- No assignment period ("from … to …"): the history is everything recorded
+  for that DPJP. A second resident's later stint on the same DPJP would
+  continue the same history.
+- Snapshots are never pruned (a few KB a day).
+- Not tested on a real phone.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2112 passed (145 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.2` — A TS reply is one block in Salin; Ringkas remembers Chief and Junior
+
+### 1. TS plans copied as our Plan (Avi: "plan section is only for our plan")
+**Symptom.** After 10.1, Salin "Plan" for the Kahar note ended with the GEH
+and HOM "Plan Diagnostik / Plan Monitoring" items, and "Terapi + TS" showed
+each TS reply cut off at "P/".
+
+**Root cause.** `regionsOf` (Salin bagian) opens a new region at every
+boundary heading: S, O, A, Terapi, Plan, or a "TS …" heading. Inside a TS
+reply, the consultant's own "Plan Diagnostik", "Planning :" or "Plan:" is a
+Plan boundary, so the reply was cut there and the rest was handed to OUR
+Plan. 10.1 exposed it for Avi's account by (correctly) bringing "Plan
+Diagnostik / Monitoring" into Plan. It already happened for every account
+with "Planning :" / "Plan:" written inside a TS reply (e.g. the Lt. 5 list's
+"TS KGEH … Planning :").
+
+**Fix.** A TS heading opens a block that runs to the next TS heading or the
+end. It ends early only at the ward's own forms ("Mohon izin kami assess /
+terapi …", `OWN_HEADING`), which a reply never uses, so a TS block written
+mid-note still ends at our next section. Ringkas was already safe: since 10.1
+it stops at the first TS block.
+
+Tests (`sectionSlices.test.ts`, new):
+- Terapi + TS keeps "Plan Diagnostik" and "Planning :" inside each reply;
+- Plan is exactly our plan;
+- A is exactly our assessment;
+- a mid-note TS block ends at "Mohon izin kami terapi".
+
+**Known limit:** a note that puts a TS reply BEFORE our own Terapi/Plan and
+writes those headings without "Mohon izin kami …" (bare "Terapi:", "Plan:")
+would keep them in the TS block. The corpus writes TS replies at the end.
+
+### 2. Ringkas Chief/Junior remembered (Avi: "the app remembers the chief and junior")
+They were always printed blank (`composePdfReport` had `chief`/`junior`
+options nobody passed).
+- Salin → Ringkas (PDF), when the consultant's format has staffing lines:
+  Chief and Junior fields.
+- **Chief** reads and writes `Patient.chief`: the existing per-patient field
+  (Identitas, board card), because a chief covers only some patients.
+- **Junior** is `UserSettings.ringkasJunior`: one value for the account,
+  synced.
+- Both are saved on blur, not per keystroke, and re-read when the sheet
+  opens.
+
+Harness: typed both, the preview read "Chief : dr. Chief Contoh / Junior :
+dr. Junior Contoh", and the closed and reopened sheet still held both.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2104 passed (144 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-10.1` — Ringkas took TS plans for diagnoses; section names never reached existing accounts
+
+### Symptom (Avi, a CVCU → Lt. 4 transfer note with TS GEH and TS HOM)
+Ringkas listed the cardiology assessment plus "Aspirasi cairan asites",
+"Analisa dan sitologi cairan", "ADT (8/10/26)-> hari kerja" and "BMP Jika
+KU optimal": the TS GEH and TS HOM plan items under "*Plan Diagnostik*".
+
+### Root cause (two layers, both reproduced on the note)
+1. **Ringkas chose sections by substring.** `diagnosisBlock` kept any
+   section whose id or label CONTAINED `diagnos` / `assess` / `problem` /
+   `masalah`. "Plan Diagnostik" contains "diagnos". It never limited itself
+   to the cardiology part either, so a TS block's own headings were
+   candidates.
+2. **Section names were never reconciled.** `sectionAliases` was copied
+   into the profile at account creation and never updated. `reconcileSeeds`
+   covered templates and phrases only. "Plan Diagnostik / Plan Monitoring /
+   Plan Terapi" were added to the Plan seed later, so in Avi's account
+   `*Plan Diagnostik*` was its own custom section instead of part of Plan.
+   That is why the bug showed for him and not with the defaults (default
+   aliases → correct Ringkas; the same aliases without those three names →
+   his exact output).
+
+### Fundamental fix
+- **Ringkas** (`pdfReport.ts`):
+  - a section qualifies only if it is `a` or its label STARTS with the
+    diagnosis word, optionally after "Mohon izin (pasien) kami"
+    (`DIAGNOSIS_HEADING_RE`): "Diagnosis Kerja" and "Problem List" yes,
+    "Plan Diagnostik" and "Pemeriksaan Diagnostik" no;
+  - only sections before the first TS block (`custom_ts*` or a label
+    starting "TS") are considered, because a consultant's assessment is not
+    the cardiology diagnosis.
+- **Seed reconciliation** (`seedSync.ts`):
+  - `SeedSnapshot.sectionAliases` and `SeedBaseline.sectionAliases` (per
+    section id);
+  - `mergeSectionAliases` uses the same value rules as phrases: a new seeded
+    name is added unless the user already uses it for ANY section; a name
+    the seed retired is removed; the user's own names are kept;
+  - a missing seeded section is added whole unless the baseline shows the
+    user removed it;
+  - `reconcileProfileSeeds` now writes `sectionAliases`.
+  - Baselines from before this have no `sectionAliases`, so every seeded
+    name the account lacks is added once. That is the point for Avi's
+    account; the cost is that a default name someone deliberately deleted
+    before today comes back once.
+
+### Not a Temporary Workaround
+Either fix alone would have hidden this note's symptom. Both are needed:
+(1) stops any plan-like heading from ever reaching the Ringkas diagnosis,
+whatever the account's names; (2) stops old accounts from parsing notes
+differently from new ones, which also affects Salin sections, the jump bar
+and Periksa lagi.
+
+### Tests
+- `pdfReport.test.ts`: the note's shape (anonymised) with the default
+  names, and with names that predate "Plan Diagnostik"; plus "Diagnosis
+  Kerja" still taken.
+- `seedSync.test.ts`: new name added; a name the user mapped elsewhere
+  left there; a name deleted after the baseline not restored; retired name
+  removed; through `reconcileSeeds`, idempotent.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2100 passed (143 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-09.4` — "Perlu dicek": unclear patients go to a cross-check box, not a blacklist
+
+### Change of approach (Avi: "don't put confusing patients into a black list, put them into a separate cross-check box")
+09.3 told the AI "JANGAN dimasukkan" for every patient the rules found
+without a DPJP code. That traded one silent error for another: a patient
+who really is this DPJP's, on a line someone forgot to code, would be
+dropped by both readers with nothing on screen. An unclear patient is a
+question for the resident, not something either reader should settle.
+
+### Fix
+- **AI:** the tool has a required `uncertain` array (same fields as a
+  patient, plus `reason`). The system prompt says: unsure → `uncertain`
+  with the reason, never `patients`. The no-code list in the prompt now
+  asks for `uncertain`, not exclusion. `readAiUncertain` reads it, and it is
+  stored in `SensusAiResult.uncertain`.
+- **Decisions:** `SensusDay.extra[code]` holds the entry keys the user
+  included. It is per day and per DPJP, and the same decision applies in
+  both modes:
+  - rules: `buildCensus({ extra })` appends those unassigned entries;
+  - AI: `aiAll` = AI patients + included ones (from the AI's own
+    `uncertain` copy, else the rules entry via `entryAsAiPatient`), marked
+    `dpjpFrom: 'manual'`. `checkAiCensus` skips manual ones, so a choice is
+    not reported as a disagreement.
+- **UI:** `CrossCheckBox` ("Perlu dicek · n pasien") in the output column.
+  - Each row: the place, the line as written, and the reasons ("Tidak ada
+    kode DPJP di barisnya", plus "AI: …" when the AI was unsure too), and
+    "diagnosis tidak terbaca" when relevant.
+  - **Masukkan / Keluarkan** toggles the patient.
+  - It replaces the "n pasien tanpa DPJP" warning in step 2, which now
+    points to the box.
+
+Harness (Avi's lists, seeded AI result with the Super VIP patient in
+`uncertain`): the box lists the 4 no-code CVCU/ICU patients, the Super VIP
+one with the AI's reason. **Masukkan** puts her in the AI census, unflagged
+by the check, and in the rules census (Total 13 → she is the 13th).
+
+### Not done
+- The resident's choice is device-only like the lists (the saved result is
+  what syncs).
+- Still not run against the live API from here.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2092 passed (143 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-09.3` — Scroll strips reachable by mouse; KJS in the census; two missed diagnoses; AI checked against the rules
+
+### 1. Overflowing jump bar unreachable on the PC (Avi's screenshot: a census note)
+**Root cause.** `JumpBar` (and the Helper tab row and Tersimpan chips) was
+`overflow-x-auto` with the scrollbar hidden. Touch swipes such a row; a mouse
+cannot: the wheel scrolls vertically, the scrollbar to drag is hidden, and
+nothing marks the overflow. A long note (the census, one section per place)
+pushed sections past the edge with no way to reach them.
+
+**Fix.** `components/common/ScrollStrip`, now used by all three rows:
+- a non-passive wheel listener converts a mostly-vertical wheel into
+  sideways scroll while the row can move, and hands it back to the page at
+  either end (`wheelShift`);
+- a fade on each side that has hidden content (`stripEdges`, re-measured on
+  scroll, resize and every render);
+- ‹ › page buttons on fine pointers only (`[@media(pointer:fine)]`);
+  `aria-hidden` and `tabIndex=-1`, because keyboard focus already scrolls
+  the row.
+
+Harness: strip forced to 260 px, wheel 400 → scrollLeft 0 → 17 (the end),
+right arrow then left arrow shown.
+
+### 2. KJS in the census (Avi)
+`CensusEntry.kjs` via `kjsOf`: "KJS Uro" (RSUH, before the code), "(KJS)"
+(RSWS), "- KJS BTKV" (Lt. 4, line end), and "(BTKV)" before the name
+(CVCU/HCU), which is read as KJS BTKV by analogy with Lt. 4's "KJS BTKV"
+category. `markKjs` appends " (KJS …)" only when the line does not already
+say KJS. RSWS's "KJS Kardio : 14" summary names no patients and is not
+guessed from. The output subtitle counts KJS patients.
+
+### 3. Two diagnoses not registered (Avi: "a patient that didn't register their diagnosis")
+- **RSUH "2 KJS Uro / ARB / …"**, numbered without a dot, so `ENTRY_RE` did
+  not see a patient line. Only the "Pasien Baru" copy (no diagnosis) was
+  read, and the census printed "Diagnosis: -". `ENTRY_RE` now also accepts
+  `\d{1,2}` + space when followed by "KJS" or a 2–4-capital code and a
+  slash. A bare "512 bed 2/…" stays a room (tested).
+- **"Diagnosis Utama :" / "Diagnosis Sekunder:"** inside an assess block
+  hit `DX_STOP_RE` ("diagnos…") and ended the block with nothing read.
+  `DX_SUB_RE` treats them as sub-headings, and a blank line followed by
+  one does not end the block.
+
+### 4. "Why was this registered as ARB's patient?" (CVCU Super VIP)
+**Not the rules.** On Avi's lists the rules leave that line unassigned (no
+DPJP code on it; the CVCU list has no DPJP section headers). The census in
+his screenshot was the AI's: its " / " joins are the AI rewriting identity
+lines. The AI assigned an unowned patient, and the UI had nothing to check
+its output against.
+
+**Fix: the AI becomes checkable, not trusted.**
+- The prompt now carries the rules' patients for that DPJP as a checklist,
+  plus the rules' no-code patients under "JANGAN dimasukkan…". The system
+  prompt states the ownership rule explicitly: the line's code, else a DPJP
+  section header; the CVCU list has none, and nothing is guessed from
+  position. It also covers placeholder beds ("Pasien dr. TM", "(BTKV) KJS
+  dr. MAA"), Sisrute, diagnosis sub-headings, same-line diagnoses and KJS.
+- The tool returns `rm`, `source_line`, `dpjp_from` and `kjs` per patient
+  (`readAiPatients`; RM from the line when not given).
+- `checkAiCensus` matches AI to rules by RM (else line key) and returns:
+  - `onlyAi`, with what the rules made of that patient (other DPJP / no
+    code / not read) and whether the RM is in the pasted text at all;
+  - `onlyRules`;
+  - `dxMissing`.
+- `AiCheckPanel` shows these with one-tap fixes (Buang / Tambahkan /
+  Pakai diagnosis Aturan). The AI result now stores its patients
+  (`SensusAiResult.patients`) and the message is rebuilt from them; 09.2
+  results without patients still show their text.
+
+Harness with a seeded AI result reproducing the mistake: "11 cocok · 3
+selisih" (the Super VIP patient "Hanya AI · tidak ada kode DPJP", the RSUH
+KJS patient "Hanya Aturan", BTKV patient "Diagnosis kosong di AI"). After
+the three taps: "12 pasien cocok, tidak ada selisih"; output without the
+Super VIP patient, with the RSUH one and "(KJS BTKV)".
+
+### Wrong turns
+- The first fixtures copied RMs and birth dates from Avi's list; replaced
+  before commit (public repo).
+
+### Not done
+- The new prompt has not been run against the live API from here (no key
+  in the sandbox). The check panel is what makes a remaining AI error
+  visible.
+- KJS on RSWS lines that do not say it (most RSWS patients are KJS per the
+  list summary) is not inferred.
+- Several lists pasted into ONE box are read as the first list's kind
+  (66 entries, all as PJT Lt. 6, in a test with Avi's whole file). One
+  list per box remains required; there is no warning for it yet.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2089 passed (143 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-09.2` — Sensus lists per day, find in each list, AI result kept; Pediatri roster from WhatsApp text
+
+### 1. Sensus boxes per day (Avi: "the sensus is made each day, so the box should be for that day only")
+**Root cause.** v1 storage (`plano.sensus.v1`) held ONE set of lists, tagged
+with the clinical date it was saved on and emptied when that date changed.
+The boxes therefore belonged to the device's notion of today, not to the
+census being made. The tanggal sensus field changed only the header text, so
+a census for another date was built from whatever lists were in the boxes,
+and a day's lists were gone the moment the date rolled over.
+
+**Fix.** `domain/census/makerStore.ts` (v2, `plano.sensus.v2`):
+`days[date] = { lists, ai }`. The tanggal sensus now selects the boxes, and
+the date field moved to the top of step 1. Every write goes through
+`withDay` for the selected date only, so a paste can never land in another
+day's boxes. Days with content stay 7 days; empty days are not stored. v1 is
+migrated once onto the date it was saved for, then removed. Chips beside the
+date list the other stored days ("08/10/2026 · 3 list"); "Hari ini" returns.
+Still device-only (whole-hospital lists).
+
+### 2. Find in each list (Avi)
+A search toggle per box (`ListFind`). Matches are case-insensitive
+(`findAll`), shown as the lines they are on (`lineAt`, up to 30), and a tap
+selects the match in the textarea and scrolls to it (approximate on wrapped
+lines; the match lands a third of the way down). One find bar at a time,
+closed on day change. Listing lines rather than only jumping keeps it usable
+on a phone without the keyboard covering the paste.
+
+### 3. AI result kept and savable (Avi: "the AI result should be saved too")
+**Root cause.** The AI census lived in `useState`. Helper renders only the
+open tab, so opening Tersimpan (to look at what was saved), any other tab,
+or a reload unmounted the component and discarded a result that cost an API
+call. Saving it from the tool also used the same record id as the rules
+census, so one overwrote the other.
+
+**Fix.** The AI result is stored in the day (`day.ai[code] = {key, text}`).
+It shows again while `key` (DPJP, date, sapaan, style, lists) still matches,
+with a "susun ulang" note when it doesn't. Mode (Aturan/AI) persists. Simpan
+in AI mode files `subject = "<code> AI"`, title "Sensus … (AI)", as its own
+record beside the rules version.
+
+### 4. Pediatri roster from WhatsApp text (Avi sent the message)
+The roster tile accepted PDFs only; the roster often exists only as a chat
+message. `domain/jaga/parsePediatriText.ts` reads it:
+- `&` (or `,`/`dan`) = shift break, pagi then malam (the PDF's comma);
+- `A - B` = A is the PPDS BTKV with B (the PDF's `(A) - B`); bracket form
+  also accepted;
+- `dr.`/`dr` prefixes, bullets and `*` stripped; names capitalised;
+- no year in the message, so it is the year (±1 around the viewed date)
+  in which that date falls on the stated weekday. A mismatch is reported and
+  the nearest year used.
+
+Avi's message: 38 lines → 44 shifts, 0 skipped, 0 weekday mismatches.
+**Assumption:** the first name in "A - B" (one name recurs in this
+position on six dates) is the BTKV partner, by analogy with the sheet. The
+preview shows "· BTKV <name>" so it can be checked before use.
+
+UI: "Tempel Jadwal Pediatri dari WhatsApp" under the schedule tiles opens
+a textarea, a live preview (dd/mm/yyyy, shift, name, BTKV), warnings for
+unreadable lines and weekday mismatches, and "Pakai jadwal ini (n shift)".
+Same newest-wins guard as a PDF (`refuseOlder`). Stamped with the current
+`PARSER_VERSION` and `source.fileName = 'Teks WhatsApp'`, so it is not
+flagged as a legacy import (there are no PDF items to keep). The import
+error callout now reads "Jadwal tidak dipakai" (it covers text too).
+
+### Wrong turns
+- The find input and its toggle shared one aria-label; Playwright's strict
+  mode caught it. The input is now "Teks yang dicari di list n".
+
+### Not done
+- Sensus lists still don't sync between devices (by design so far). Only
+  the saved result does.
+- The AI path was not run in the harness (no API). Persistence is covered by
+  the store tests, and the save path is the same button as rules.
+- A pasted Pediatri roster replaces the stored one wholesale (like a PDF).
+  Days before the message's first date are dropped.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2076 passed (142 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-09.1` — Saved Helper results, synced to the account
+
+### Root cause (Avi: "the helper felt like a temporary program")
+No Helper tool had anywhere to keep its OUTPUT. Konfirmasi Jaga and Morning
+Report sync their working state, but the message each tool builds was only
+ever on screen: Buat Sensus keeps its pasted lists in localStorage for one
+day on one device, and Verifikasi List keeps nothing. A census sent at 07:00
+from the phone could not be found again on the PC at 10:00.
+
+### Fix
+- **`domain/helperResults.ts`**: what a saved result is (kind, the date it is
+  FOR, subject, title, text, `savedAt`/`editedAt`/`deletedAt` as ms), plus
+  defensive reading, filter/search, grouping by date, and `saveState`
+  (new / same / changed, trailing whitespace ignored).
+- **One record per (kind, date, subject).** The id is derived from those
+  three (`sensus~2026-10-09~arb`), not random. A double tap, or saving on two
+  devices offline, writes the same document instead of duplicates. Re-saving
+  after a correction updates the record in place, and saving a deleted one
+  revives it.
+- **`users/{uid}/helperResults/{id}`**, not on the profile: a few months of
+  censuses would push the profile toward its 1 MiB cap, and every settings
+  save goes through that document. Read with one `orderBy('savedAt')` +
+  `limit(300)`, so no composite index is needed. `savedAt` is the device
+  clock, not `serverTimestamp()`, which reads back null until the write
+  lands and would sort offline saves last.
+- **Rules**: owner only; text a string ≤ 100 000 chars (`MAX_RESULT_CHARS`,
+  checked by a test against the rules file); `delete: if false`. Removal is
+  soft, so Undo works on any device. **Deploys through
+  `firestore-deploy.yml` on push.** Until it runs, Tersimpan says it cannot
+  read the list, and saves are refused.
+- **`SavedResultsProvider`** (Helper page): one listener for every Simpan
+  button and the list, instead of one per message box.
+- **`SaveResultButton`** beside Salin: Buat Sensus (subject = DPJP code,
+  date = tanggal sensus), Formasi Jaga (date + shift), all four MR messages
+  (date = MR day), and the Verifikasi report (date = the PDFs' shift, else
+  today). States: Simpan / Tersimpan (opens the tab) / Perbarui.
+- **Tersimpan tab**: search over title and text (name, RM), per-tool chips
+  (a single scrolling row on a phone), sections by date (dd/mm/yyyy), cards
+  with Salin / Ubah (title + text, explicit "Simpan perubahan") / Hapus with
+  an Undo row.
+
+### Wrong turns
+- The context module was first named `savedResults.tsx` beside
+  `SavedResults.tsx`. tsc caught the case-only difference; on Windows (Avi's
+  checkout) the two files could not even coexist. Renamed to `SaveResult.tsx`.
+
+### Not done
+- Pasted ward lists still stay device-only for the day (size, and they hold
+  every patient in the hospital). Only the finished result syncs.
+- Editing a saved result is last-write-wins (explicit save, one user). There
+  is no three-way merge like SOAP bodies.
+- Pressing Perbarui in a tool overwrites an edit made on Tersimpan. The
+  tooltip says so, but nothing asks first.
+- Saved results are not in Export data yet.
+- Not tested on a real phone. The harness flow passed: save → Tersimpan →
+  edit → Perbarui shown → delete → Undo.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2059 passed (140 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-08.6` — IGD PJT list read properly; "Verifikasi List"; Helper disclaimer
+
+### 1. IGD PJT list (Avi sent the real format)
+08.5 guessed the IGD shape from one census line. The real list adds three
+things the parser read wrongly (checked against Avi's list, sandbox only):
+- **Bolded lines.** Patient lines are wrapped in `*…*`, including "/*Tn. …".
+  The identity kept the asterisks ("1. *IGD Red Zone Bed 3 / …"). Emphasis
+  marks are now stripped from every identity line (also on the CVCU next-line
+  shape). Diagnosis lines are untouched.
+- **Sisrute.** "🚑 Sisrute: 6 pasien" lists referral requests from other
+  hospitals: "RSUD … / Ny. … / STEMI … / Sudah Acc". With slashes and names
+  they read as patients, and as DPJP-less ones they filled the "tanpa DPJP"
+  warning.
+  - `SISRUTE_RE` opens an excluded section.
+  - `ZONE_RE` ("Red/Yellow/Green/Blue Zone") ends it. This matters because
+    the summary block at the top has its own "Sisrute: 6 Pasien" line, so
+    without the reset the Red Zone patients would be excluded too.
+  - Both also stop a diagnosis block.
+- Zones are not sub-grouped in the census: every IGD patient goes under
+  "IGD PJT", as in the ZD census Avi sent.
+- Result on Avi's list: IGD has 5 patients (ARB 3, MZ 1, ZD 1); the 6
+  Sisrute referrals are excluded; no new unassigned patients.
+
+### 2. "Verifikasi Sensus" → "Verifikasi List" (Avi)
+It verifies the ward LIST against the denah. Renamed in the tab, its own
+callout and the Settings → AI toggle. The URL id stays `?tab=sensus`, so
+bookmarks and history entries still open it.
+
+### 3. Helper disclaimer (Avi)
+One note above every Helper tab (`role="note"`, warn tone): results are
+assembled from pasted text; check names, RM, DPJP, diagnoses and counts
+before copying or sending. Once, above the tabs, not per message: the
+message boxes already carry a lot.
+
+### Not done
+- The IGD "_Sementara diterima" status line is not carried into the census
+  (the patient shows "Diagnosis: -").
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2048 passed (139 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-08.5` — Sensus: DPJP saya filter; the format residents actually send
+
+### 1. Each resident sends one DPJP's census (Avi: "me only ARB, so there should be a filter")
+Not a bug; the 08.4 page offered every DPJP in the lists, most first, and a
+resident had to find theirs each time.
+- `UserSettings.sensusDpjps?: string[]`, written as one leaf through
+  `updateSettings` (the array is the value, not a read-modify-write of a
+  list). Synced, so every device opens on the same DPJP.
+- With it set, the chips are those codes, **including 0 patients**: a DPJP
+  with nobody today still gets a census ("Total Pasien : 0").
+  - "DPJP saya | Semua" switches back to the full list.
+  - Codes are set with "★ Jadikan X DPJP saya" on the selected chip, or
+    from a registry select (for a DPJP absent from today's lists).
+
+### 2. Format: matched to eight censuses sent on 07–08 Oct (AHN, MZ, PT ×2, ZD, AHA ×2, KS, AFG ×2)
+08.4 was built from the MZ census alone, and it was the odd one out.
+- **Every covered place gets a heading, zeros included** (all but MZ do
+  this). "Covered" = a pasted list reports on it (`ParsedSource.covers`,
+  `coveredPlaces`). A place with no list is left out rather than written as
+  "0 pasien", because that would be a check nobody did. The page names those
+  ("Belum ditempel: …").
+- **Text and order:**
+  - "Total Pasien : n pasien" and "*PJT Lt. 4 : n pasien*" headings;
+  - a blank line between patients; no dashed rules;
+  - dd/mm/yyyy (matches the 08.4 tgl/bln/tahun request);
+  - "Di RSWS, RSUH, …, PJT Lt. 5 dan PJT Lt. 6" listing the covered places.
+- **The patient line as written is now the default** (`IdentityStyle`
+  `'asis'`; 7 of 8 senders keep "414 Bed 2/AHN/…"). `'front'` keeps the 08.4
+  MZ style.
+  - `CensusEntry.asWritten` drops only what follows a trailing code (the
+    resident).
+  - CVCU joins the bed line ("CVCU Bed 15/ Tn. …", as AFG's sender did).
+- **IGD PJT** (`pjt-igd`, place `IGD`): seen in the ZD census ("Red zone bed
+  6/…"). It is detected from a "List Pasien … IGD" header; IGD/zone
+  locations on other PJT lists file there too. No IGD list was available, so
+  the parser treats it like a ward list (tested on an anonymised imitation).
+- **Therapy pasted under "Diagnosis:"** (AHN patient #6 in the Lt. 4 list).
+  If every line in the block is a drug order (dose + `/jam|/oral|/IV…`, or
+  IVFD), `dxWasTherapy`: printed "-" and warned. The AHN sender had
+  corrected it by hand to "Diagnosis: -".
+- Re-checked on the real lists: AHN 10 patients, same as the census sent;
+  ARB 5 (RSWS 1, RSUH 1, Lt. 4 1, Lt. 5 2).
+
+### Not done
+- Diagnosis blocks stay diagnosis-only. Two senders (PT, KS) also include
+  therapy/plan; asked-for consistency won over copying them.
+- No IGD PJT list sample yet: the parser is a guess at its shape until one
+  is pasted.
+- Real-device test still pending (08.4 items).
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2046 passed (139 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-08.4` — Dates in tgl/bln/tahun; MR pengampu invitation; Sensus maker (rules + optional AI)
+
+### 1. Dates read month-first on some phones (Avi: "the date should be tgl/bln/tahun")
+**Root cause.** Every date field was a native `<input type="date">`, which
+renders in the BROWSER's locale, not the page's. `lang="id"` does not reach
+it, and there is no attribute that sets its display order. On a phone set to
+English (US), 9 Oktober showed as "10/09/2026" (seen in the Helper → Konfirmasi
+Jaga screenshot of 08.3). The app's own text dates were already day-first;
+only the native fields were not.
+
+**Fix.**
+- `domain/dateDmy.ts`: `formatDmy` / `parseDmy`, always day first. `parseDmy`
+  accepts `/ - .` or spaces, 2-digit years, and rejects 31/02. "10/09/2026"
+  is 10 September, never October 9.
+- `components/common/DateField.tsx`: a text field showing `dd/mm/yyyy`
+  (`inputMode="numeric"`, "9/10" takes the current year). The native date
+  input is kept, hidden, ONLY for its calendar (`showPicker` from the icon
+  button). Unreadable or out-of-range text is put back on blur, never saved.
+  `allowEmpty` covers the fields that may be cleared (discharge, operation
+  date).
+- Replaced in MorningReport (×2), HelperPage (Konfirmasi Jaga), LabSheet,
+  IdentitySheet, PatientActionsSheet and ReminderPicker. DateRail's "Tanggal
+  lain" was already picker-only (its value is never shown) and is unchanged.
+
+### 2. Morning Report: invitation to the pengampu (Avi)
+- `buildPengampuInviteMessage`: Avi's text word for word (tested against it),
+  in two forms. Prof replaces every "dokter", including "Izin dok" → "Izin
+  Prof".
+- "Selamat pagi/siang/sore/malam" follows the device hour
+  (`greetingTime`). The date is zero-padded ("Jumat, 09 Oktober 2026").
+- "besok" only when the MR is tomorrow; "hari ini" when today; otherwise
+  "pada …". A fixed "besok" would name the wrong day if the message is
+  written two days ahead.
+- New `MrConfig.senderRole` ("Perkenalan ke pengampu", e.g. PPDS Kardio
+  Semester 1), synced like `sender`. It is left out of the sentence when
+  empty. The default is empty: the repo is public and other residents use
+  the app.
+- UI: Pesan → **Ke pengampu**, with a Dokter/Prof switch (`MessageBox` got
+  an `extra` slot).
+
+### 3. Sensus maker (Avi): one DPJP's patients from the ward lists
+Not a bug. `domain/census/maker.ts`, built from the five list shapes Avi
+sent (PJT Lt. 4; Lt. 5 dan 6; CVCU/HCU/ICU PJT; RSWS; RSUH) and checked
+against his sent census for Prof MZ. It reproduced every patient; the one
+CVCU patient in his sample sits under another DPJP in that day's list, so the
+sample was from another day.
+
+**Design**
+- **Source detection** from the list's own "List Pasien …" header.
+  "List Pasien Lt. 6" inside the Lt. 5 list switches floor. A 3-digit room
+  (4xx/5xx/6xx) decides the floor over the header.
+- **DPJP = the code on the patient's line, else the section header.** The
+  lists paste patients into the wrong section (a dr. ZD patient under
+  Prof PK in Lt. 4), so the header alone files them wrongly.
+  - Codes: a bare code must be capitals; with a title any case ("prof.MZ").
+  - A code must be known (registry ∪ every section header in the pasted
+    lists, so dr. TI on RSUH counts). This is what stops resident names and
+    "PCC"/"BTKV" from reading as codes.
+  - "dr.ZD-dr.AAU" belongs to both.
+- **Identity line:**
+  - hospital lists are printed as written;
+  - PJT lists move the code to the front (`MZ/417 Bed 3/…`) and drop
+    everything after a trailing code (the resident's name);
+  - CVCU takes the bed from its own line ("KosongNy." is read as the
+    patient; "Pasien dr TM", "Kosong" are skipped);
+  - a trailing capitalised "(Nickname)" is dropped, "(EP)" stays.
+- **Diagnosis:** the first "Diagnosis/Diagnosa/Mohon izin kami assess
+  dengan" block (an inline value after `:` or `;` counts), up to a blank line
+  or Terapi/Plan/Premedikasi/Selesai/TS/`A/`. Lines are verbatim; "•"/"*"
+  become "-"; invisible joiners are removed.
+- Pasien Pulang/Meninggal/Pindah are excluded. Duplicates (by RM) are kept
+  once, preferring the copy with a diagnosis and from the list body.
+- Patients with no DPJP are listed as a warning (4 in that day's CVCU list).
+- **Output** (`formatCensus`): Avi's header and TOTAL/RSWS/RSUH/PJT lines,
+  then groups in a fixed order (RSWS, RSUH, CVCU/HCU/ICU PJT, PJT Lt. 4/5/6).
+  The address is Dokter/Prof (default Dokter, as in his sample).
+- **Storage:** localStorage only (`plano.sensus.v1`), dropped when the date
+  changes. The lists hold every patient in the hospital and are worth a day;
+  syncing them through the profile doc would also risk its 1 MiB cap.
+- **UI:** Helper → **Buat Sensus**:
+  - one paste box per list, with the detected type and a manual override;
+  - DPJP chips with counts, census date, Dokter/Prof;
+  - the copyable message.
+
+  Helper tabs now scroll on a phone (4 no longer fit as equal widths), and
+  the empty band above them is gone.
+
+### 4. Optional AI mode for Sensus maker (Avi, mid-task)
+- New flag `AiFlags.sensus` with its own Settings toggle and privacy wording:
+  every pasted list is sent whole.
+- AI does extraction only (`SENSUS_AI_TOOL`, structured tool output);
+  `formatCensus` still writes the message, so both modes produce the same
+  shape. `readAiCensus` validates the output and drops anything malformed.
+- The result is tied to its inputs (stale once a list, DPJP, date or address
+  changes). The panel shows the rules' patient count beside it for
+  comparison. A truncated answer is reported.
+- Checked in the harness with the API intercepted.
+
+### Wrong turns
+- First fixtures carried the residents' nicknames from the real lists
+  (public repo). They are replaced with invented ones, and the consultant's
+  full name in an assertion is read from the registry.
+
+### Not done
+- No real-phone test of `DateField` (calendar button via `showPicker` on iOS
+  Safari standalone).
+- Sensus maker has no AI-vs-rules diff view, only the two counts.
+- Pre-existing consultant and colleague names in older fixtures
+  (`morningReport.test.ts`, jaga parsers) are untouched; see the open
+  history-rewrite item.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2040 passed (139 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-08.3` — Mobile revamp: note first, one header, denser board
+
+Audited every phone screen at 390 and 360 px in a render harness: the real
+app on an in-memory Firebase stand-in with anonymised fixtures.
+
+### 1. Phone patient page: the note began ~1000 px down (Avi: "revamp mobile UI")
+**Root cause.** Two layering decisions compounded:
+- `AppShell` always drew its phone `TopBar` (title = patient name) above the
+  page's own sticky header (date · Salin · ⋯ + IdentityBar + JumpBar). That
+  gave two headers and the name twice.
+- The standing panels (Catatan pasien, Custom Checklist, daily checklist
+  pills, Periksa lagi) were written for the stacked tablet column and
+  inherited unchanged below `sm`. Each is read once on arrival, yet all were
+  stacked open above the note on every visit.
+
+**Fix.**
+- `AppShell` takes `topBar={false}`. PatientPage uses it, owns the
+  safe-area inset itself, and shows a `SyncPill dot` (Synced/saving = dot
+  only; offline keeps the words, because it is the state that must be read).
+- Below `sm`, `renderPhoneChips()` replaces the four panels with one chip row:
+  - **Catatan** with a filled/empty dot;
+  - **Checklist d/t**, daily and custom combined;
+  - **Periksa lagi n** (warn tone), or **✓ Periksa** when AI checking is on
+    and nothing is flagged.
+
+  Each chip opens a `Sheet` holding the existing component (`PatientNotes
+  bare`, vertical `ChecklistPills` + `PatientTodos compact`,
+  `renderChecker('sheet')`). No logic is duplicated.
+- The checker's jumps go through `afterPhoneSheet`: close the sheet, then
+  select. Radix returns focus to the trigger on unmount, which would undo a
+  selection made first. The sheet now closes even when the anchor is no
+  longer found (a "Tampilkan" that leaves the sheet up reads as broken).
+- `formatDayHeaderShort` ("Kam, 8 Okt · H3") is used below `lg`. The long
+  form truncated to "Kamis, 8 Oktober …" at 360 px on phones and on tablets
+  (where Lab / Format bangsal / Pembuka share the row).
+- IdentityBar keeps its details on one line on a phone, and age/sex no longer
+  wrap ("66 / th").
+- The note now starts at ~370 px on a 390×844 phone.
+- Tablet keeps the stacked panels; desktop is unchanged.
+
+### 2. Date rail (phone strip)
+**Root cause.**
+- `scrollIntoView({inline:'center'})` scrolls every scrollable ancestor and
+  centred the newest day, cutting "SOAP Awal" in half.
+- The SOAP Awal button carried `w-full`, written for the vertical list.
+- The content marker was a typed " ·", which read as a stray separator.
+
+**Fix.**
+- The strip sets its own `scrollLeft`, only as far as needed to show the
+  selected day whole.
+- `w-full` is now applied only in the vertical orientation.
+- The faded edges signal that the strip scrolls.
+- `ContentDot` (`role="img"`, "ada catatan") replaces " ·".
+- `IconCalendar` replaces the 📅 emoji (clip art on Android, ignored dark
+  mode).
+
+### 3. Board (phone)
+- The order select and ⋯ moved into the search row as `orderCompact`: the
+  current order's short name with a native select overlaid. This removes the
+  second 52 px header row. The placeholder is shortened so it does not
+  truncate.
+- Diagnoses on phone cards are joined with " · " (leading bullets/numbers
+  stripped) and `line-clamp-2`. `sm`+ keeps the full multi-line list.
+- **Correction to my own audit:** I first said ~2.5 cards fit per screen. I
+  misread a 2× screenshot; it was ~4. It is now ~4.5, mostly from the removed
+  header row.
+
+### 4. Shell and secondary screens
+- `TopBar` is 48 px instead of 56 and takes an optional `badge`. Helper passes
+  its WIP mark there and hides its in-page title row below `lg`; it had shown
+  "Helper" twice.
+- Settings theme label "Ikuti sistem" → "Sistem" (it wrapped at 360 px).
+- The Periksa count badge is dark-on-light (`bg-fg text-bg`); white on the
+  amber was ~3:1 at 10 px.
+- Arsip, Dokumen, Catatan, Kalkulator, Checklist and Pengaturan were checked
+  at 360/390 px and needed no structural change.
+
+### Not done
+- Tablet patient page still stacks the panels above the note (out of the
+  phone scope; the chip row could be extended to `<xl` if wanted).
+- Arsip's two filter rows are left as they are.
+- Not tested on a real phone. Check iOS standalone: the safe-area inset has
+  moved from the shell's TopBar into the patient header.
+- No unit tests for the chip row (render-only); verified by screenshot,
+  including the Periksa sheet closing and jumping.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2009 passed (137 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-08.2` — Ekspor ke Word (SOAP for printing)
+
+### 1. Export the open note as .docx (Avi)
+Not a bug, so no RCA. Design decisions:
+- **What is exported:** the note on screen (`activeNote.body`): the day's
+  SOAP, or the jaga note / version that is open. Verbatim, line for line, the
+  same "selection, not rewrite" rule as Ringkas.
+- **Conversion** (`domain/format/soapDocx.ts`):
+  - emphasis uses the copy formatters' own patterns (`BOLD_RE`,
+    `SINGLE_BOLD_RE`, `ITALIC_RE`, `STRIKE_RE`, now exported), so a span is
+    bold in Word exactly when it is bold in WhatsApp; `2*1 g`, `hari_rawat`,
+    `TD_N_RR` stay plain;
+  - `- ` / `* ` / `•` lines become Word bullets (3 levels, by indent);
+  - numbered lines keep the note's own numbers (a plan referring to "no. 3"
+    must still point at 3), with a hanging indent;
+  - invisible characters stripped (`stripInvisible`), XML-invalid control
+    characters removed, trailing blank lines dropped.
+- **Page:** A4, 2 cm margins, Arial 11, no space after paragraphs (the
+  note's blank lines are its spacing), language id-ID. Running header on
+  every page (name, RM, place · date, hari rawat, note label), "Halaman x
+  dari y" footer. No title block in the body: the opening already carries
+  the identity.
+- **Packaging:** hand-written WordprocessingML in a stored ZIP
+  (`lib/zip.ts`, CRC-32, fixed DOS date → deterministic). No `docx`
+  dependency: it would add a few hundred KB to the offline precache for one
+  button; seven small parts suffice. Output validated with the OOXML schema
+  validator and rendered through LibreOffice (bullets, hanging numbers,
+  header/footer fields correct).
+- **Delivery** (`lib/download.ts`, `deliverFile`): share sheet on a
+  coarse-pointer device that can share files (straight to Word / printer /
+  WhatsApp); plain download otherwise. Object URL revoked after 30 s, not in
+  the same tick (Safari/Firefox).
+- **UI:** ⋯ → Catatan → **Ekspor ke Word** (`IconPrinter`). Offered on locked
+  days too; absent only when the note is empty.
+
+### Not done
+- No PDF export: Word was asked for, and the file stays editable before
+  printing (drop the greeting, add a signature).
+- Not tested on a real phone's share sheet.
+
+```
+npm run verify
+  typecheck ✓  lint ✓ (0 warnings)  test ✓ 2008 passed (137 files)
+  check:version ✓  check:contrast ✓  check:a11y ✓  build ✓
+```
+
+## `2026-10-08.1` — Checker reads the opening and the record; trio 6MWT; phone sticky edit; drawing toolbar; stickers leave with their card
+
+### 1. Periksa lagi: the opening line (Avi)
+New optional `SoapCheckInput.context` (`hariRawat`, `place`, `trio`,
+`dischargeInDays`), passed by PatientPage; without it these checks do not
+run. The reporting line is the first of the first four non-empty lines
+containing `melapor`.
+- `opening-kind`:
+  - "follow up" when hari rawat ≤ 1 (IGD / first day);
+  - "pasien baru" from hari rawat 2;
+  - konsul and perpindahan openings are not judged.
+- `opening-place`:
+  - Lt., Kamar and Bed in the opening against the registered ward, room and
+    bed (`readPlace`), each only where both sides have it;
+  - for a perpindahan, the destination (after "ke");
+  - the message names both, e.g. "(Lt. 4 · Kamar 420 · Bed 2) beda dengan
+    data pasien (Lt. 4 · Kamar 420 · Bed 3)".
+
+### 2. Trio (AFG, AFM, ZD): 6MWT from H-1 (Avi)
+- `trio-6mwt`: the DPJP is one of the trio, the planned discharge is today
+  or tomorrow, and no 6MWT / six-minute walk is written anywhere in the note.
+- On the board, the trio card's H-1 / hari ini strip carries a **6MWT** tag.
+
+### 3. Sticky notes not editable on a phone (Avi)
+**Root cause.** The phone canvas drew notes with its own `StickyBlock`,
+whose tap opened `NotePopover`, a read-only view. The laptop canvas and the
+list view render the editable `StickyNoteCard`; the phone had no editing
+path at all.
+**Fix.** A tap hands the note id to the board (`onOpenSticky`), which opens
+that same `StickyNoteCard` in a sheet. One editor everywhere; the popover
+remains only for a caller that offers no editing.
+
+### 4. Gambar toolbar overflowing the board header (Avi, screenshot)
+**Root cause.** The drawing tools were portalled into the board toolbar, a
+single row already nearly full, so opening Gambar pushed + Catatan and
+Format off the right edge.
+**Fix.** Only the ✏️ Gambar / Selesai toggle stays in the toolbar. The
+tools float at the bottom of the screen (`w-max`, capped at the viewport,
+wrapping if ever needed), with their own Selesai. Checked: the header no
+longer overflows and the bar is one row at 1280 px.
+
+### 5. Stickers stay behind when their card leaves (Avi)
+`pruneDetachedStickers(stickers, present)` drops stickers stuck on a card
+that is no longer on this board (archived, deleted, or moved to the other
+scope); free stickers are untouched. The board runs it only when both:
+- the patient list is SERVER-confirmed (`!loading && !fromCache`), since a
+  cache-only first answer on a fresh device can be missing patients, and
+  pruning against it would delete stickers of patients who are still there;
+- the stickers loaded belong to the scope on screen
+  (`useBoardStickers.loadedFor`). For one render after a scope switch the
+  hook still holds the previous scope's list, and pruning then would write
+  it, emptied, under the new scope's key.
+
+```
+1992 tests passed (+12)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-07.2` — Drawing on the board canvas (per device, per scope)
+
+Avi: "Is it possible to make the dashboard canvas background drawable?", then
+"Stay on each device".
+
+**Model (`domain/board/drawing.ts`).**
+- The sticker rules exactly: localStorage per scope
+  (`visite.board.drawing.<scope>`), x as a fraction of the canvas width and y
+  in px, like card positions, so a stroke keeps its place relative to the
+  cards when the window is resized.
+- A stroke is `{id, tool: pen|highlighter, color, points[]}`, flat, rounded
+  (x to 1/10 000, y to 0.1 px).
+- Points closer than 2 px to the last kept are dropped.
+- Capped at 20 000 points (about 300 KB); the oldest strokes go first.
+- The eraser removes whole strokes it touches (reach includes the stroke's
+  half-width, so a highlighter is easier to hit).
+- Paths are midpoint-quadratic smoothed.
+- Colours are stored by id and drawn through tokens (`--fg`, `--danger`,
+  `--accent`, `--discharge-h1`), so they follow light and dark mode.
+
+**Layers (`CanvasDrawing.tsx`).**
+- The drawing is an SVG laid down through the canvas `overlay` slot before
+  the cards, so every card sits on top of it. It never takes a pointer.
+- Draw mode adds a transparent capture layer above everything (z-50), so
+  the pointer draws instead of dragging or opening a card. Pointer capture
+  and coalesced events give smooth, unbroken strokes.
+- Outside draw mode the board behaves exactly as before.
+- Tools are portalled into the board toolbar beside Penanda.
+- Undo (50 steps, in memory) takes back one gesture: a stroke, an eraser
+  drag, or a clear.
+- Hapus semua needs two presses rather than a browser dialog, which would
+  freeze the board.
+- Esc leaves draw mode; searching or selecting turns it off.
+
+**Checked in Chromium**, against the real component and hook:
+- a card opens outside draw mode and does not while drawing;
+- pen, highlighter, eraser and undo;
+- the drawing survives a reload;
+- Titipan is separate;
+- clear needs two presses and can be undone;
+- Esc exits;
+- light and dark;
+- no console errors.
+
+**Not done.** The phone board is a block grid with different positions, so
+the drawing is on the canvas board only (from 1024 px).
+
+```
+1980 tests passed (+12)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-07.1` — Foley reminder; sticky notes per board; discharge strips; effective osmolality explained
+
+### 1. Periksa lagi: remind about a Foley catheter (Avi)
+New finding `balance-without-catheter` (level `cek`).
+- **Triggers:** furosemide / furosemid / lasix on a Plan or Terapi line that
+  does not stop it, or a Plan line monitoring balance cairan, urine output,
+  produksi urin, diuresis or intake-output.
+- **Silenced by:** any catheter anywhere in the note: kateter, catheter,
+  Foley, DC, dower, urine bag ("BAK per kateter" counts).
+- **Points at** the line that triggered it.
+- **Wording:** a reminder ("pertimbangkan… atau tulis bila sudah terpasang"),
+  because a patient voiding into a measured urinal is fine.
+- **Tests:** the "good note" fixture now carries "BAK per kateter", since by
+  this rule a furosemide note without it is no longer complete.
+
+### 2. Sticky notes: separate for Pasien saya and Titipan (Avi)
+**Root cause.** Sticky notes were one list on the profile, drawn on both
+scopes of the board, the same defect stickers had before they were keyed by
+scope. The two scopes show different cards at the same place, so a note
+written beside a titipan patient appeared beside one of your own.
+**Fix.** A note records `scope: 'temporary'` when written on Titipan.
+`activeBoardNotes(notes, scope)` shows each board its own; notes written
+before this have no scope and stay on Pasien saya, where they were all
+written. Layout positions are merged (`mergeLayouts`), so the board not on
+screen keeps its notes' places.
+
+### 3. H-1 and pulang hari ini, more noticeable (Avi)
+The corner chip was graded to stay quieter than the patient's name. For
+these two stages that was the wrong trade: they change what is done on this
+round, and a 10 px pill in one corner of twenty cards was found by looking
+for it, not seen. They now get a full-width named strip in the stage colour
+with `--discharge-fg` text, on the card's frame like the Pemantauan strip
+(stacked under it when both apply), so the card background keeps carrying
+the checklist colour. Rencana and Lewat? keep the chip.
+
+### 4. Osmolality: what "effective" means (Avi)
+A tap-to-open explainer on the card:
+- the definition (osmoles that cannot cross the membrane, so they move
+  water);
+- why urea is excluded;
+- when the effective value is the one to read (hyponatraemia in uraemia,
+  the HHS criterion);
+- a worked example.
+
+The example's numbers (`EFFECTIVE_EXAMPLE`: Na 125, glukosa 90, ureum 180 →
+total 285, efektif 255) are tested against `calculateOsmolality`, so the text
+cannot drift from the arithmetic. Sources: Rose & Post (2001), Spasovski
+et al. 2014, Umpierrez et al. 2024.
+
+### Not done
+Drawing on the board canvas: answered, not built; see the reply to Avi for
+the plan.
+
+```
+1968 tests passed (+8)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-06.1` — Checker matches specialties; one list rule set; checker and DPJP in the panel sidebar; anonymised fixtures
+
+### 1. Periksa lagi: "TS Gizi Klinik / TS Rehab belum ada di daftar DPJP" (Avi)
+His note listed `DPJP Gizi` and `DPJP KFR`; the checker flagged TS Gizi Klinik,
+TS Rehab and TS Neuro.
+
+**Root cause.** The rule compared LETTERS: the TS name joined and cut to five
+(`Gizi Klinik` → `gizik`) had to appear in the DPJP lines. That fails whenever
+a service is written two ways: a longer name (`gizik` is not in `gizi`), or a
+synonym (`Rehab` / `KFR`, no letters in common).
+
+**Fix (`specialties.ts`).** Both sides are read into SPECIALTY keys:
+- a dictionary of names, abbreviations and phrases (longest phrase first, so
+  `bedah saraf` is not also `saraf`);
+- on the DPJP side, the consultant's titles too (`Sp.N`, `Sp.GK`,
+  `Sp.KFR.Ped(K)`, `KHOM`, `Sp.D.V.E`), which name the specialty even under a
+  generic label such as `DPJP Konsulen 2`;
+- unknown words fall back to five-letter stems, word by word, so `TS Pulmo`
+  still meets `DPJP Pulmonologi`;
+- only the label part of a DPJP line is read, so an `RM 1…` elsewhere in the
+  note cannot count.
+
+Run on his full note, the checker now raises exactly one item: TS Neuro, which
+has no DPJP line. That flag is correct.
+
+### 2. Catatan: a bullet or checklist row that "sometimes" cannot be removed (Avi)
+**Reproduced in Chromium**, driving the real editor:
+- checklist `a`, `b`; Enter at the end of `a`, then Backspace: the new row
+  became a blank line that split the checklist in two;
+- the same with bullets: back to the end of `a`, one list.
+
+**Root cause.** Two mechanisms for one kind of thing:
+- Checklists were handled by Plano on `keydown`; bullets were left to the
+  browser. Their rules differed (above).
+- `keydown` is skipped while the keyboard is composing (`isComposing`), which
+  on a phone keyboard with suggestions is most of the time. There the
+  BROWSER's handling ran inside checklist markup it does not understand.
+
+Which code handled a keypress depended on the keyboard's state, which is the
+"sometimes".
+
+**Fix (`checklistDom.ts`, `NoteEditor.tsx`).** One rule set for every list,
+from `beforeinput` (`insertParagraph` / `deleteContentBackward`), which every
+keyboard fires. Only cancelable events are taken, so an edit is never applied
+twice.
+- Enter on text splits the row (a new checklist row is unticked).
+- Enter on an empty row leaves the list.
+- Backspace on an empty row deletes it, caret to the end of the row above.
+- Backspace at the start of a row with text joins it to the row above; on the
+  first row it becomes a plain line.
+- A zero-width space no longer makes a row "not empty".
+- Same-kind lists left back to back by the browser's own editing are joined
+  on input, except mid-composition.
+
+Checked against every sequence of the reproduction, including a 2-second save
+echo: all now end as the bullet case does.
+
+### 3. Tata letak Panel: checker and DPJP detail in the right sidebar (Avi)
+- In the panel layout, from 1280 px, with the patient view open, Periksa lagi
+  renders at the top of the sidebar (amber edge when something is flagged), so
+  it stays in view while the note scrolls.
+- A DPJP card below it writes out what the folded line above the note
+  abbreviates: Kirim, Format, Rencana (6MWT), Poli, Lalu, Diagnosis.
+- Both are the same render functions as their main-column versions; the main
+  column hides its copy at that width (`xl:hidden`) only when the sidebar hosts
+  it. Klasik, phone, a closed sidebar and the Dokumen view are unchanged.
+- Sidebar: Pasien/Dokumen as the kit's Segmented control; panel headers in
+  the kit's small caps with a rotating chevron; 320 px wide in the panel layout.
+
+### 4. MR: the Dinas/Jaga box resizer (Avi)
+**Root cause.** The two cards share a grid row and stretch to one height, but
+each textarea kept its own, so one ended above its card's edge; dragging one
+handle moved the other card and not its box.
+**Fix.** The card is a column and the textarea grows to fill it. Measured
+after resizing either box: both end at their card's border.
+
+### 5. Anonymised fixtures (Avi: "Yes anonymise those")
+- Realistic patient names in tests, comments, the CHANGES history and one seed
+  template are replaced with same-shape pseudonyms (`Dg` particles and word
+  counts kept, since the parser cares).
+- RM numbers are replaced by fakes with the same digit count, leading zeros
+  kept. Placeholders (`123456`, `0000001`) were left alone.
+- Resident names in the seed templates and the jaga tests are replaced.
+- Seed documents are copied only on request, by title, and never updated, so
+  documents already added to an account are untouched.
+
+**Not done.**
+- Consultant names stay: the DPJP registry, MR and poli schedules need them to
+  recognise DPJP lines.
+- The census verifier's resident/chief roster (`schemas.ts`,
+  `DEFAULT_CONFIG.primaryChiefs`) and the census tests that match against it
+  stay. They are configuration; moving the roster into account settings would
+  let the repo hold no names.
+- Git HISTORY still contains the originals. Removing them needs a history
+  rewrite and a force push.
+
+```
+1960 tests passed (+28)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.8` — MR Dinas lists; Helper and sidebar revamp; checklist preview order; name back
+
+### 1. "© Avicenna" beside the version (Avi)
+**Root cause.** The 2026-10-04 UI revamp folded the sidebar footer into one
+status line and moved the credit into the `title` of the version, so on a
+laptop it existed only on hover. Phone and tablet still had `Footer`.
+**Fix.** The sidebar foot writes `© Avicenna · v…` again, under the sync state.
+
+### 2. Minimised Custom Checklist: unchecked first (Avi)
+**Root cause.** The side panel's preview was `slice(0, 4)` in written order: a
+list whose first four steps were ticked showed four struck-through lines and
+hid what was left behind "+N lagi", which is the opposite of what a minimised
+checklist is for (the daily checklist's preview already shows every item).
+**Fix.** `previewTodos` (domain, tested): unticked first, each group in written
+order; the overflow line says what it hides, "+N belum" / "+N selesai".
+
+### 3. Sidebar revamp (Avi), and no "Alat" (Avi: "too cringe")
+- One row style and one selected look for every destination (it had two:
+  14 px rows with a grey fill for the ward screens, 12 px rows with only a
+  blue label for the tools). Grouped **Bangsal** / **Fitur**; Pengaturan at
+  the foot beside the status it configures.
+- Rail and phone bar: the active icon sits in an accent pill; the rail labels
+  every icon (10 px, so "Pengaturan" fits 76 px); Helper's WIP is a dot there
+  and the word on the sidebar.
+- Helper has its own icon (it borrowed Checklist's).
+- "Alat" gone from the UI: sidebar group **Fitur**, phone sheet **Lainnya**
+  (the same word as its button, `aria-label` "Menu lainnya"), Helper tablist
+  label, and the calculator's "Alat lain" group is now "Lainnya".
+
+### 4. Morning Report: Dinas lists (Avi: weekdays confirm Dinas and Jaga)
+**Model.** `ShiftPart` gains `dinas`. `coveredShifts` gives each weekday
+`dinas` then `full` (the jaga); weekends stay `pagi`/`malam`. The jaga keeps
+the key `date:full`, so lists stored before this stay put: no migration.
+- Prodi report: the Dinas block comes before that day's Jaga block.
+- Request to the senior: `list ${shiftLabel}`. Avi's wording for a jaga is
+  unchanged byte for byte ("…apakah boleh meminta list Jaga Senin, 5 Oktober
+  2026 yang akan di MR kan dok?"); a Dinas request reads "list Dinas …".
+  Both pinned by tests.
+- Step 3 is one row per date with its lists as columns (Dinas | Jaga, or
+  Jaga Pagi | Jaga Malam), stacked on a phone.
+
+### 5. Helper revamp: Morning Report and Verifikasi Sensus (Avi)
+**Morning Report.**
+- Numbered steps on the left.
+- On a laptop, the three messages sit in a sticky right column, so what will
+  be sent stays in view while lists are pasted.
+- `mrReadiness` (domain, tested) gives a Kesiapan box: sender, lists filled,
+  pengampu confirmed, Zoom block. It describes and never blocks, since an
+  empty list is a legitimate "(Tidak ada pasien)".
+- ‹ › step MR days and skip weekends (`stepMrDate`, tested).
+- Pengampu rows are name | status | delete on one line.
+
+**Verifikasi Sensus.**
+- Documents on the left: drop tiles, one primary action, run progress.
+- The result on the right: a verdict card with counts per severity, issues
+  with a severity-coloured edge, and new/persisting tags.
+- In comparison tables the odd value out is marked (`oddValues`, domain,
+  tested; nothing is marked on a tie, since there is no telling which side is
+  wrong).
+- Resolved, answered, AI notes and JSON fold away.
+- When disabled, the explanation is a callout with a button to Pengaturan.
+
+No logic in the census verifier or the MR stores changed.
+
+**Checked in a harness** (real TabBar, HelperPage and UI kit; Firestore and AI
+mocked with anonymised data): desktop, tablet and phone, light and dark, no
+console errors.
+
+**Not done.** The census test fixtures and some seed templates in this public
+repo contain realistic patient, resident and consultant names and RM numbers.
+Flagged to Avi, not changed here.
+
+```
+1932 tests passed (+15)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.7` — Start-up no longer waits on a slow network
+
+### "Memuat… took too long" (Avi, Riwayat sesi screenshot)
+**What the log showed.** All 7 slow entries were the same wait, **page start →
+signed in** (`mulai sampai masuk`), 6.1–17.6 s. No patient-list or note waits.
+- None said "tab sempat dibuang Chrome" (cause 1 out).
+- Only 2 of 7 had another Plano tab open (cause 2 not the driver).
+- The 14–17 s ones were "tab tidak terlihat" (background throttling inflates
+  them; the 6–10 s visible ones are the real cost).
+
+**Root cause (read in the SDK, then reproduced).** Firebase Auth does not
+report a stored user until it has asked Google about it:
+`initializeCurrentUser` → `reloadAndSetCurrentUserOrClear` →
+`_reloadWithoutSaving` awaits `getIdToken()` (a refresh when the hourly token
+has expired) and `accounts:lookup`. Offline, both fail at once and the SDK
+keeps the user. On a network that is slow but alive, they hang up to the SDK's
+30 s timeout. Worse, Firestore enqueues every operation, **cache reads
+included**, behind Auth's first token (`FirebaseAuthCredentialsProvider`), so
+nothing on the device can be shown meanwhile. An earlier release already stopped the
+popup iframe loading at boot; this is the second network wait on the same
+path.
+
+**Fundamental fix (`data/bootAuthCap.ts`).** During the boot check only, a
+request to `identitytoolkit`/`securetoken` that has not answered in 3 s is
+failed as a network error. The SDK's documented contract for that is to keep
+the stored user, so the boot takes the existing offline path.
+- Installed only when this device had someone signed in; released at the first
+  auth state (sign-in, sign-out and every later refresh are untouched).
+- Other hosts (Firestore) are never capped.
+- A real answer from Google (e.g. `USER_DISABLED`) passes through and still
+  signs the account out.
+
+**Avi's condition: no out-of-sync, no lost or overwritten SOAP.** Unchanged by
+construction: this is the offline boot that already exists. Waiting for Google
+never made the copy fresher (the first snapshot came from cache either way);
+the `bodyHash` compare-and-set and three-way merge are what stop an older SOAP
+replacing a newer one, and they run as before.
+
+**Contract test (`bootAuthCap.contract.test.ts`).** Runs the real Firebase
+Auth **browser** build (loaded by path: under Vitest's Node conditions
+`firebase/auth` resolves to the Node build, which brings its own fetch and
+would pass without touching the cap).
+- Stored user + Google never answering + cap → user kept, cap fired, the SDK
+  did request `securetoken`.
+- Control without the cap: still no auth state after 1.5 s (the bug).
+- A Firebase upgrade that changes the contract fails here.
+
+**Diagnostics.** The boot line now splits `kode` (download + start-up) from
+`cek akun`, and says `jaringan lambat, dibuka dari perangkat` when the cap
+fired, so the next screenshot shows which half remains.
+
+**Not done.** Firestore's own first sync still needs the network; on bad wifi
+the "Pending/Offline" state lasts until it answers, as before. Also anonymised
+a consultant's name left in the `.5` entry.
+
+```
+1917 tests passed (+10)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.6` — Schedules re-read themselves when a parser is fixed; INT kept
+
+### 1. "Why can't the app still detect the DPJP?" (Avi, on `.5`)
+His screenshot: the DPJP tile reads **27 hari · Tidak terbaca: 5–8 Okt** on
+v2026-10-05.5, whose parser reads all 31 days.
+
+**Root cause.** A schedule was stored, and synced, as its PARSE only. A parser
+fix therefore reached no schedule already imported: the copy in his account
+was still the old 27-day parse. It changes only when the PDF is imported again,
+by hand, on a device that already runs the new code.
+
+The new-document guard was ruled out: a 31-day re-import of the same sheet is
+not "older" (same coverage and document date, later `importedAt`), so it is
+accepted.
+
+**Fundamental fix (`reparse.ts`, `types.ts: ParsedFrom`).**
+- **What an import keeps.** Every import stores the PDF's positioned text
+  (`sourceItems`, `[x, y, text, page]`, 0.1 pt) and the parser version that
+  read it.
+- **Re-read on load.** On load, and after every sync, a schedule read by an
+  older parser is parsed again from its own source with the current one.
+  - Its `importedAt` and `source` are carried over.
+  - It is written back, so every device gets the corrected copy.
+  - A re-parse that reads nothing keeps the stored copy, so a parser regression
+    cannot erase a working schedule.
+- **Parser versions:** roster 2, dpjp 2, pediatri 1, jarkom 1. **Bump on any
+  output change.**
+- **Size:** about 23 KB (roster) and 5 KB (DPJP) more per document, well under
+  Firestore's 1 MB. `firestore.rules` has no size cap on `jaga/*`.
+- **Copies imported before this (no source).** They cannot heal. The tile says
+  "Dibaca Plano versi lama — impor ulang PDF ini sekali", so **one last manual
+  re-import** is needed for the DPJP (and the roster, for the boundary fix).
+- **Checked in the harness:**
+  - a seeded 27-day legacy copy warns, and re-importing gives 31;
+  - a seeded old parse that HAS its source heals itself to 31 on load;
+  - no console errors.
+
+### 2. `INT n` is a person (Avi: internal-medicine resident on rotation)
+`INT 1`… were dropped as "intern markers", so weekend-night **Bangsal B**
+printed blank. They are kept now (normalised to `INT n`). Their row is
+confirmable, and the swap picker can name the person. 31 Okt Sabtu Malam:
+`Bangsal B : INT 9 (belum konfirmasi)`.
+
+```
+1907 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.5` — October schedules: two parser bugs, gap warnings, Helper layout, stickers, poli
+
+### 1. Konfirmasi Jaga: DPJP empty for 6 October (Avi)
+**Reproduced** with the real October PDFs through pdf.js and the app's own
+parsers: the DPJP sheet parsed **27 of 31 days**.
+
+| Days lost | October sheet | Old parser |
+|---|---|---|
+| 5–8 Okt | date drawn as two fragments, `5` + `Oktober 2026` | needed the whole date in ONE fragment |
+| 9 and 24 Okt, DPJP Utama only | a long centred name starts at x = 139 | column hard-coded to start at x = 140 |
+
+`buildFormasi` prints a DPJP block only for a date the sheet has. So 6 Okt (and
+its after-midnight 7 Okt) came out with no DPJP and **no warning**.
+
+**Root cause.** Column positions and date shape were hard-coded from the
+September sheet. A new layout produced a parse that was partial and silent.
+
+**Fundamental fix (`parseDpjp.ts`).**
+- The date is read from the row's leading fragments joined: 1, 2 or 3,
+  whichever first spells a date.
+- The Utama/PCI boundary is the midpoint of **this document's own column
+  headers**, so it moves with the sheet. With no headers, names are taken in
+  order.
+- Checked against `pdftotext` for all 31 days: 0 mismatches.
+
+**Fixing the class of failure (`coverage.ts`).**
+- `missingDates` runs on every import. The tile now says "Tidak terbaca:
+  5–8 Okt" instead of a plain "27 hari".
+- `dpjpGaps` mirrors `buildFormasi`'s dates (own date, plus the next unless
+  Pagi). The Formasi warns "DPJP 1 Nov tidak ada di Jadwal DPJP" and opens
+  "Ubah DPJP".
+
+**Avi must re-import the October DPJP PDF once.** The stored copy is the
+27-day parse; re-importing the same document is allowed.
+
+### 2. Resident roster: weekend night teams dated to the wrong day
+**Found while checking (not reported).**
+
+| Shift | Old parse | Should be |
+|---|---|---|
+| Sabtu Malam | 1 Nov | 31 Okt |
+| Minggu Malam | 2 Nov | 1 Nov |
+
+31 Okt Sabtu Malam could not be selected at all.
+
+**Root cause.** A weekend's date is one merged cell drawn between its two rows.
+At the month boundary pdf.js attached `1` to the Sabtu Malam row and `2` to
+Minggu Malam, and the parser trusted any number on a row.
+
+**Fundamental fix (`parseRoster.ts`).**
+- The HARI column is authoritative. A day number is accepted only if that date
+  falls on the row's weekday.
+- Otherwise the date is walked from the previous row: the same date if the
+  weekday did not change, else the next date with that weekday.
+- All 60 shifts now fall on their own weekday (was 2 wrong).
+- There were no tests for this parser; `parseRoster.test.ts` now reproduces
+  the boundary geometry. Initials are anonymised.
+
+### 3. Helper page layout
+The page was a numbered form (1. Impor, 2. Pilih tanggal, 3. Formasi,
+4. Konfirmasi) in a 48 rem column.
+- **Toolbar.**
+  - ‹ date ›, with Hari ini / Besok chips and a relative label ("2 hari lagi").
+  - The shift as a segmented switch on weekends.
+  - Sync as a pill; the long explanation is its tooltip.
+- **Jadwal: four status tiles.**
+  - Each tile shows a dot, its coverage and count, "Ganti/Impor", and its
+    gaps.
+  - Drop a PDF on a tile or tap it.
+  - Two-up on a phone.
+- **Formasi and Konfirmasi side by side** from 1024 px (the jaga tab uses
+  `max-w-6xl`; Sensus and MR keep `max-w-3xl`).
+  - **Formasi:** a primary "Salin Formasi" (with ✓), the DPJP-gap callout, and
+    "Ubah DPJP" as a bordered disclosure that opens when there is a gap.
+  - **Konfirmasi:** a progress bar (2/9), labelled sender fields, and
+    confirmed rows tinted. The per-row "belum konfirmasi" text was dropped,
+    since the box, the tint and the bar say it.
+- All behaviour unchanged: swaps, Jarkom links, agama, reset, sync,
+  wrong-slot guard.
+- Render-checked in a harness by importing the real PDFs through the tiles:
+  - Formasi 6 Okt shows Zaenab/Akhtar, and after 00.00 Tasrif/Asrul;
+  - wrong-slot refusal;
+  - 31 Okt Malam gap warning;
+  - ‹ › and Besok;
+  - progress;
+  - phone width.
+
+### 4. Stickers
+- **ECHO** joins the procedure tags (green pill). No emoji says
+  echocardiography, which is the file's own rule for tags.
+- **🩻 Rontgen / foto thorax** joins Klinis. It is Unicode 14, so Windows 10's
+  emoji font draws a box (Windows 11, Android and iOS are fine).
+
+### 5. Jadwal poli Oktober – Desember 2026
+Checked slot by slot against the stored July schedule: all 27 slots, rooms and
+hours are identical. `SCHEDULE_PERIOD` now reads "Oktober – Desember 2026".
+dr. M. Tasrif Mansur is still not in the DPJP registry, as before.
+
+### Not done / open
+- **Weekend nights put `INT 1`, `INT 2`… in the BANGSAL B column.** The parser
+  drops `INT n` as an intern marker, as it did when the markers sat in the
+  Pedi column, so the Formasi prints `Bangsal B :` blank on those nights. Asked
+  Avi whether it should print `INT 1`.
+- The November DPJP sheet is not out, so any Formasi that needs 1 Nov or later
+  warns until it is imported.
+
+```
+1901 tests passed (+19)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.4` — "Memuat… takes too long": measure before fixing
+
+### The report
+"The Memuat… took too long. It sometimes appears out of nowhere." On the laptop,
+and Avi could not say which screen.
+
+### Why this release does not fix it
+**Root cause not yet established.** Each "Memuat…" in the app is one of five
+gates, and every one already had an obvious slowness removed:
+- **AuthGate.** The boot: `initializeAuth` without the iframe (2026-09);
+- **AccessGate.** "Memeriksa akses…";
+- **Board / Arsip.** Lists that outlive the screen (2026-10-02);
+- **PatientPage.** First paint from the board's list (2026-10-02);
+- **Editor.** "Memuat catatan…".
+
+**What the code rules out.**
+- The app never reloads itself on its own. The update banner waits for a
+  press; chunk recovery fires only on a load error, once per session.
+- There are no lazy routes, so there is no Suspense fallback.
+- The session status never returns to `loading` after sign-in.
+
+**What fits "out of nowhere, on a laptop", but code alone cannot confirm.**
+
+| # | Cause | What would show it |
+|---|---|---|
+| 1 | Chrome **discarded** the background tab (Memory Saver). Returning is a full cold start. | `document.wasDiscarded` on the next boot |
+| 2 | **Several Plano tabs.** Firestore's multi-tab cache has one primary tab; the tab on screen waits on a frozen or throttled background one. | count of other Plano tabs at the slow moment |
+| 3 | Slow local cache (large IndexedDB) | slow with 0 other tabs, online |
+| 4 | Not cached, so it waited on the server | slow while online, on first opens only |
+
+Fixing one of these blind would repeat the four-releases-of-guesses pattern the
+session log was built to end (SIMGOS `?`). So this release records the
+evidence when it happens.
+
+### What was added
+- `lib/loadTiming.ts`:
+  - **`useSlowWait(label, waiting)`** on every gate: membuka pasien, memuat
+    catatan, daftar pasien, arsip, memeriksa akses. It writes a `Lambat` line to
+    the session log when a wait is **2 s or longer**, including one the user
+    walked away from (`(ditinggalkan)`).
+  - **Start-up:** page start → signed in, logged the same way.
+  - **Boot reason** on the existing `Aplikasi dibuka` line: dibuka / dimuat
+    ulang / kembali-maju, plus **"tab sempat dibuang Chrome"** when
+    `document.wasDiscarded` is set (cause 1, named outright).
+  - **Other Plano tabs**, from a small `localStorage` registry (frozen tabs
+    included; a tab that died uncleanly expires after 12 h).
+  - **Kembali ke tab**: after Chrome froze the tab (`resume` event), or after
+    10+ min hidden.
+- `SessionLogPanel` labels the new lines and says what to send. The log holds
+  40 entries (was 20).
+- Still no uid, email or patient data in the log: labels, durations, counts.
+
+**Temporary Workaround (told to Avi, not shipped as code):** keep one Plano tab,
+and add the Plano site to Chrome's "Always keep these sites active". That
+addresses causes 1 and 2 if they are the cause. It is not the fix, because
+which cause it is decides the fix:
+- for 2: single-tab persistence, or a "Plano sudah terbuka di tab lain" notice;
+- for 3: index or cache pruning;
+- for 4: prefetch.
+
+```
+1882 tests passed (+9)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.3` — Salin: preview to the bottom, chips that do not move
+
+### 1. Bagian chips moved when pressed (Avi)
+**Root cause.** `ChoiceChip`'s width depended on its state. Selecting added a
+14 px check icon plus a 6 px gap and switched the label to semibold, about
+25 px wider. In a wrapping row that reflows everything after the chip:
+- pressing "A" pushed "Terapi + TS" to the next line;
+- pressing "Seluruh catatan" pushed "S" back up.
+
+Avi's four screenshots are the four layouts of the same six chips.
+
+**Fundamental fix (in the shared component, so every chip row in the app is
+covered).** The chip is an `inline-grid` with two layers in one cell:
+- an invisible, `aria-hidden` sizer that is always the widest state (check +
+  semibold);
+- the visible layer.
+
+Width no longer depends on `active` at all. Checked in the harness: 5 presses
+across Bagian, 0 position changes in any of the six chips. Cost: unselected
+chips are as wide as their selected state, so the label sits centred with a
+little extra padding.
+
+`choiceChip.test.ts` pins the structure (jsdom cannot measure width).
+
+### 2. Preview height (Avi: "not the width, the height")
+**Root cause.** Height was taken by things that did not need it:
+- the copy button was a full-width footer bar under BOTH columns;
+- a row under the preview (count, Ukuran awal, Pilih semua teks);
+- with a dragged height, the preview column scrolled, which also hid its own
+  header (Avi's screenshot).
+
+**Fix.**
+- **Button.** On a laptop the copy button is pinned at the bottom of the
+  options column, under Penyesuaian; the options scroll above it.
+  `Sheet` gains `footerClassName`; Salin passes `sm:hidden`, so a phone keeps
+  the footer bar exactly as before.
+- **Count and actions.** The count, Ukuran awal and Pilih semua teks moved up
+  into the Preview header row.
+- **Fills to the bottom.** The preview now runs to the sheet's bottom edge;
+  only the height grip sits under it. Body top padding 16 → 12 px, column gap
+  24 → 20 px. Measured at 1600 x 820: textarea 579 px, ending 33 px above the
+  sheet's bottom edge.
+- **Column never scrolls.** A dragged height can only be smaller than the
+  column:
+  - past the bottom the box shrinks to fit (`flex-shrink`);
+  - a layout effect turns a height the box cannot show back into "fill"
+    (null).
+
+  The column never scrolls, so the hand-select test still moves the textarea
+  0 px.
+- The grip's `-my-1` let it hang 4 px out of the column; it is `-mt-1`.
+
+### Not done
+- The width handle from `.2` stays (harmless, in the gutter), but the default
+  width is unchanged from `.2`.
+
+```
+1873 tests passed (+2)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.2` — Floating calculator, bigger and resizable Salin preview
+
+### 1. Floating calculator on the SOAP page (Avi)
+**Why not a Sheet.** Every dialog in the app is modal: it dims the page, traps
+focus and blocks the note. A calculator is only useful while the note stays
+editable behind it. `FloatingCalculator` is a plain non-modal panel
+(`role="dialog"`, `aria-modal="false"`, z-40 so a real Sheet still covers it).
+
+**Default chosen, and why.** "Floating calculator" could mean arithmetic or the
+bedside formulas. Both are in, as two tabs, rather than asking:
+- **Hitung** — typed or keypad arithmetic, a live `= result`, a five-line tape,
+  Salin hasil. `domain/calc/arithmetic.ts` is a small recursive-descent parser,
+  **not `eval`** (tested: `alert(1)`, `2 ** 3` and `constructor` are syntax
+  errors).
+- **Klinis** — the same cards as the Kalkulator page (urine output, osmolality,
+  corrected sodium, unit converter). They moved out of `CalculatorPage` into
+  `components/calc/ClinicalCards.tsx`, so a formula fixed in one place is
+  fixed in both. Page behaviour is unchanged.
+
+**The one real hazard: number notation.** The notes write `12.000` for twelve
+thousand and `3,1` for three point one. A calculator that read `12.000` as
+twelve would be wrong by 1000x on exactly the numbers it is opened for. So:
+- `.` followed by exactly three digits is a thousands separator;
+- `,` is always the decimal mark;
+- `.` with one or two digits (`3.1`, `0.75`) is accepted as a decimal, because a
+  phone keypad types it.
+- `1.500` is genuinely ambiguous and is read as 1500. Every result shows
+  **"Dibaca: 1500 + 3,5"** so a misreading is visible, not silent.
+- `%` is a plain postfix (`200 x 10%` = 20). It is NOT the phone-calculator rule
+  that `200 + 10%` means 220. Results are written with a comma and no grouping,
+  like the notes.
+
+**Behaviour.**
+- Laptop: header button (calculator icon) next to Salin; the panel floats
+  bottom right, can be dragged by its header, is clamped to the window, and
+  remembers where it was, whether it was folded, and the tab
+  (`plano.floatCalc`). Folding keeps the line and the tape (the body is hidden,
+  not unmounted) and shows the live result in the header.
+- Phone: no room in the header, so it is a row in the ⋯ sheet. The panel docks
+  above the tab bar (no dragging a panel round a 360 px screen) and the keypad
+  replaces the system keyboard (`inputMode="none"` on a touch pointer), which
+  would otherwise cover the note.
+- Enter or `=` puts the result on the tape and into the line, so a chain needs
+  no retyping. Tape rows re-insert their result. Escape closes.
+- Nothing is saved but position, fold and tab. The tape dies with the panel,
+  for the reason the Kalkulator page gives: numbers with no patient attached.
+
+### 2. Salin preview: bigger by default, and resizable
+**Root cause of the dead space.** The sheet was 64 rem wide and 88 dvh tall with
+a 21 rem options column, and an empty notices `div` under the preview still took
+a flex gap. On a wide screen the preview was a narrow strip with air around it.
+
+**Fix.**
+- `Sheet` gains `size="2xl"` (84 rem, still capped at 94 vw); a `fill` sheet is
+  now 92 dvh tall. The options column is 18 rem by default (was 21 rem).
+- The notices block renders only when there is a notice.
+- The preview is one box for both views, so Teks and Tampilan share one height.
+  Measured at 1440 x 900: the textarea went from about 335 px (the screenshot)
+  to 532 px.
+- **Resizable both ways**, with `components/common/ResizeGrip`:
+  - a bar under the preview changes its height; a bar in the gutter changes the
+    options column's width (laptop only);
+  - drag, arrow keys (they are real `role="separator"` controls), double-click
+    or Home to reset; "Ukuran awal" resets both;
+  - remembered per device (`plano.salin.previewHeight`, `plano.salin.optionsWidth`).
+    Neither is ever written to a note.
+- Dragged taller than the column, the column scrolls (and the sheet does not).
+  Hand-selecting to the bottom still moves the textarea 0 px.
+
+**Wrong turns.**
+- CSS `resize` was the first idea. It cannot work here: the preview fills its
+  column with `flex-1`, whose flex-basis of 0 beats the height the browser
+  writes while dragging.
+- The first `ResizeGrip` kept the drag origin in a plain local object. Each
+  move re-rendered the parent and made a new object, so a drag forgot it had
+  started. It is a `useRef`.
+- Arrow keys changed the size and "committed" in one event, so the persisted
+  value was the OLD one. Sizes are now persisted from state in an effect.
+- The width bar first sat inside the preview column, which scrolls once the
+  preview is dragged taller, and would have been clipped. It is a child of the
+  grid.
+- The keypad `=` and the "Hitung" tab had the same accessible name; the key is
+  now "Hitung hasil".
+
+### Not done
+- The calculator and Salin were render-checked in a harness (Playwright:
+  drag, clamp, fold, tab, reload, phone width). The real PatientPage was not
+  (it needs the whole data layer): the header button and the ⋯ row are markup
+  plus one state flag, typechecked and linted. Check them on the device.
+- The calculator cannot insert its result at the note's caret: the editor has
+  no insert-at-caret handle, and focusing the panel loses the selection. It
+  copies; you paste.
+- On a phone the panel is about two-thirds of the screen high while open. Fold
+  it with the triangle.
+
+```
+1871 tests passed (+19)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build - clean
+```
+
+## `2026-10-05.1` — Format bangsal safety, closings, lab placement, preview, declutter
+
+### 1. Format bangsal — "dangerously wrong" (Avi)
+**Reproduced** on a CVCU-style O section before touching anything:
+
+| Input | Output | |
+|---|---|---|
+| `Suhu 37,8 C` | `Suhu : 37` + `- 8 C` | decimal comma split |
+| `TD 90/60 (NE 0,1 mcg/kgBB/menit)` | `(NE 0` + `- 1 mcg/kgBB/menit)` | dose split |
+| `Kalium 3,1; Natrium 132` | `Kalium 3` + `- 1` | lab value changed |
+| `HR monitor 130` after `nadi 112` | **nothing** | dropped |
+| `sesak nafas berkurang` | candidate RR | label matched mid-fragment |
+
+**Root cause.**
+- **The split.** Findings were split with `split(/[,;]/)`, but Indonesian
+  writes the decimal with a comma, and parentheses carry qualifiers.
+- **The drop.** A fragment matching a vital already taken was dropped by
+  `if (!vital) unmatched.push(...)`. That means "matched a vital, but it was
+  already taken" went nowhere.
+- **Free lines.** Lines that were not organ-system sentences were split as
+  well.
+- **The false claim.** The file comment said "Nothing is discarded" and the
+  sheet said "Urutan isi tidak berubah". Neither was true.
+
+**Fundamental fix.**
+- `splitFindings`: splits on `;`, and on `,` only outside brackets and never
+  between two digits.
+- Vitals are anchored at the START of a fragment and need a digit, except
+  GCS/compos mentis, which collect onto one line.
+- A repeated vital goes to Lain-lain and is never dropped.
+- Free (non-header) lines are one finding each, kept whole.
+- **The invariant — `lostTokens(before, after, allowance)`.** Every word and
+  number of the input is counted (NFKD, lowercase) and must be present in the
+  output.
+  - Exempt: the organ-system headers and the vital labels this transform
+    renames, plus the exact bare `EKG` label lines it drops on purpose.
+  - Numbers are never exempt.
+- `ReformatResult.lost` carries the result. ReformatSheet applies the same
+  check to the AI result, lists the lost tokens in a danger callout, and
+  **disables Terapkan**. A clean result says so in an accent callout. The
+  description now says what the transform actually does.
+- **Tests:** every row of the table above, "loses nothing" on the worked
+  example and on the dangerous note, `lostTokens` and `splitFindings`.
+- **Wrong turn.** The invariant's first run flagged `ekg`: the bare `EKG`
+  label line is removed on purpose. It is exempted by line (the `allowance`
+  argument), not by adding `ekg` to the global exempt list, so a dropped
+  `EKG …` heading would still be caught.
+
+### 2. Section-only Salin kept the closing
+**Root cause.** Closings were recognised only from the configured list in
+Settings. Hand-written sign-offs ("Tabe terima kasih dokter", "Mohon arahannya
+dokter. Terima kasih dokter.") are not in it, so they stayed in every Plan-only
+copy.
+
+**Fix.** `isClosingLine` recognises a sign-off when all of these hold:
+- it contains a sign-off phrase (terima kasih / mohon arahan(nya) / mohon
+  bimbingan / wassalam);
+- it contains an addressee (dokter, dok, Prof, dr, chief…);
+- it is not a list item and not the opening ("melaporkan").
+
+The configured list still counts. The sign-off is removed wherever it stands
+as its own line in a subset (one written before a TS block was kept before).
+The old test "keeps a closing when none are configured" was replaced on
+purpose.
+
+### 3. Preview moved while selecting
+**Root cause.** On a laptop the whole sheet body scrolled with the preview
+sticky inside it. Drag-selecting to the bottom of the textarea auto-scrolled
+the body.
+
+**Fix.** `Sheet fill`: a fixed height from 640 px, with a body that does not
+scroll. CopySheet's options column scrolls itself, and the preview textarea
+fills the rest (`flex-1`, `resize-none`, `overscroll-contain`). Checked with a
+Playwright drag past the textarea's bottom edge: the textarea moved 0 px, and
+598 characters were selected. A phone is unchanged (fixed `h-80` textarea).
+
+### 4. Lab Sisipkan position
+**Root cause.** `insertIntoObjective` appended at the END of the stack, but
+the ward stack is newest-first.
+
+**Fix.** `domain/lab/insertLab.ts`:
+1. above the newest lab (by date; on a tie, the first written);
+2. else after the last EKG block;
+3. else the old end-of-O rule.
+
+Blocks come from `penunjangBlocks`, extracted from `latestPenunjangOnly` so
+both features share one detector. `labPlacement` / `describeLabPlacement`
+feed a line in LabSheet. Tests cover each rule, newest-by-date order, and
+"nothing else changes".
+
+### 5. Top of the note cluttered
+- **DPJP block.** Five or six lines are folded to one summary: initials, short
+  route (`shortDelivery`), report shape, next clinic, and 6MWT in accent. Tap
+  for the full lines. The choice is remembered per device
+  (`plano.dpjpInfoOpen`).
+- **Periksa lagi.** With nothing flagged it is one small line ("✓ Tidak ada
+  yang janggal…") with "Periksa dengan AI" inline. With findings, the box
+  stays and the AI button moves into its title row. The full-width button row
+  is gone.
+
+### Not done
+- The page-top change was not render-checked in the harness (PatientPage
+  needs the whole data layer). It is a markup-only change, typechecked and
+  linted; check it on the device.
+- `lostTokens` proves nothing was LOST, not that every finding sits in the
+  right place. The preview is still the check for placement.
+
+```
+1852 tests passed (+17)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-04.3` — sheet UI revamp
+
+**Problem (Avi, with five screenshots: "made partially, not finished").**
+
+**Root cause.** It was not one bad screen. Every sheet had grown its own
+controls:
+- 44 px rounded pills for every choice, the same style in all modes;
+- each menu entry a separate bordered card (the ⋯ menu was nine cards);
+- grey 12 px text for section titles;
+- an underlined link as the primary action ("Pakai format ini");
+- four different "selected" styles.
+
+Each was defensible alone, but together they read as a prototype. Three
+problems were shared by all of them:
+- **Width.** `Sheet` was a fixed 32rem on a laptop, so any sheet with a preview
+  scrolled for everything.
+- **Focus ring.** Radix focused the ✕ on open, so it drew a focus ring every
+  time.
+- **No hierarchy.** Nothing marked a title, a hint or a danger zone.
+
+**Fix: one vocabulary, `components/common/ui.tsx`.**
+- **Pieces:**
+  - `Section` (small-caps title, hint);
+  - `Segmented` (2–4 exclusive options);
+  - `ChoiceChip` + `ChipRow` (multi-select, or more options than fit; ✓ when
+    on; dashed for versions/jaga);
+  - `ListGroup`/`ListRow` (one container of divided rows, icon left, chevron
+    or ✓ right, `danger` tone, badge);
+  - `Callout` (info/accent/warn/danger, with an optional action);
+  - `Button` (primary/secondary/ghost/danger, sm/md);
+  - `Field` + `INPUT`, `CheckRow`, `TextPane`.
+- **Tap targets.** Touch keeps the 44 px floor; a fine pointer gets 36 px
+  (`[@media(pointer:fine)]:min-h-9`). check:a11y still passes, because no
+  sub-44 px height is written explicitly.
+- **`Sheet`:**
+  - a `size` prop: md 34rem, lg 46rem, xl 64rem; a phone ignores it;
+  - on open, focus goes to the dialog, not the ✕ (still trapped, and Tab
+    still reaches ✕ first);
+  - a grab handle on the phone;
+  - a larger title;
+  - a rounded hover target for ✕.
+- **Icons:** 13 new glyphs in `Icons.tsx`, on the same grid and stroke.
+
+**Per sheet.**
+- **CopySheet (xl):**
+  - **Layout.** Options on the left (21rem); the preview on the right, sticky,
+    with a 26rem textarea and a character count.
+  - **Order.** The identity mismatch is moved to the top as a danger callout.
+    The DPJP reminder is a callout with a "Pakai" button. Format is
+    segmented; Bentuk and Bagian are chips.
+  - **Grouping.** The latest-penunjang and SIMGOS-symbol switches are grouped
+    under "Penyesuaian".
+  - **Copy button.** It says what and how ("Salin SOAP harian · WhatsApp"),
+    then the patient.
+  - **Logic.** No handler or composition logic changed.
+- **PatientActionsSheet:**
+  - grouped sections Catatan / AI / Pasien / Pengingat / Rencana pulang /
+    Arsipkan / Zona berbahaya;
+  - pemantauan, titipan and pin as switch rows that show the CURRENT state;
+  - discharge stages as a segmented control (a custom date shows no segment
+    selected);
+  - the archive button names the reason chosen;
+  - delete as a danger row, with its confirm as a danger callout.
+  - `ReminderPicker` restyled to match.
+- **OpeningSheet** (retitled "Pembuka & penutup"):
+  - a "baris pembuka saat ini" callout;
+  - radio rows with ✓ for the greeting and the sentence in use;
+  - the closing in use detected by `endsWith`;
+  - Sapaan as two buttons.
+- **ReformatSheet (xl):**
+  - the summary as three stat tiles;
+  - "tidak dikenali" as a warn callout;
+  - the AI fallback as a callout, and as an accent callout with the length
+    delta while the AI result is in use;
+  - a wide before/after view.
+- **LabSheet (xl):**
+  - Sumber on the left: a dashed drop zone that is both a button and a
+    drag-and-drop target, the AI buttons, error callouts and the raw text;
+  - Hasil on the right: title and date, the date-source hint, the multi-date
+    warning, bold toggle, "Akan disisipkan" pane and the unknown-values
+    warning;
+  - "Salin saja" moved to the footer, beside Sisipkan.
+- **CompareSheet:** uses the shared `Segmented` (its local copy was deleted).
+- **RenderedPreview:** taller, rounded to match.
+
+**Render check.** A Vite harness with mocked session, repo and AI, dark mode,
+at 1440×900 and 390×844. All five sheets rendered with no console errors.
+Verified:
+- Copy: two columns, sticky preview;
+- the menu groups, switches and danger zone;
+- the radio ✓ in Pembuka & penutup;
+- the reformat stat tiles, warn callout and AI callout;
+- Lab: drop zone and the two columns.
+
+**Not done.** The other 16 sheets (Settings sub-sheets, Konfirmasi Jaga…) use
+the new `Sheet` frame (padding, title, focus, width) but not yet the new
+controls. They can move over sheet by sheet. Nothing breaks if they don't.
+
+```
+1835 tests passed (+0)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-04.2` — Bandingkan: pair + grouped picker
+
+**Problem (Avi: "a mess to choose from").** Two rows of chips, one per pane,
+each repeating the same flat list of every day, version and jaga note:
+- **The pair was invisible.** Up to 26 near-identical pills. Which two were
+  selected meant finding two highlighted chips in that wall, and the dashed
+  border was the only thing marking a version.
+- **"Dibuka" was not a note's name.** The open note appeared as "Min, 4 Okt
+  (dibuka)", unlike every other chip.
+- **Older days were unreachable.** `slice(0, 12)` meant the 13th entry onward
+  could not be picked at all, and versions (10-04.1) made a single day cost
+  up to three entries.
+
+**Root cause.** The picker modelled "two independent lists" when the task is
+"choose a pair". Also, the list was flat when the question is hierarchical:
+which day, then which note on it.
+
+**Fix.**
+- **`domain/compareOptions.ts`** (pure, tested):
+  - `groupCompareOptions`: by date, newest first. Within a date: SOAP, then
+    versions, then jaga notes, by time. The open note sits in its own date
+    (it may be the only note there).
+  - `relativeDay` (H-n, relative to the open note; blank for the IGD entry).
+  - `compareSuggestions`: SOAP asli for a version or jaga note; Hari
+    sebelumnya, meaning the newest SOAP BEFORE the open day, not literally
+    yesterday; then the day's other versions.
+  - `defaultPartner`.
+- **`CompareSheet`:**
+  - **Pair.** A "Dari ⇄ Ke" pair of slots, each showing date · name and H-n or
+    "dibuka". Swap exchanges the sides.
+  - **List.** Tapping a slot opens ONE grouped list for that side
+    (`max-h-[45vh]`, all dates). The note on the other side is labelled "sisi
+    lain", not hidden, so the list keeps the same shape for both sides.
+  - **Shortcuts.** "Cepat" chips set Dari = suggestion and Ke = the open note.
+  - **Controls.** The mode (Antar catatan / Revisi tempelan) and the view
+    (Berdampingan / Tandai perubahan) are segmented controls instead of chips
+    and an underlined link.
+  - **Labels.** The legend and pane headers say "Dari"/"Ke". There is a guard
+    when both sides are the same note.
+- **Props.** `currentLabel` is replaced by `openNote {date, kind, name}`. The
+  sheet builds labels itself, so "(dibuka)" is no longer baked into a string.
+- **Unchanged:** the revision mode below the controls.
+
+**Render check.** Done at 390 px and 1100 px, with 12 days, a version and two
+jaga notes:
+- default H-2 · SOAP → today's SOAP;
+- picker grouped and scrollable;
+- picking Jaga 22.40 updates "Dari";
+- shortcut + "Tandai perubahan" diff;
+- swap exchanges the sides;
+- no console errors.
+
+**Not done.** The diff engine (`diffSegmentsByLine`) can still show an
+unchanged line as deleted and re-inserted when the line before it changed
+(seen as `- Monitoring` struck and re-added). That is the diff, not the
+picker. A line-aligned diff like the revision mode's (`diffRevision`) would
+fix it; this was not part of the request.
+
+```
+1835 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-04.1` — SOAP versions, "penunjang terbaru saja"
+
+**Request.** dr. AHA's report carries only the newest pemeriksaan penunjang,
+while the day's SOAP must keep the whole stack. The stack is what carry-forward
+preserves on purpose (`carryForward`: clearing penunjang would delete the
+history). Avi needed a second, editable, named SOAP for the same day,
+comparable with the original. He chose to fold the jaga note into it rather
+than build a parallel structure.
+
+### Design: a version IS a jaga note with another kind
+A jaga note was already "a second SOAP on the same day": own storage
+(`entry.shiftNotes`), own editor slot, a rail entry, a Salin shape and a Compare
+entry. Building versions beside it would have duplicated all five. So:
+- `ShiftNote.kind?: 'jaga' | 'versi'` and `title?`.
+  - **Absent kind = jaga**, which is every note written so far. No migration and
+    no write-back.
+  - Ids are prefixed `versi-`/`jaga-`.
+- `noteLabel` (title → `Jaga HH.MM` → `Versi`) is the one label used by the
+  chip row, the rail, Compare and aria labels.
+- `defaultVersionTitle` gives `Versi dr. <DPJP>`, else `Versi n`.
+- `useShiftNotes.add(body, { kind, title })` and `rename(id, title)`. Rename
+  carries pending text in the same write, like `setTime`.
+- **Chip row (`JagaBar`):** `+ Versi` (only while the day's SOAP has text) next
+  to `+ SOAP jaga`. ⋯ also has "Buat versi SOAP".
+- **`NewVersionSheet`:** name plus "Penunjang terbaru saja". The checkbox is
+  ticked by default when the DPJP's format asks for it, and the sheet lists the
+  blocks it will drop before anything is created. Versions copy `editor.value`,
+  so unflushed typing is included.
+- **`ShiftNoteEditor`:** editable name on both kinds; the time stays jaga-only.
+  - A version gets the full editor (snippets, 55vh).
+  - A version gets a "Penunjang terbaru saja" bar whenever older blocks are
+    present.
+- **Salin:** a version is the SOAP in another shape, so `body` = the version and
+  every shape applies. A jaga note keeps its own shape (`activeShiftNote` is
+  now jaga only).
+- **Compare:** `ComparableEntry.kind` gains `versi` and a `label`. Non-day
+  entries sort above their day's SOAP, newest first. The chip limit went from
+  8 to 12, because one day can now be three entries.
+
+### `domain/penunjang.ts` — `latestPenunjangOnly`
+- **What is trimmed.** Only text above the first own-line A/Terapi/Plan
+  heading. Below it a dated line is a plan (`Rencana Echo (06-10-2026)`), not a
+  result.
+- **A block** starts at a heading line carrying `(d-m-yyyy)`, `(dd/mm/yy)` and
+  similar. It ends at the next such heading, an own-line bold heading, or a core
+  S/O/TTV/A/P/Terapi heading. Undated blocks are never removed.
+- **Which kind.** The heading is stripped of place words (PJT, IGD, CVCU,
+  Lt. N…) and digits, then mapped through synonyms (EKG/ECG,
+  Lab/Laboratorium, Echo/Echocardiography, Echo Hemodinamik, Thorax,
+  Urinalisa, AGD, LUS). Any other heading is its own kind, by its words.
+- **What is kept.** Every block on the newest date of its kind (two draws on one
+  day both stay).
+- **Failure direction.** Boundaries are found early rather than late. A missed
+  tail of an old block stays in the text; it is never someone else's lines
+  deleted.
+
+### DPJP format
+- `DpjpReportConfig.latestPenunjang`: a toggle in Settings → Format DPJP,
+  available for every format, and listed by `describeConfig`.
+- The seed for `aha` sets it, but **existing accounts keep their stored
+  formats**. Avi needs to switch it on once for dr. AHA.
+- CopySheet has a "Penunjang terbaru saja" switch, shown when it would remove
+  something. Like the other preferences it is off until ticked or applied with
+  "Pakai format ini" (offered, never imposed), and changing it un-applies the
+  format.
+
+### Render check
+In a Vite harness with mocked entries and Playwright at 390 px, all of these
+checked out, with no console errors:
+- create "Versi dr. AHA" with trimming;
+- the version keeps only the 03-10 EKG and 02-10 lab;
+- rename to "AHA ringkas";
+- type into the version, and the day SOAP still has both old blocks;
+- Salin from the version copies the version;
+- Salin on the day SOAP with "Pakai format ini" trims;
+- Compare lists "AHA ringkas · Min, 4 Okt".
+
+### Not done
+- **Versions are per day.** They are not carried forward, the same as jaga
+  notes. Tomorrow's AHA version is made again with one tap, or skipped
+  entirely: "Pakai format ini" now trims the day copy directly.
+- **Concurrent edits can be lost (pre-existing).** `shiftNotes` is still
+  written as a whole array (`writeShiftNotes`). Editing two different
+  versions/jaga notes on two devices within the same snapshot window is
+  last-write-wins (pattern 5). This already applied to jaga notes, but a
+  version is longer and more likely to be edited at length. The fundamental
+  fix is one map leaf per note (`shiftNotes.<id>`), which needs a read path
+  that accepts both shapes. It is not done in this release.
+- **No undo** for the in-version "Penunjang terbaru saja" button. Versions have
+  no history stack. The day SOAP is untouched, so a new version restores
+  everything.
+- `ShiftNotePanel.tsx` is dead code (no importer). Left in place.
+
+```
+1829 tests passed (+13)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-03.1`
+
+Three requests: line bookmarks in the SOAP, Pagi/Malam in Konfirmasi Jaga, and
+SIMGOS-safe symbols in Teks polos.
+
+### 1. Konfirmasi Jaga — no Pagi/Malam
+
+**Root cause.** The roster parser already split weekend rows into `pagi` and
+`malam` shifts, and the page already offered a shift picker. Both messages,
+however, printed `longDate(shift.date)`. That is the date and nothing about
+WHICH team. A senior asked "are you Chief PJT on Sabtu, 5 September" cannot
+tell which half of the day is meant. The shift lived in the data model and was
+dropped at the last step, the string.
+
+**Fix.**
+- `shiftDateLabel(date, shift)` → `Sabtu Pagi, 5 September 2026`;
+  `penuh` is unchanged. It is derived from the date and the shift kind, not
+  copied from the roster's `hari` cell (the weekend `Malam` row's cells are
+  merged in the PDF).
+- Used in the Formasi heading, in `buildKonfirmasi` (new `shift` option) and in
+  the DPJP-edit labels.
+- **Pagi Formasi has no post-midnight DPJP block.** The pagi team hands over
+  before 00.00, and Avi's sample Formasi has none. The block stays for Malam and
+  for weekdays. The "setelah 00.00" DPJP edit row is hidden for Pagi to match.
+
+**Not done.** The opening line is still `Assalamualaikum dokter, selamat
+(waktu) dokter`. Avi's sample reads `Assalamualaikum dokter.` with no
+time-of-day. Left as is, since that was not the request. The day stays
+unpadded (`5 September`), matching his confirmation sample; his Formasi sample
+reads `05`. Unify on his word.
+
+### 2. Teks polos — symbols deleted, numbers changed
+
+**Root cause.** `foldToAscii` guarantees ASCII by making its last step "remove
+anything still non-ASCII". That guarantee is right. The named table in front of
+it, however, only covered dashes, quotes, spaces, `°`, `≤ ≥ ×`. Everything else
+was silently DELETED: `Troponin ↑` → `Troponin `, `Aspilet → CPG` →
+`Aspilet  CPG`, `β-blocker` → `-blocker`. Worse, NFKD (step 2) decomposes some
+characters into ASCII plus a non-ASCII joiner, and step 4 then removed the
+joiner, CHANGING NUMBERS:
+- `½ tab` → `1⁄2` → **`12 tab`**; `1½` → **`112`**
+- `10³/µL` → **`103/uL`**
+
+**Fix.**
+- **Always on (correctness):** `spellNumbers` runs before NFKD. Vulgar
+  fractions become `1/2` (with a space after a leading digit: `1 1/2`) and
+  superscript runs become `^3`, `^-3`. A leftover U+2044 becomes `/`. There is
+  no setting under which a changed dose is acceptable, so no switch.
+- **`SYMBOL_ASCII` table (switchable, default ON):** arrows → `->`, `<-`,
+  `=>`, `(naik)`, `(turun)`; `±` → `+/-`; `µg` → `mcg` (cannot be misread as
+  mg), other `µ` → `u`; `≈` → `~`; `≠` → `=/=`; `÷` → `/`; Greek letters →
+  `alpha`/`beta`/`delta`…; `✓ √` → `(v)`; `✗` → `(x)`; `♂ ♀` → `(L)`/`(P)`.
+  Parenthesised words are padded where they would fuse with a letter or digit
+  (`3,1↓` → `3,1 (turun)`).
+- Threaded as `asciiSymbols` through `formatBody` → every composer (copy, jaga
+  note, konsul, invasif, PDF report). The sheet passes it, so the Preview and
+  the clipboard stay the same string.
+- **CopySheet:** in Teks polos, when the note holds a convertible symbol, a
+  checkbox "Ubah simbol agar terbaca di SIMGOS" lists each symbol, its
+  replacement and its count, or "dihapus" when switched off. It is remembered
+  per device (`plano.asciiSymbols`). The note is never changed.
+- Other plain paths (drag-copy sanitiser, peek window, revision diff) get the
+  default, ON.
+
+**Deviation.** I offered to highlight changed characters "in the Preview". The
+Teks preview is a real `<textarea>` (selectable, by design) and cannot
+highlight a span. The sheet lists the changes under the Preview instead.
+
+### 3. Line bookmarks
+
+**Design.** The body is one free-form string, copied verbatim. So a bookmark
+cannot be a marker in the text (it would reach SIMGOS), and cannot be a line
+number (it would shift onto another line). It is instead **the line's trimmed
+text + which occurrence**, stored on the patient (`bookmarks.<id>`, one leaf per
+change, `setPatientBookmark`). Being on the patient, it survives
+carry-forward: yesterday's bookmarked line is usually in today's note.
+- `domain/bookmarks.ts`: `lineAt`, `resolveBookmark` (nth, else the last copy),
+  `resolveBookmarks` (top-to-bottom, missing kept, duplicates merged),
+  `bookmarkLabel`, `reanchorBookmarks`.
+- **Re-anchoring:** an edit inside a bookmarked line is followed by mapping the
+  line's start through the edit (`mapOffset`, the caret's own mapping). The new
+  line takes over only if it shares ≥40% of the old text as prefix + suffix,
+  so a deleted line does not hand its bookmark to a neighbour. Writes are
+  debounced 1.2 s, and the local value applies immediately.
+- **UI:**
+  - a toolbar toggle (pressed when the caret's line is marked; works on a
+    locked note);
+  - a blue bar in the left margin, laid out by a transparent copy of the note
+    with the textarea's METRICS;
+  - chips on the JumpBar after the sections. A chip calls `revealLine`, which
+    scrolls the line under the measured sticky header **without focusing**, so
+    no keyboard covers it, and flashes it.
+  - "n bookmark tidak ditemukan · Hapus" appears on the latest day only. On an
+    older day a newer bookmark is "missing" by definition, and clearing from
+    there would delete today's.
+
+### Wrong turns
+- **Bookmark fell off after one keystroke** (caught in the render check, typing
+  ` koreksi` into a marked line). The re-anchor ran in an effect and stored
+  the move in state. A fast second keystroke is a discrete update, so React
+  rendered it before that state landed. The second pass then saw the old text,
+  found no line, and dropped the bookmark. The vitest harness renders
+  keystrokes one `act` at a time and could not show this. The fix is a ref
+  mirror of the pending map, updated in the same tick as the move.
+- The symbol summary first read `→ → ->`. The separator is now the word "jadi".
+
+### Not done
+- Bookmarks are for the day SOAP only, not jaga notes.
+- No rename of a bookmark; the chip shows the line's first 24 characters.
+- Two identical lines inserted above a marked duplicate can move the bookmark
+  to another copy (`nth` is positional among equals).
+
+```
+1816 tests passed (+25)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-02.4`
+
+**The lab block heading takes its date and unit from the report:
+`*Laboratorium PJT (02-10-2026)*`.**
+
+### Root cause
+
+`LabSheet` built the heading from the NOTE's clinical day, in the rail's
+short form: `*Laboratorium (30 Agu)*`. The text of the report was never
+consulted for when the sample was taken. This was wrong in two ways:
+
+- **Form.** Every hand-written lab heading in the corpus is
+  `*Laboratorium PJT (dd-mm-yyyy)*`. `parseSections` and `sectionSlices`
+  already document that form.
+- **Day.** The note's day is often not the lab's day:
+  - an IGD draw registered at 23:36 and resulted at 01:59;
+  - a culture registered on the 5th and resulted on the 10th;
+  - yesterday's result pasted into today's note.
+
+  All of these were filed under the wrong date.
+
+### Fix
+
+- **`domain/lab/labMeta.ts`:**
+  - `readLabMeta(text)` → `{ dates, date, unit }`.
+    - **Date:** `Tgl. Registrasi`, the sample date, which is how a lab is
+      referred to on rounds. Falls back to `Tgl. Hasil`.
+    - **Formats:** day-first `dd/mm/yyyy` and `dd/mm/yy`, with impossible
+      dates (31/02) rejected.
+    - **Ignored:** date of birth and the `MAKASSAR, dd-mm-yyyy` signature
+      line.
+    - **Appended reports:** every distinct date is collected, and the newest
+      is picked.
+  - `labUnitLabel`: `PJT Perawatan Lt. N (…)` → `PJT`, `IGD …` → `IGD`, and
+    anything else as printed (CVCU, HCU PJT, Poli Aritmia).
+  - `headingDate` gives `dd-mm-yyyy`. `DEFAULT_LAB_TITLE` is
+    "Laboratorium PJT" (Avi's example).
+- **`LabSheet`:**
+  - The title and date follow the report (derived from the raw text, so a
+    pasted header works too) until the user edits them.
+  - A date field with a line saying where the date came from (PDF, manual,
+    or the note's day).
+  - A warning when the text holds reports from more than one date.
+  - Overrides reset after insert.
+- **Tests:**
+  - `labMeta.test.ts` (8): registration vs result, two-digit year, DOB and
+    signature ignored, appended reports, fallbacks, wide layout, final
+    heading.
+  - **Corpus run.** All 36 lab PDFs were read through pdfjs in the same row
+    rebuild as `extractPdfText`. Every one yielded its `Tgl. Registrasi`
+    date and unit. This run was local only; the PDFs are not committed.
+- **Render check.** I read two real PDFs (04-09 IGD, then 15-09 IGD) into the
+  sheet. It showed the two-date warning, and the inserted block began with
+  `*Laboratorium IGD (15-09-2026)*`.
+
+### Not done
+
+- **Mixed dates are not split.** Reports from different dates appended
+  together are still parsed into one block, because `parseLab` merges values
+  across reports. The sheet warns instead, and splitting per report would be
+  a `parseLab` change.
+
+```
+1791 tests passed (+8)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-02.3`
+
+**Back goes up to the parent screen, like an app. Sheets close on back, and
+lists keep their scroll position. Archive months and weeks fold.**
+
+### 1. Back navigation
+
+#### Root cause
+
+The router was a plain `BrowserRouter`, which pushes a browser history entry
+for every navigation. The browser's back button therefore replayed the
+session in reverse. That is the web's model, and it showed in three ways:
+
+- **Patient days stacked.** `goToDate` pushed `/p/:id/:date`, so back from a
+  patient walked through every day that had been opened.
+- **Tabs stacked.** Aktif → Arsip → Kalkulator → Pengaturan meant three back
+  presses to reach the board.
+- **Opened on a detail, back left the app.** A cold start on `/p/x` (a shared
+  link, or a reload in a new tab) had nothing under it.
+
+Two related tells came from the same cause:
+
+- **Back ignored open sheets.** Sheets are React state, invisible to history,
+  so back left the screen with the sheet open. On the board it closed the app.
+- **Lists came back at the top.** Each route mounts its own `AppShell`, so
+  `#main` was new on every navigation, including back.
+
+Patching individual call sites (`replace: true` here, `navigate(-1)` there)
+cannot fix this. Links, tab buttons and `setParams` all go through the
+router's history, and the stack shape is the sum of all of them.
+
+#### Fix
+
+The app now owns its history:
+
+```
+domain/navigation.ts   pure: screenLevel, ancestorsOf, planNavigation
+lib/appHistory.ts      History for unstable_HistoryRouter that applies the plan
+```
+
+**The model:** each screen has a level.
+
+| Level | Screens |
+|---|---|
+| 0 | `/` |
+| 1 | the sections |
+| 2 | `/p/…`, `/dokumen/:id`, `/catatan?n=`, `/checklist?c=` |
+
+The browser stack is kept equal to the path from the board to the current
+screen. Every push or replace is planned against it:
+
+| Move | Plan |
+|---|---|
+| Deeper | push |
+| Sideways (another day, tab or patient) | replace |
+| Upward | `history.go(-n)` to the nearest entry at or above the target's level, then push or replace if that entry is not exactly the target |
+
+A patient opened from Arsip therefore returns to Arsip, and back from any tab
+returns to the board.
+
+**Implementation details:**
+
+- **Cold start below the board.** The fresh entry is rewritten into its
+  ancestor chain (`/` and, for `/dokumen/:id`, `/dokumen`), with the detail
+  pushed on top.
+- **Sheets.**
+  - `useBackToClose` is used by `Sheet`, `ConfirmDialog` and `NotePopover`.
+    While one is open, it registers an overlay, and one extra entry with the
+    same URL sits on top.
+  - Back consumes that entry and closes the top overlay. If more overlays are
+    open, the entry is pushed again.
+  - **Closed with ✕:** the entry is left "spent". The next navigation replaces
+    it, or plans from the screen underneath. A back press on a spent entry
+    goes straight on up, so no press is wasted.
+  - The desktop `PatientPeekWindow` is not modal and is not registered.
+- **Scroll.** The scroll position of each entry is recorded when it is left
+  (sessionStorage, last 200 entries). `AppShell.useRestoreScroll` puts it
+  back on a POP. It re-applies for up to ~90 frames while the list fills in,
+  and stops on touch or wheel.
+- **Router contract kept.** Entries still carry React Router's
+  `{ usr, key, idx }`, so `location.state` (`fromList`) and keys behave as
+  before. The trail survives a reload (sessionStorage), and the planner
+  degrades to the requested push or replace where nothing was recorded.
+- **Call sites.**
+  - `goToDate` passes `replace: true` explicitly.
+  - The patient and Helper ← buttons use `useGoUp`, which returns to the
+    entry above, or to a fallback.
+  - The `history.length` guess in Helper is gone.
+- **Tests.**
+  - `navigation.test.ts`: levels, ancestors, every plan shape.
+  - `appHistory.test.ts`, in jsdom against a real `window.history`:
+    - a cold start on a patient;
+    - days and tabs not stacking;
+    - Arsip → patient → back;
+    - going up to an ancestor;
+    - back closing a sheet;
+    - a spent sheet entry being skipped;
+    - navigating from an open sheet.
+
+#### Wrong turns
+
+- I considered intercepting `window.history.pushState` under
+  `BrowserRouter`. It was rejected because React Router renders the target
+  before calling `pushState`, so an upward move (`go(-n)`, then render) could
+  not be expressed without a flash and a desynchronised location.
+- I first planned to swallow the browser's back and then `go(+1)` to keep a
+  sheet's screen. It was dropped because it cannot work on the board: back at
+  index 0 leaves the page without a `popstate`. Hence the extra entry per
+  open sheet.
+
+### 2. Archive folds
+
+- **Month headers and week sub-headers are buttons.**
+  - Each has `aria-expanded` and `aria-controls`, and a chevron.
+  - A closed month shows its patient count and its number of weeks.
+- **Defaults:** the newest month is open and older months are closed. A week
+  is open unless it was closed.
+- **Storage:** only explicit choices are stored, per device
+  (`localStorage['plano.archiveFolds']`), so the defaults still apply to
+  months that appear later. There are "Buka semua" and "Tutup semua" buttons.
+- **While searching or filtering, everything is open** and the headers are
+  inert. The count line says "semua bulan dibuka", because a match inside a
+  folded month would read as "not found".
+- `isMonthOpen`, `isWeekOpen` and `setAllFolds` live in `domain/archive`,
+  with tests.
+- **Render check at 390 px:**
+  - default: 2 rows (September open, August closed);
+  - opening August: 4;
+  - closing a week: 3, which survived a reload;
+  - Tutup semua: 0;
+  - search: 4, all open;
+  - no console errors.
+
+### Not done
+
+- **iOS standalone has no back button.** The edge-swipe still follows
+  history, so it gets the same model, but this was not tested on a device.
+- **Sheet state across navigation.** A sheet that stays mounted across a
+  same-page replace (none does today) would lose its back-to-close entry.
+
+```
+1783 tests passed (+21)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-02.2`
+
+**EKG heading takes the floor from the ward. A redesigned format toolbar.
+English where the Indonesian term is forced. Outdated-schedule warnings in
+Konfirmasi Jaga. No hospital system name in the calculator. Weekly
+dividers in the archive.**
+
+### 1. EKG heading with the patient's floor
+
+- `Snippet.build(date, ward)`. `ekgPlace` turns "PJT Lantai 4" / "PJT Lt 4"
+  into "PJT Lt. 4", keeps any other ward as recorded (CVCU), and keeps the
+  visible blank "PJT Lt. ..." when there is no ward.
+- The format follows Avi's example, `*EKG PJT Lt. 4 (01-10-2026)*` (no
+  "di").
+- The old rationale for leaving the floor blank (patients move) is
+  answered by the heading staying editable on the day the ward is wrong.
+- Tests: Lantai/Lt/Lt. forms, CVCU, and no ward.
+
+### 2. Format toolbar
+
+The bar had bare glyphs (↶ ↷ B I • 1.), a native `<select>` labelled
+"Sisipkan…", and two cryptic whole-note buttons, "Aa*" and "•→-".
+
+Now:
+- **Three groups in one shadowed pill:** history · text format · insert
+  and tools. Drawn SVG icons, each with a tooltip and aria-label.
+- **"Sisipkan"** is a menu that opens upward and shows the first line each
+  block will insert, including the EKG heading with this patient's floor.
+- **"Rapikan"** holds the two whole-note rewrites, described in words.
+- Menus close on an outside tap or Escape. Every control still prevents
+  mousedown, so the textarea keeps its selection.
+- On a phone narrower than 420 px the Rapikan label collapses to its icon,
+  so the bar fits without scrolling (checked at 390 px).
+
+### 3. English for forced Indonesian terms
+
+Policy (Avi): use the English word where the Indonesian one reads as
+forced. Applied to UI strings only; comments are unchanged.
+
+| Was | Now |
+|---|---|
+| Pratinjau | Preview |
+| Sematkan / Lepas sematan / Disematkan | Pin / Lepas pin / Pinned |
+| Urungkan | Undo |
+| Tersinkron, sinkron, disinkronkan | Synced, sync, di-sync |
+| luring / daring | offline / online |
+| tertunda | pending |
+| Muat ulang bersih | Hard refresh |
+| peramban | browser |
+
+New revision labels read "versi offline belum digabung" and "sebelum
+gabung versi offline". Existing trail entries keep their stored wording.
+Kept in Indonesian because they read naturally: Salin, Unduh, Impor/Ekspor,
+Rapikan, Ulangi PIN.
+
+### 4. Outdated schedules in Konfirmasi Jaga
+
+**Problem.** The monthly rosters are replaced by hand. After a month rolls
+over without an import, the helper offered last month's names, or said
+"tanggal ini tidak ada di jadwal" with no reason given.
+
+**Fix.**
+- `rosterFreshness(kind, doc, forDate, today)` in `jaga/recency.ts`, from
+  the schedule's own coverage dates:
+  - **outdated**: it ends before the date being confirmed, or before today;
+  - **ending**: it ends within 3 days of today;
+  - **ok**: otherwise. Jarkom, which has no dates, is never flagged.
+- A banner above "1. Impor jadwal" lists each flagged schedule with its
+  end date. Its import card is outlined red (outdated) or amber (ending).
+- Tests cover all three states and Jarkom.
+
+### 5. Calculator
+
+The Ureum/BUN switch reads "Ureum ÷ 6" (it said "Ureum (SIMGOS) ÷ 6"). The
+user-facing changelog entry for 09-30.2 is reworded the same way.
+
+### 6. Archive by week
+
+- `MonthGroup.weeks`: Monday–Sunday weeks clipped to the month, newest
+  first, holding only weeks that contain a patient. Labelled e.g.
+  "Minggu 2 · 5–11 Okt".
+- Arsip renders a sub-heading and list per week inside each month.
+- Test: October 2026 (1 Oct is a Thursday) gives 1–4, 5–11 … 26–31.
+
+```
+1762 tests passed (+5)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-02.1` — "frequently Memuat"
+
+**Patient lists are now one shared, long-lived query, so returning to a
+screen no longer reloads it. A patient's chart paints from the board's list
+at once.**
+
+### Root cause
+
+Every "Memuat…" in the app is one of three gates:
+
+| Gate | Shown while | How often |
+|---|---|---|
+| `AuthGate` (boot) | auth state is read from IndexedDB | cold start only |
+| `BoardPage` / `ArchivePage` | `usePatients(...).loading` | **every mount** |
+| `PatientPage` | `usePatient(id).loading` | **every open of a chart** |
+
+`usePatients` opened its own `onSnapshot` query in a `useEffect` and closed
+it on unmount, with `loading: true` until the first snapshot.
+- Aktif → patient → back to Aktif therefore tore down the board's query and
+  built a new one. Firestore then re-ran a composite query (`memberIds`,
+  `status`, `deletedAt`, ordered) against its IndexedDB cache before it
+  could answer.
+- On a phone that costs from a fraction of a second to a few seconds for a
+  ward-sized list, so the board said "Memuat…" on every return.
+- Opening a patient did the same with its single-document listener, even
+  though the board had that patient's data in hand.
+
+No reload or service-worker issue was involved: the SW update flow is
+prompt-only (`registerType: 'prompt'`, no automatic `skipWaiting`), so the
+app is not reloading itself. Cold starts after the phone suspends the app
+still show the boot screen; that is the OS ending the page, not Plano.
+
+### Fix
+
+- **`data/patientsFeed.ts`.** One query per (account, status), ref-counted.
+  - The first screen to need a list starts it. When the last screen leaves,
+    `active` stays live for the session, and other lists linger 5 minutes.
+  - A returning screen reads the held list synchronously: no loading
+    state, no second query.
+  - Reattach-on-error with capped jittered backoff moved here unchanged,
+    keeping the last good list meanwhile.
+  - Switching account drops every feed of the previous one, and sign-out
+    calls `resetPatientFeeds`.
+- **`usePatients`** is now a thin subscriber to the feed, with the same
+  signature and result.
+- **`usePatient`** seeds from `findCachedPatient`, so a chart opened from the
+  board renders at once. The document listener then takes over as before.
+- Tests: a second visit causes no loading and no second query; watchers are
+  notified; lingering lists stop after 5 minutes; an account switch drops
+  the old feeds.
+
+### Not done
+
+- Documents (`useDocuments`) still open a query per visit. They are far
+  smaller and rarely revisited, so this is the next candidate if it is
+  still noticeable.
+- The boot screen after the phone kills the app is unchanged.
+
+```
+1757 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-01.4`
+
+**A phone edit refused by the server is no longer silently replaced by the
+laptop's text: it is merged, or raised as a conflict, and always kept in
+the trail. Adds an H-1 ICU post-op consult reminder for dr. Muhammad
+Nuralim Mallapasi's operations, and PPM/TPM stickers.**
+
+### 1. "Versi luring belum digabung" held the laptop's text
+
+**Report.** The phone's latest SOAP never appeared in Riwayat perubahan;
+the "versi luring" entry showed the same text as the desktop.
+
+**Root cause: two faults that together erase the phone's version.**
+
+1. **An optimistic echo was treated as a confirmation** (`useTextSync`).
+   - Firestore echoes a local write from its cache at once, with
+     `hasPendingWrites`. The editor took that echo as "the server has our
+     text": it advanced the merge base and **cleared the draft**.
+   - The phone's write carried `baseHash`. The laptop had changed the note
+     in between, so the rules **refused** the write, and Firestore rolled its
+     cache back to the laptop's body.
+   - With no draft left, the editor simply showed the laptop text. Nothing
+     was dirty, so there was no merge and no conflict. The phone's version
+     vanished from the screen.
+2. **The outbox kept one record per day** (`localBase`). The refused body
+   stayed in the outbox for the reconciler, but under the day's key. The
+   next save — now built on the laptop text shown after the rollback —
+   replaced it. When the reconciler ran, it filed *that* body as "versi
+   luring belum digabung": the laptop text with at most the phone's newest
+   keystrokes. That is the screenshot.
+
+**Fix.**
+- `useTextSync` takes `serverPending`, wired from `useEntry`'s
+  `hasPendingWrites` through `useBodyEditor`. An own echo advances the base
+  and clears the draft **only when confirmed**. Until then the draft stays
+  (equal to the server text, so nothing looks unsaved).
+- A rollback therefore arrives as a remote change under unsaved text and
+  goes through the merge:
+  - different lines → merged on screen;
+  - the same line on both sides → **conflict dialog**, with both versions
+    snapshotted.
+- The live merge is character-level. On a rollback specifically (the text
+  on screen was sent and never confirmed), a same-line change is forced to
+  a conflict, using `sameLineTouched` from `lateWrite`, the rule the
+  background reconciler already uses. Without that, the test case merged
+  "sesak berat" with "tidak sesak" into "tidak sesak berat".
+- A write refused with `permission-denied` is also stored under its **own
+  outbox key** (`…|refused|<at>`), which later writes for the day cannot
+  overwrite. The reconciler settles it like any record and deletes it by
+  key. So the refused text always reaches the trail.
+- Tests (`useTextSync.rollback.test.ts`):
+  - a different-line rollback keeps both edits;
+  - a same-line rollback raises a conflict with the phone text still on
+    screen;
+  - a confirmed echo still clears the draft and adopts later remote edits.
+
+### 2. ICU post-op consult, H-1 (dr. Muhammad Nuralim Mallapasi)
+
+- `Patient.operationFor` holds the operation date, set as "Jadwal operasi
+  (BTKV)" in the reminder picker (long-press sheet and ⋯ sheet).
+- `PROCEDURE_RULES` has `{ icu-postop, "Konsul ICU post-op", dpjpId: mnm,
+  daysBefore: 1 }`. `activeReminders` includes it on H-1, tickable through
+  the same `reminderDone`. The picker says on which date it will appear.
+- The surgeon is often not the main DPJP, so the body write now also
+  derives `dpjpIds` (every consultant on the DPJP lines), and the rule
+  matches on any of them.
+- **Registry:** MNM matched the bare token `nuralim`, which dr. M. Zulfadly
+  Nuralim (Sp.BTKV) shares, so his patients were attributed to MNM. The
+  tokens are now `mallapasi`, `muhammad nuralim` and `nuralim mallapasi`.
+  A note that writes only "dr. Nuralim" is no longer attributed to either.
+  That is the registry's rule for ambiguous names.
+
+### 3. PPM / TPM stickers
+
+Text tags beside PCI / EP / BTKV: PPM `#9a3412`, TPM `#b45309`, both with
+white text.
+
+```
+1753 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-01.3` — phone canvas, rebuilt
+
+**The phone canvas is a grid of small blocks you arrange on the phone,
+replacing the scaled-down, read-only copy of the laptop canvas.**
+
+### Why the first version was clunky
+
+`CanvasViewer` drew the laptop layout at its laptop width (about 1180 px)
+and scaled the whole surface to the phone, about 0.3×. That gave three
+problems:
+- Every card was a third of its size: unreadable and untappable until
+  zoomed.
+- Zooming meant pinch plus panning inside a nested scroll box.
+- Nothing could be moved, because the layout belonged to a screen shape the
+  phone does not have.
+
+A scaled picture of a canvas is not a canvas.
+
+### What replaces it
+
+- **`domain/board/phoneGrid.ts`.** The phone's own layout: one cell
+  `{c, r}` per id on a 3-column grid (4 from 480 px, 5 from 640 px).
+  - `placeGrid`: stored cells are kept, new ids fill free cells.
+  - `moveBlock`: a move into an occupied cell swaps the two blocks.
+  - `compactGrid`: "Rapikan".
+  - `readingOrder`: the first-time seed, taken from the laptop canvas.
+  - `sanitizePhoneGrid`: validates the stored grid.
+  - Tests for each.
+- **`PhoneCanvas`.** 78 px blocks showing name (2 lines), room/bed, DPJP
+  initials, `done/total` or ✓, Pulang / H-1, and a count of reminders
+  still due. The background is the card colour (checklist progress), as
+  on the board. Sticky notes are blocks too, and tapping one shows the
+  note in `NotePopover` (moved to its own file).
+- **Two modes**, so a finger never has to be guessed between "open",
+  "scroll" and "move":
+  - **Normal:** tap opens the patient, long-press opens the quick sheet
+    (checklist and reminders), and the page scrolls.
+  - **Atur:** blocks follow the finger (`touch-action: none`), the target
+    cell is highlighted, and empty cells are outlined with two spare rows
+    below. The page auto-scrolls near the top and bottom edges.
+    "Rapikan" packs the gaps.
+- **Saved on the account** (`boardPhoneGrid`, replaced whole with
+  `updateDoc`), and applied locally first so a drop lands at once. It is
+  separate from the laptop layout, which has a different shape.
+- `CanvasViewer` is removed. The laptop→account mirror stays: it seeds a
+  new laptop and the phone grid's first order.
+
+```
+1747 tests passed (+7)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-01.2`
+
+**No "Order obat" on the discharge day. A new "Urutan visite" sort that
+walks the PJT Lantai 4 loop. On the phone, Urutan sendiri shows the
+laptop's canvas, scaled down and read-only, from a copy kept on the
+account.**
+
+### 1. Order obat on the discharge day
+
+**Before.** The checklist was one list for every patient and every day. On
+the day a patient goes home, the discharge prescription replaces the daily
+order, but "Order obat" stayed. The card never reached "Semua selesai",
+"Belum: Order obat" kept showing, and the "belum order obat" filter kept
+listing the patient.
+
+**Fix.** `domain/checklistDay.ts`:
+- `itemsForPatientDay(items, patient, date, today)` returns the steps for
+  that patient on that day. A step marked `skipOnDischargeDay` is returned
+  **inactive** when the discharge date (`migrateLegacyDischarge`) equals
+  the date.
+- Inactive is the existing "not part of today, history kept" state, so
+  progress, colour, pending label and the tick map all follow with no
+  second rule.
+- Applied in `buildCard`, `filterPatients` (a skipped step is not "belum"),
+  `PatientPage` (all three checklist placements), `QuickChecklistSheet` and
+  `PatientPeekWindow`.
+- **Default:** profiles predate the flag, so an unset flag means "skip" for
+  the seeded "Order obat" (`c8`) only. Pengaturan → Checklist harian has a
+  per-step toggle, "Lewati saat pulang hari ini".
+- H-1 is unaffected: the order is still written the day before.
+- Tests: skipped on the day, kept on H-1, legacy `discharge: 'today'`
+  honoured, a discharge day can be complete without the step, and an
+  explicit setting wins.
+
+### 2. Urutan visite
+
+- `WardPlan.visitRoute` holds the walking order Avi gave: **420 → 421 → 412
+  … 419 → 411 → 401 … 410**. It is a loop that ends back beside 420.
+- `BoardOrder` gains `'visite'`. `compareVisit` sorts by route index, then
+  by bed (numeric). Rooms off the route, or wards without a route, follow
+  in plain location order; patients without a location come last.
+- Grouped by canonical ward name, so "PJT Lt. 4" and "PJT Lantai 4" sort
+  together. The order is remembered per device like the others.
+
+### 3. Canvas on the phone
+
+**Constraint.** The canvas needs `min-width: 1024px` to arrange, and its
+layout lived only in the laptop's localStorage, so the phone had nothing
+to show.
+
+**Approach (Avi's choice: show the laptop layout).**
+- **Account mirror.** `CanvasBoard` reports every stored change
+  (`onStoredChange`, skipped on mount). The board debounces 2 s and writes
+  `boardCanvas: { layouts, width, at }` on the profile with `updateDoc`.
+  That replaces the field outright: a merge would keep entries and flags
+  the laptop has since removed. Writes identical to the account copy are
+  skipped.
+- **Seed.** A laptop with no local layout starts from the account copy.
+  With two laptops, the last arrangement wins.
+- **Phone.** `CanvasViewer` draws the layout at the width it was arranged
+  at (x/w are fractions of it, y is px) and scales the surface to fit.
+  Cards keep their exact positions and height caps, and unplaced patients
+  are auto-placed as the laptop would place them.
+  - Pinch zoom is anchored at the midpoint between the fingers; − / Pas
+    layar / + buttons do the same.
+  - It is read-only (no grips). A tap opens the patient, and a long press
+    opens the quick sheet.
+- On a phone in Urutan sendiri a **Kanvas / Daftar** switch is shown,
+  remembered per device. With no account layout yet it says to arrange on
+  the laptop first.
+- `parseSharedCanvas` validates the account copy entry by entry
+  (`sanitizeLayouts`, now shared with `readLayouts`). Tests cover it.
+
+### Not done
+
+- Stickers (emoji on the canvas) are not mirrored. Sticky notes and
+  patient cards are.
+- Arranging on the phone is not offered: its width cannot hold the layout.
+
+```
+1740 tests passed (+11)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-10-01.1`
+
+**The Prof/dokter swap no longer rewrites DPJP titles, and the Ringkas
+closing follows the note's own address. The calculators are regrouped, each
+with its references; a unit converter is added; the polyuria band follows
+the published definition. The board-card note is reimplemented as a
+fixed strip plus a floating panel.**
+
+### 1. "Ganti ke dokter" changed DPJP titles
+
+**Root cause.** `toDokterForm` replaced every `\bProf\b` in the whole body,
+and `toProfForm` every `dokter`/`dok`. The functions had no notion of
+*address* (a vocative: "Tabe Prof", "Terima kasih dokter") versus *title*
+(a word before a name: "Prof. Dr. dr. X"). So `_DPJP : Prof. Dr. dr. X_`
+became `dokter. Dr. dr. X`, and a plan item `- Konsul dokter anestesi`
+became `- Konsul prof anestesi`.
+
+**Fix.** New `domain/address.ts`:
+- Only the **opening paragraph** (first non-empty lines up to a blank line,
+  max 3) and the **closing line** (last line, when it reads as a sign-off)
+  are rewritten. The clinical body is never touched.
+- Within them, `Prof` followed by `dr`/`Dr`/`drg` is a title and kept, and
+  any line containing `DPJP` is skipped.
+- `Prof` → `Dokter` at a sentence start, `dokter` elsewhere; case kept the
+  other way.
+- `opening.ts` re-exports the new functions, so the sheet is unchanged.
+  Its help text now says what is and isn't touched.
+- Test: prof → dokter round-trips a note with a TS professor, a DPJP
+  professor and a plan mentioning "dokter" back to the identical text.
+
+### 2. Ringkas closing turned to "Prof" on a note written to "dokter"
+
+**Root cause.** Two faults combined:
+- `closingFrom` kept the note's own closing only when it matched one of the
+  configured closing sentences. Any other wording fell through to a
+  generated fallback.
+- The fallback chose its address with `/\bprof\b/i` over the whole opening
+  block, which includes the opening line's TS/konsulen name and the
+  identity/DPJP lines. A "Prof. dr. …" anywhere there signed the report
+  off to "Prof".
+
+**Fix.**
+- `closingFrom` also keeps a last line that reads as a sign-off
+  (`isClosingLine`: thanks or "arahan", not bulleted).
+- The fallback uses `noteAddress`: the vocative in the closing, else in the
+  opening paragraph, ignoring titles and DPJP lines; "dokter" by default.
+- Tests: a Prof TS in the opening line stays "dokter"; an unlisted closing
+  is kept verbatim.
+
+### 3. Calculators
+
+- **Revamp:** groups (Ginjal & cairan · Elektrolit · Konversi satuan · Alat
+  lain) with a sticky jump bar, and two columns from `md`. Every card has
+  the same shell: title, formula, inputs, a result block with "Salin baris",
+  and a "Rujukan" list. Results appear only once every field is typed
+  (urine output and sodium correction had the `Number('') = 0` fault too).
+- **Unit converter** (`domain/calc/units.ts`): Ureum ↔ BUN ↔ mmol/L,
+  creatinine mg/dL ↔ µmol/L, glucose mg/dL ↔ mmol/L. Every factor is
+  derived from a molar mass (urea 60.06, urea N 28.014, creatinine 113.12,
+  glucose 180.16), so ureum/BUN = 2.144.
+- **References audit:**
+
+| Calculator | Checked against | Result |
+|---|---|---|
+| Urine output — oliguria | KDIGO AKI 2012 (< 0.5 for 6–12 h; < 0.3 for ≥ 24 h) | Correct; the stages are now quoted on the card |
+| Urine output — polyuria | Merck Manual: > 3 L/day in adults | **Wrong:** it was a rate > 3.0 ml/kg/h (4.3 L/day at 60 kg), not a published threshold. Now > 3 L per 24 h, a shorter collection projected to 24 h |
+| Sodium correction | Katz NEJM 1973 (1.6); Hillier Am J Med 1999 (2.4) | Correct; citations on the card |
+| Osmolality | 2Na + glu/18 + BUN/2.8; effective per the 2024 consensus; Spasovski 2014 | Correct since 09-30.3; citations expanded |
+
+### 4. Board-card note
+
+**Root cause.** Opening a note grew it **in place** and asked the layout to
+make room: two columns in masonry, an uncapped height on the canvas. The
+canvas places cards where the user put them, so nothing moves, and the
+opened note painted over the card below. Its fill (`--warn-soft`, 25–33 %
+alpha) let that card's text show through, which gave the two
+interleaved texts in the screenshot.
+
+**Fix.**
+- The strip on the card is fixed: two lines (`line-clamp-2`), plus
+  "+N baris · ketuk untuk membaca" when there are more.
+- Tapping opens `NotePopover`: portalled to `body`, fixed-positioned under
+  the strip (above it when there's more room), opaque `bg-surface`,
+  shadowed, max-height from the available room with its own scroll. It
+  closes on outside tap or Escape.
+- Removed from the board: `notesClosed` persistence, the
+  `noteExpanded`/`onToggleNote` props, and the canvas "note" uncap. The
+  board never relays out for a note, and a card's measured height no longer
+  depends on it.
+
+### Also
+
+- Test fixtures still carried a real-looking name, date of birth and RM
+  from an old note (`vascularNoteCopy`, `parseLab`, `pdfReport`, `board`
+  tests). They are anonymised.
+
+### Not done
+
+- `CanvasBoard` still has the `'note'` uncap branch (`hMaxWithNote`),
+  which is now unreachable. It is left in place to keep this change out of
+  the canvas sizing code.
+- The note panel is read-only; editing stays on the patient page.
+
+```
+1729 tests passed (+18)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-30.3` — osmolality cut-offs
+
+**The osmolality card labels its results against published cut-offs, each
+with its source. Asked for by Avi as an explicit exception to "no built-in
+reference ranges": these are guideline decision thresholds, not a lab's
+range, and the lab range stays overridable.**
+
+| Value | Cut-off | Label | Source |
+|---|---|---|---|
+| Effective | < 275 | hipotonik | Spasovski et al., Eur J Endocrinol 2014 (defined on measured osmolality; calculated effective is the proxy) |
+| Effective | > 300 | ambang HHS (bila GDS ≥ 600) | Umpierrez et al., Diabetes Care 2024 |
+| Total | > 320 | ambang HHS (bila GDS ≥ 600) | Umpierrez et al., Diabetes Care 2024 |
+| Total | 275–295 | normal / di bawah / di atas | Usual range; replaced by Pengaturan → Rentang rujukan lab → Osmolalitas when set |
+
+- The 2024 consensus lowered the HHS criterion from effective > 320 (2009)
+  to effective > 300 or total > 320. The code uses 2024 and says so.
+- `readEffective` / `readTotal` replace `bandFor` / `OSMOLALITY_BANDS`.
+  Each result has a chip (accent for low, amber for high) and the card
+  lists the sources under the numbers.
+- Tests cover every cut-off boundary and the user-range override.
+
+### Not done
+
+- The copied line still carries the numbers only, not the labels.
+
+```
+1711 tests passed (+1)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-30.2` — osmolality calculator
+
+**The osmolality card divided UREUM by BUN's 2.8, overstating the urea term
+2.14×. It now asks which one was entered, shows the effective (tonicity)
+value used for hyponatraemia, waits for all three fields, and has no
+built-in range.**
+
+### Root cause
+
+`calculateOsmolality` was `2·Na + glucose/18 + BUN/2.8`, documented as
+"BUN or ureum, mg/dL". The divisor is a unit conversion: mg/dL ÷ (molar mass
+÷ 10). 2.8 is urea NITROGEN (28 g/mol). SIMGOS reports **Ureum**, the whole
+molecule (60 g/mol), so its divisor is 6. The code treated two different
+analytes as one, and the lab parser does the same (`Ureum: ['ureum', 'urea',
+'bun', 'ur']`), which is how "BUN or ureum" read as reasonable.
+
+| Ureum (mg/dL) | Correct urea term | Old card | Error |
+|---|---|---|---|
+| 30 | 5.0 | 10.7 | +5.7 |
+| 60 | 10.0 | 21.4 | +11.4 |
+| 180 | 30.0 | 64.3 | +34.3 |
+
+In a cardiorenal patient (Na 128, GDS 110, ureum 180) the card said 326
+("hiperosmolal"); the calculated value is 292, and the tonicity is 262,
+which is hypotonic.
+
+Three smaller faults in the same card:
+- **Blank fields computed as 0.** `Number('')` is 0, so typing only the Na
+  showed a finished result (280 at Na 140) while the hint said "Isi
+  ketiganya".
+- **Built-in 275–295 bands**, against the no-hardcoded-ranges rule.
+- **No effective osmolality.** Urea is an ineffective osmole. Whether a
+  hyponatraemia is hypotonic, the question before correcting sodium, is
+  answered by `2·Na + glucose/18`. The card showed only the total.
+
+### Fix
+
+- Input is `{ sodium, glucose, urea, ureaKind: 'ureum' | 'bun' }`, with
+  `UREA_DIVISOR = { ureum: 6, bun: 2.8 }`. The card has a segmented
+  control, Ureum (SIMGOS) ÷ 6 by default, and the field label follows it.
+- Returns `total`, `effective` and `ureaTerm`. The card shows the effective
+  value first, labelled for hyponatraemia, and the total with its urea term.
+  The copied line names the urea kind and both values.
+- Result only when all three fields are typed.
+- Bands come from Pengaturan → Rentang rujukan lab, new row "Osmolalitas"
+  (`Osm`). Without it, no label and a hint where to set one. The SOAP
+  checker iterates its own analytes, so the new key does not reach it.
+- Tests: ureum 30 and BUN 14 give the same 290; the ureum 180 case; working
+  line; bands only with a user range.
+
+### Also
+
+- `sodiumGlucose.ts` comment said Katz and Hillier differ by "about 6" at
+  glucose 600; it is 4 (500 × 0.8/100), as the test and the card say.
+
+### Not done
+
+- The lab parser still files a `BUN` result under `Ureum`. SIMGOS prints
+  Ureum, so no Plano data is affected today, but a BUN from another lab
+  would be misread in Ur/Cr. Separating them is its own change.
+- The correction formulas themselves (deficit, rate) stay in ElektroCalc.
+
+```
+1710 tests passed (+2)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-30.1`
+
+**Daily reminders on the patient card (EKG, urine output, your own), ticked
+off from the board. Every unchanged day counter in Periksa lagi is its own
+chip with +1. Periksa lagi catches an unchanged urine output however it is
+written. Settings has search and a jump bar. An in-app changelog.**
+
+### 1. Day counters: one chip each, +1 each
+
+**Before.** One finding listed every unchanged counter in a sentence
+("H-3, POD-2, hari ke-9") with one Tampilkan, to the first. Getting to the
+third meant finding it by eye, and advancing one meant typing.
+
+**Now.** The finding carries each counter with its position (`markers`).
+The panel shows a horizontally scrolling row of chips: tap a chip to select
+that counter in the note, tap **+1** to advance only that one.
+- `locateDayMarker` finds the counter again at its recorded position, or,
+  if typing has moved it, the n-th counter with the same text.
+  `bumpDayMarkerAt` changes only its digits.
+- The +1 is a `transform` change, so it is one undo step.
+- Test: advancing one of three counters leaves the other two untouched.
+
+### 2. Unchanged urine output
+
+**Root cause.** The copied-forward check (`readFlows`) knew urine only as a
+line starting `Urine` with a number followed by `cc`, compared as a string.
+The ward also writes `Urin`, `UO`, `Produksi urin`, `Diuresis` and `BAK`,
+`ml` as often as `cc`, and adds a rate (`1,2 cc/kgBB/jam`). Any of those
+forms was never reported, and a re-spaced line counted as "changed".
+
+**Fix.** `readUrineOutput` reads the first urine line under any of those
+names: the volume (a number with cc/ml, NOT followed by `/kg`) and the rate
+(cc/ml per kg), as numbers. `urine-unchanged` fires when the volume is equal
+and the rate is equal or missing on either side. Tampilkan lands on the
+label. `readFlows` no longer reports urine, so there is no double finding;
+balance is unchanged. Five ward formats are tested, plus the anchor.
+
+### 3. Daily reminders (pengingat harian)
+
+A patient can have reminders that show as chips on the board card: **EKG**
+and **Urine output** by default, plus any kind added in Pengaturan →
+Pengingat harian (rename, reorder, remove).
+- Per patient and per kind: Tidak / Hari ini / Setiap hari. Set from a long
+  press on the card (the quick sheet now has the picker under the
+  checklist) or from the patient's ⋯ sheet. "Hari ini" stores the date,
+  so it expires by itself.
+- **Tap the chip to tick it.** The tick stores the clinical date, so it
+  clears itself tomorrow and a standing reminder is due again. Amber while
+  due, ✓ on a soft accent when done.
+- Stored as `reminders.<kind>` (one field path per kind, so two devices
+  setting different kinds do not overwrite each other) and
+  `reminderDone {date, ids}`. The old EKG badge's `ekgHarian`/`ekgFor` are
+  still read for the `ekg` kind and are deleted the first time EKG is set
+  through the new picker, so no card lost its mark in the upgrade.
+- Removing a kind in Settings hides it; patients' settings stay, and adding
+  it back under the same name restores them.
+
+### 4. Settings revamp
+
+- **Search** at the top (pinned while scrolling): matches the start of any
+  word in a section's title, description or keywords ("pin", "gelap",
+  "reset", "pengingat"). Matching sections open; groups with no match hide
+  (CSS `:has`, so each section stays self-contained); "no match" is said.
+- **Jump bar:** one chip per group; the Akun & aplikasi chip has a dot
+  when there is an unread changelog.
+- **Six groups instead of four headings plus stray sub-headings:** Tampilan
+  · Papan & harian · Format laporan · Privasi & data · Lanjutan · Akun &
+  aplikasi. The old page rendered two group headings in a row in three
+  places.
+- Bigger targets: section headers have a chevron in a 28 px circle,
+  switches are 48×28 and each Toggle row is 44 px tall. Focus rings on
+  both. Setel ulang is collapsible now, so the danger button is one more
+  tap away.
+
+### 5. In-app changelog (Pengaturan → Yang baru)
+
+- Source: **`CHANGELOG.md`** at the root, short and in Indonesian, one
+  bullet per change. CHANGES.md stays the engineering record; at 300 kB of
+  English it does not belong in the bundle.
+- Loaded as a separate chunk (`?raw`, dynamic import) only when the
+  section opens; the service worker precaches it, so it works offline.
+- The newest four releases show, "Tampilkan N pembaruan sebelumnya" for
+  the rest. The running version is marked "Versi ini".
+- "Baru" badge (and the dot in the jump bar) until the section has been
+  opened once on this device (localStorage, per device).
+- `check-version.sh` excludes CHANGELOG.md like CHANGES.md: it is prose
+  history. **A test fails when the newest CHANGELOG entry is not
+  `APP_VERSION`**, so a release cannot pass `verify` without a user-facing
+  entry.
+
+### Wrong turns
+
+- Search matched substrings first: "pin" found "Tata letak" (in
+  "sam**pin**g") before Privasi. Now prefix of a word.
+- The reminder `ReminderPicker` lived inside PatientActionsSheet; moved to
+  its own file when it was added to the long-press sheet.
+- The done chip was `text-fg-faint line-through`, near-invisible on the
+  dark card. Now muted text on `--accent-soft` with a ✓ in accent.
+
+### Not done
+
+- No reminder list or filter on the board ("who still needs an EKG
+  today") — the chips are per card only.
+- The changelog "seen" mark is per device, not per account.
+
+```
+1708 tests passed (+15)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.8`
+
+**Opening lines corrected for konsul KJS and konsul kelayakan. Pembuka no
+longer mangles the poli template's opening. The echo list opening is
+retired. A Plano export can now be imported.**
+
+### 1. Openings (from the revised SOAP format)
+
+| Template | Before | Now |
+|---|---|---|
+| Konsul KJS pasien baru | `… melaporkan pasien baru KJS *TS (Bagian) ((Nama DPJP TS))* …` | `… melaporkan konsul pasien dari *TS (Bagian) (Nama DPJP TS)* …` |
+| Konsul kelayakan pra tindakan | `… melaporkan konsul baru dari *TS …*` | `Assalamualaikum dokter, tabe dokter, mohon izin melaporkan konsul kelayakan tindakan dari *TS (Bagian) ((Nama DPJP TS))* …` |
+
+- **Pembuka sentences:** the echo "list pasien echocardiography full study"
+  opening is removed. The three konsul/new-patient sentences above, plus
+  "pasien baru dari *Poli …*", are added so Pembuka can switch between them.
+- Seed reconciliation delivers these to every profile. A template you edited
+  yourself is merged, not overwritten; a sentence you never touched is
+  replaced or removed.
+
+### 2. Pembuka replaced the poli opening wrongly
+
+**Root cause.** The opening line was split into greeting and report at the
+**first full stop**, assuming "<greeting>. <report>". The poli template is
+`Assalamualaikum dokter, tabe dokter izin melaporkan …`: a comma and no full
+stop. So the whole line counted as the report.
+- Picking a greeting PREPENDED a second one: "Selamat pagi dokter.
+  Assalamualaikum dokter, tabe …".
+- Picking a sentence threw away the salam.
+
+The same rule split a greeting-less report at the `dr.` in a DPJP's name.
+
+**Fix.** The report starts at its reporting words (`Tabe`, `Mohon izin`,
+`Izin`, `Kami mohon`). Everything before them is the greeting, whatever the
+punctuation. The greeting gets its full stop, and the report is capitalised
+when a greeting precedes it. Without reporting words, the old rule applies.
+Tests cover the comma form and the `dr.` case.
+
+### 3. Import a Plano export (Settings → Impor data)
+
+For moving to a new Google account, a lost account, or starting over.
+- **Preview first:** when the file was exported and from which version,
+  then counts of new patients, daily notes, daily checklists and documents,
+  and what will be skipped because it is already here.
+- **Only adds, never overwrites.** Patients and documents already in the
+  account are skipped. Catatan notes, board notes and checklist ticks are
+  merged key by key (existing ones kept). Settings are replaced only if you
+  tick that option.
+- **Patients get new ids** owned by this account, with `importedFrom` = the
+  old id. The old account's patient documents still exist under their ids,
+  and the rules rightly refuse writes into them. Because of `importedFrom`,
+  **importing the same file twice creates no duplicates**, and a run that
+  stopped part-way can simply be repeated.
+- Timestamps in the JSON are turned back into Firestore Timestamps.
+  One-write fields (`baseHash`, `editing`) are dropped.
+- Needs a connection. Each patient is written first and its notes after,
+  because the rules check the parent patient on the server. It goes patient
+  by patient, so a failure never leaves a patient without their notes.
+- Tests cover the planner, the merge, idempotency and timestamp revival.
+
+```
+1693 tests passed (+10)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.7`
+
+**Google-only sign-in, enforced. Admin page redesigned. The sidebar's
+bottom is one compact card. Archive search chooses where to look. Archived
+catatan jaga are a dated log. Adding a SOAP jaga is one tap, from a
+template.**
+
+### 1. "Email/Password is disabled in Firebase, yet people still sign in with it"
+
+**Root cause, two layers.**
+1. **The form was hardcoded** on the sign-in page. Disabling the provider in
+   the Firebase console does not change the app; the page kept inviting
+   password sign-ins.
+2. **Disabling a provider does not sign anyone out.** Firebase refuses NEW
+   password sign-ins (`auth/operation-not-allowed`). A session created with a
+   password BEFORE the switch keeps a valid refresh token and keeps working,
+   and nothing in the app or the rules looked at HOW an account signed in.
+   So existing password sessions kept full access.
+
+**Fundamental fix, on both sides.**
+- **Server:** `firestore.rules` `allowed()` now also requires
+  `request.auth.token.firebase.sign_in_provider == 'google.com'` on every
+  data path. The admin UID is exempt, so this can never lock the owner out.
+  This deploys through the existing `firestore-deploy` workflow when pushed.
+- **App:** the sign-in page is Google-only (the email form and the
+  `signInWithEmail` / `registerWithEmail` code are gone). A password session
+  that is still signed in now sees "Masuk dengan Google" with a Keluar button
+  (`decideAccess` → `not-google`) instead of the app.
+- Tests: `decideAccess` refuses a password session except the admin, and a
+  test checks the rules contain the provider gate.
+
+### 2. Admin page
+
+- Header and **summary tiles**: Akun, Aktif 7 hari, Menunggu (amber when any
+  are waiting), Dicabut.
+- **Access switch** as a status card with an Aktif/Nonaktif badge, still a
+  two-tap confirmation.
+- **Filter tabs with counts.** The page opens on Menunggu when anyone is
+  waiting, else on Semua. There is also a search box.
+- **Compact rows:** initial, name, status pill, "aktif 2 jam lalu", the app
+  version with an **outdated version marked in red** (the usual reason a fix
+  "did not work" for someone), and the patient count. Details and UID open on
+  tap. Actions wrap under the row on phone.
+
+### 3. Sidebar bottom
+
+The DPJP box, clipboard box, sync pill and two-line footer were separate
+blocks. On a patient page they were taller than the navigation above them.
+Now:
+- **One context card** with compact rows: `DPJP CPT <format>` / `Poli … ·
+  lalu …`, a divider, then 📋 name / what · time (amber if another patient
+  is open). The full text is on hover.
+- **One status line:** ● Tersinkron and the version (© on hover).
+- The rail scrolls if a very short window still runs out of room.
+
+### 4. Arsip: choose where to search
+
+"Cari di [Identitas] [Catatan arsip] [Isi SOAP]", any combination,
+remembered per device. The default is Identitas + Catatan arsip. Isi SOAP
+loads the notes only when chosen. The snippet comes from the archive note
+first, else the SOAP. `matchArchivedScoped`, with tests.
+
+### 5. Archived catatan jaga: always by date made
+
+Newest first, and drag-to-reorder is off for that view (`isDateOrdered`). A
+hand-sorted log is one whose order lies about when things happened.
+
+### 6. SOAP jaga, revamped
+
+Before: ⋯ → find "Tambah SOAP jaga" among ten actions → an empty box
+stamped with the time of the tap → switch back through the date rail.
+
+Now:
+- **A row directly above the editor:** `SOAP hari ini · Jaga 21.40 ·
+  Jaga 03.10 · + SOAP jaga`. One tap creates a note, one tap switches between
+  notes, and switching saves the note you leave.
+- **Starts from the jaga template:** S / O with a blank vitals line / A / P,
+  with the **caret already on the complaint line**.
+- **Editable time:** tap the time in the note's header. It accepts `3.10`,
+  `03:10` and `0310`. Useful when the note is written up after the event. Any
+  pending text is written in the same save.
+- The template picker no longer shows (writing into the day SOAP) while a
+  jaga note is open.
+
+### Also fixed
+
+**Every tinted fill in the app was transparent.** Tailwind emits no CSS for
+`bg-accent/15` when the colour is a CSS variable. The affected places were
+14 classes: search highlights, the peek's date chip, revision-trail marks,
+the jaga frame header, the side panel and others. They now use
+`--accent-soft` / `--danger-soft` tokens (light and dark).
+
+```
+1683 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.6` — bug audit
+
+**Audit of the whole app (data/sync, patient page and editor, board,
+parsers, shell/auth), about 45 findings. Each was checked against the code.
+The confirmed ones are fixed at the root, with tests; the ones left open
+are listed at the end with reasons.**
+
+### A. Notes and data (lost or wrong-day writes)
+
+| # | Bug | Root cause | Fix |
+|---|---|---|---|
+| A1 | **"Hapus catatan" silently refused** on any day that had been typed in; the clear flashed and rolled back | The rules read the MERGED document, and `baseHash` stayed stored from the previous write. A write that sent none was checked against that leftover, which never equals the current `bodyHash` | Every body write now sends `baseHash` or `deleteField()`, and so does the clear. Client-only, no rules deploy |
+| A2 | **Typing lost when the day changed under the editor**: midnight rollover on a page following "today", back/forward between days | The flush lived at one call site (`goToDate`). A key change moved `latest` to the new key, so the pending debounce flushed the NEW, clean note | `useTextSync` saves the previous note, with its own writer, on the key transition itself (layout-effect cleanup). Test fails on the old code |
+| A3 | **Jaga notes lost**: saved only on blur | A second editor outside the SOAP editor's durability path | Idle save (1.5 s), save on hide/pagehide/unmount, save with the OLD day's writer when the day changes, registered with the update banner |
+| A4 | **For one render after a day switch, the entry hook returned the previous day's note.** Effects: a spurious conflict or "digabungkan otomatis" on the first keystroke, undo starting from another day, the card heal writing an older assessment | Subscription results were not tagged with the key they belong to | `useEntry` tags the result with `patient\|date` and reports "loading" for any other key, in the same render |
+| A5 | **Carry-forward could write into the day you navigated to** while its read was in flight | The editor's setter from an old render stored under the old key but moved `latest` forward, so the flush wrote the new day | The setter refuses when its key is not current (covers every async caller); carry-forward also checks the note it was pressed on |
+| A6 | **Rapikan SOAP could apply another day's AI suggestion** | The code comment promised "discarded on a different body"; nothing did it | The suggestion is stored with its source body and shown only while the note is still that body |
+| A7 | **Lab insert went into the day SOAP while a jaga note was open** | Each transform chose its own target | One `activeNote {body, apply}` used by lab, reformat, opening and tidy |
+| A8 | **"Perbarui kartu pasien" rebuilt every card from the day of ADMISSION** (the version before today's did too) | `fetchEntryBodies` returns newest first; the caller took `.at(-1)` | It takes the newest non-IGD day |
+| A9 | **The admission note sorted as the NEWEST day** (preview, peek, history summary sent to AI) | `'igd' > '2026-…'` as strings | `compareEntryDates` puts IGD first; used by `fetchEntryBodies` and the history summary |
+| A10 | Sticky-note image hung offline, leaving an orphan | Awaited the image write (server ack) before queueing the link | One `writeBatch` |
+| A11 | Carry-forward banners followed you to other days | Not reset with the day | Reset with the day |
+
+### B. Sign-out and device privacy
+
+| # | Bug | Fix |
+|---|---|---|
+| B1 | **"Lupa PIN? Keluar" signed you straight back into the same lock, forever**; the next person on the device got your PIN | Sign-out clears **every** `visite.*`/`plano.*` key except four that describe the device (`lib/deviceUserState.ts`). New keys are cleared by default |
+| B2 | **Sign-out deleted unsynced edits without a word** (outbox and Firestore queue) | Open editors are saved first, then it waits for the queue up to 5 s. If anything is still unsent it asks: **Tunggu sinyal / Keluar tetap** (`SignOutButton`, used in all three places) |
+| B3 | The next person inherited your **Anthropic key and AI consent** | Covered by B1 |
+| B4 | The clipboard pill showed the previous user's patient, and ignored initials-only | Covered by B1; the pill now follows initials-only (no RM) |
+| B5 | Sign-out with another Plano tab open **kept the offline cache** while saying it was deleted | The next boot says so, and what to do |
+| B6 | "Muat ulang bersih" offered offline could leave **no app at all** | It checks the server first; if unreachable, nothing is deleted and it says so |
+| B7 | Sign-in page claimed "Kunci PIN aktif secara bawaan" (false) | Text corrected |
+
+### C. Board
+
+| # | Bug | Root cause | Fix |
+|---|---|---|---|
+| C1 | **Board re-rendered forever with no profile yet** (new account, first offline load): "Maximum update depth exceeded". Found by the render check, not by the reviewers | The `settings()` selector returned a NEW default object on every call | One default object, built once |
+| C2 | **Drag in Titipan or during a search wiped the hand-made order of Pasien saya** | Order rebuilt from the filtered view and saved as the whole order | `reorderBoard` keeps the hidden ids in their slots (test) |
+| C3 | **Initials-only leaked** name and RM: Denah lines and tooltips, peek title bar, quick-checklist title, search snippets, archive note | Each surface had its own (or no) privacy rule | Denah uses the board's `initials` and drops the RM; peek and quick checklist use `cardTitle`; snippets and the archive note go through `privateText` |
+| C4 | **Peek window ticks went to yesterday** before today's note existed | Checklist/todos used the note's date | Always today |
+| C5 | Quick checklist popped up after an ordinary tap | The long-press timer was a render-local `let` | A ref |
+| C6 | **Batch trash/archive hit patients no longer on screen** | Selection survived scope/search changes | Pruned to the visible cards |
+| C7 | Canvas placement and Rapikan during a search ignored hidden cards | Positions were computed from the filtered set | Placement runs over the whole scope; only drawing is filtered |
+| C8 | Peek windows jumped 28 px when a back one was pressed | Cascade followed the live z-order | Index captured at open |
+| C9 | Long-press on an archived search result did nothing | Looked up only in active patients | Both lists |
+
+### D. Parsers and calculators (wrong clinical content)
+
+| # | Bug (actual → expected) | Fix |
+|---|---|---|
+| D1 | `CA 19-9 30` → **Kalsium 19**; `CA 125 35` → Kalsium 125 | Names containing numbers (`NUMBERED_NAME`) are not claimed by the `ca` alias |
+| D2 | `HbA1c 6.5` → `HbA 1`; `FT4 1.5` → `FT 4`; `Vitamin B12` → `Vitamin B 12` | The fallback label ends at the first WHOLE number, not the first digit |
+| D3 | Urinalysis `Leukosit 2+` → **WBC 2+**; `Eritrosit 10` → RBC; `Glukosa Negatif` dropped | Section-scoped aliases under Urinalisis; a blood heading ends the urine section; word-result rows in the table are kept |
+| D4 | `P: 20` / `S: 36,5` under O opened **Plan / Subjektif** sections (vitals then not cleared, Plan copied "20") | Inside O, a one-letter S/P label followed by a number is a field (`isVitalField`) |
+| D5 | `Massa: tidak teraba`, `Class:`, `Bypass:` → **Assessment** | Stems anchored to a word start |
+| D6 | "melaporkan… Tn. Budi" → name "an pasien di …"; `RM 8000009 66 tahun` → MRN **147891166** | Word-bounded honorific; the age is removed before reading the MRN |
+| D7 | Archived 00:00–07:59 WITA filed under the previous day or month | Local calendar day, not UTC |
+| D8 | Urine output 0.496 shown as 0.5 "Cukup" | Band from the exact rate; 3 decimals when 2 would cross a band |
+
+Regression check on the 42 real lab PDFs (text extraction, old vs new
+parser): 6 outputs changed, all for the better. Non-lab lines such as
+`MR. 24` and `NHS 2` no longer appear in Lain-lain, and one qualitative row
+(ANA) that used to be dropped is now kept.
+
+### Not fixed in this release (and why)
+
+- **Jaga notes and patient todos are still written as whole arrays**, so two
+  devices editing the SAME day's jaga notes offline can overwrite each other.
+  The fix is a keyed map with per-note writes, which needs a data migration
+  and deserves its own release.
+- **The "sent body" memory is not persisted**: after an app kill mid-offline
+  typing, the reconciler may park the newest text in Riwayat instead of
+  merging it. Needs the sent-body record in IndexedDB.
+- **A refused body write still updates the board card** until the note is
+  opened (the heal from .5 then corrects it).
+- **The PIN-toggle intent is not reconciled** with a PIN actually being set
+  on a new device.
+- **At midnight a page that follows "today" still switches day** (no text is
+  lost any more, A2). Whether it should stay on the day being written is a
+  behaviour choice to make.
+
+```
+1677 tests passed (+12)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.5`
+
+**Cardiology markers (PCI, EP, BTKV). The app says whose note is on the
+clipboard, and warns when it is another patient's. Cards update
+themselves. Helper has a way back. Archive rows show the archive note. The
+drag handle of a card at the very top is reachable again.**
+
+### 1. Penanda: PCI, EP study / Ablasi, Operasi BTKV
+
+A new first group, **Tindakan kardiologi**, with three **text tags** drawn
+as coloured pills (PCI red, EP purple, BTKV teal) rather than emoji. No
+emoji says "PCI" to a colleague, and a guessed one is a meaning kept in one
+person's head. The stored value is the text itself (`stickerTag`), so
+nothing about how stickers are saved changed.
+
+### 2. Whose note is on the clipboard
+
+- **Always in view:** "Terakhir disalin · SOAP harian 29/09 · 11.34 /
+  **Tn. X** · RM …". It sits in the sidebar above the sync pill on desktop,
+  and floats above the tab bar on phone. Tap × to hide it.
+- **Amber, "Clipboard berisi pasien LAIN"**, when a different patient's
+  page is open. That is the moment a paste into SIMGOS would land in the
+  wrong chart.
+- Recorded by: **Salin** (every format), and every **Salin RM** (card,
+  peek, patient page).
+- The Salin sheet's title is now the patient's name; the subtitle gives the
+  note date and RM. The copy button shows the name in large type.
+- Limit: this is what **Plano** copied. Browsers do not let a page read the
+  clipboard without a permission prompt, so something copied in another app
+  afterwards is not known. That is why the label says "Terakhir disalin".
+
+### 3. Cards update themselves ("Perbarui kartu pasien" was needed too often)
+
+**Root cause.** Every write sets the card's preview from **the day being
+written**. So opening **yesterday** to fix a line put yesterday's assessment
+on the card (and moved `lastEntryDate` back). It stayed there until today's
+note was typed into again. The maintenance button was being used to undo
+that.
+
+**Fundamental fix.**
+- The preview only moves **forward** (`previewMovesTo`). A write to an older
+  day still updates DPJP/KJS, but not the card text.
+- **Heal on open:** opening a patient's **latest** day puts it on the card
+  if the card says anything else (`healCardPreview`). There is no write when
+  the card is already right. Any drift — a rule change, a deleted day, a
+  race — fixes itself by being looked at.
+
+**The button** is still there for rule changes, but:
+- It runs **6 patients at once** instead of one by one.
+- It covers **active patients only** by default. The archive (which only
+  grows) is behind a checkbox.
+- It skips cards that are already right.
+- It takes the latest non-IGD day (it used to take the last entry, which
+  could be the IGD note).
+
+### 4. Helper had no way back
+
+**Root cause.** `/helper` was the one route rendered **outside `AppShell`**:
+no sidebar, no tab bar. In the installed app, closing the app was the only
+way out.
+
+**Fix.** It is now inside `AppShell` like every page, and has a back button
+beside the title. (The WIP badge border was a Tailwind opacity-on-variable
+class that emitted no CSS; it is now `border-danger`.)
+
+### 5. Arsip: the archive note on the row
+
+The note written at archiving ("Catatan arsip") now shows on the row, up to
+3 lines, with an amber rule and search highlighting. It is also part of the
+normal search (`patientHaystack`), so no toggle is needed to find a patient
+by it.
+
+### 6. Card at the very top: drag handle under the header
+
+**Root cause.** The handle is drawn 16 px **above** its card, but card
+positions are floored at the canvas's top edge. A card at y = 0 therefore
+had its handle outside the canvas, under the pinned header. The canvas's
+`pt-1` did nothing: cards are absolutely positioned, and padding does not
+move them.
+
+**Fix.** The canvas gets a 20 px top margin, which moves cards and stickers
+alike, and no stored position changes. Measured: handle top 106 px vs header
+bottom 122 px before (hidden), 126 px after (grabbable).
+
+**Wrong turn:** the explanatory comment was first placed bare inside JSX and
+rendered as text on the board. The render check caught it.
+
+```
+1665 tests passed (+3)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.4`
+
+**Updating the installed app on a phone: found on its own, applied in one
+tap, and a phone equivalent of Ctrl+Shift+R. The phone no longer waits on
+Google's sign-in page before showing the app.**
+
+### 1. Long "Memuat…" on the phone (not on the laptop)
+
+**Root cause.** `getAuth()` attaches Firebase's popup/redirect sign-in
+machinery. On a **mobile** browser only, the SDK then loads Google's sign-in
+iframe from the auth domain **before** it reports the first auth state, even
+when you are already signed in. So every cold start (and every update
+reload) waited on a network round-trip to Google. Desktop browsers skip that
+step, which is why the laptop felt instant.
+
+Measured on this build with the sign-in hosts delayed 5 s (phone emulation):
+
+| | Phone | Laptop |
+|---|---|---|
+| Before | **5.2 s** "Memuat…" | 0.2 s |
+| After (signed in before) | **0.2 s** | 0.2 s |
+
+**Fundamental fix.** `initializeAuth` with IndexedDB → localStorage
+persistence. The sign-in machinery is attached at boot only when nobody was
+signed in on this device (`data/authHint.ts`), because the sign-in screen
+needs it ready. Sign-in calls pass it explicitly, and `getRedirectResult`
+runs only on a signed-out boot. Sign-out already reloads, so the next boot
+attaches it.
+
+**Not fixed (SDK):** on boot, Firebase still refreshes the signed-in
+account over the network (`getAccountInfo`), on phone and laptop alike. On
+a very bad signal that can still take a while. So after 8 s the boot screen
+now explains itself and offers **Muat ulang bersih**.
+
+### 2. "Muat ulang" on the update banner sometimes did nothing
+
+**Root cause.** `updateSW()` from vite-plugin-pwa only **posts**
+`SKIP_WAITING` and returns. `applyUpdate` reloaded as soon as it returned,
+before the new worker had taken over. The reload was often answered by the
+**old** worker: same version, banner back. It read as "the button doesn't
+work".
+
+**Fix.** The reload now waits for `controllerchange` (the new worker in
+control), with a 6 s fallback that reloads anyway. The button shows
+"Memuat…" and cannot be pressed twice.
+
+### 3. The phone found updates late
+
+**Root cause.** The browser checks for a new `sw.js` when a page is
+**navigated to**. An installed app on a phone is **resumed** from the
+background for days, never navigated. So it kept running the old version
+until it happened to be killed and reopened, and even then the first open
+still showed the old version.
+
+**Fix.** The app checks when it returns to the foreground (at most once a
+minute), when the connection comes back, and hourly while open.
+
+**Verified end to end** (production build, phone emulation): version A
+installed → version B deployed → app backgrounded and resumed → state went
+`checking → downloading → available` → apply → **B** is shown, and still B
+after another reload.
+
+### 4. Settings → Tentang
+
+- **Periksa pembaruan**, with a status line: checking / downloading / ready /
+  already newest / offline. It becomes **Pasang versi baru** when an update is
+  ready.
+- **Muat ulang bersih**, the phone's Ctrl+Shift+R. It unregisters the service
+  worker, deletes the app's code caches and reloads from the server. Notes
+  and the sync queue are **not** touched. It asks for confirmation first and
+  saves open editors. Also shared with the stale-chunk recovery
+  (`lib/cleanReload.ts`).
+
+```
+1662 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.3`
+
+**"Salin dari hari sebelumnya" no longer empties the HR in an EKG (or
+echo) block.**
+
+### HR removed from the EKG
+
+**Root cause.** Vitals are cleared inside the **O block**, which ran from the
+O heading to the next S/A/P/Terapi/Penunjang heading. A custom heading could
+not end it, because blank template fields (`Nadi :  kali/menit`) parse as
+custom sections too and have to stay inside O. So a
+`*EKG PJT Lantai 4 (24-09-2026)*` block right after the vitals counted as O,
+and `Sinus tachycardia, HR 166 bpm` lost its 166. The same happened to
+`HR` / `TD` in an echo block, and the checker could read the EKG HR as the
+pulse. On a note with no O heading, every section was scanned, EKG included.
+
+**Fundamental fix** (`domain/vitals.ts`, shared by carry-forward and the
+checker):
+- An **investigation heading ends the O block**: EKG/ECG, echo/eko, lab,
+  foto/rontgen, CT/MSCT/MRI/USG/LUS, angiografi, laporan, holter, treadmill,
+  hemodinamik, penunjang, hasil (whole words).
+- Investigation sections are **never** read or cleared, with or without an
+  O heading.
+- When an O heading exists, only O is read. A `TD` in the Plan is no longer
+  touched.
+- Bare `Thorax:` stays in O, because it is also the physical-exam heading.
+  Only `Foto thorax` counts as an investigation.
+
+Tests: EKG and echo blocks after the vitals, a bullet `- HR 90`, a note
+without an O heading, and `Thorax:` inside O. All three investigation tests
+failed on the old code.
+
+```
+1662 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.2`
+
+**"Periksa lagi" no longer blames a plan that isn't there, and every
+Tampilkan lands on the line it names. The AI check is rebuilt to add what
+the rules can't see, quoting the note. Dokumen and Checklist redesigned;
+checklist ticks stored safely.**
+
+### 1. "Lab sudah ada hasilnya…" on a patient with no lab plan; Tampilkan jumped to "Planimetry"
+
+**Root cause, two layers.**
+1. The rule looked for lab words ("cek lab", "DL", …) on **every line of the
+   note**, not only in the Plan. A lab word in S, O or A (a past result, a
+   history line) was read as a plan that was still waiting.
+2. The jump target was the **bare word `Plan`**, searched from the top of
+   the note. The first match was inside `Planimetry` (an echo line in O).
+   Several other findings used the same kind of loose anchor.
+
+**Fundamental fix.**
+- New `planLines(body, sections)`: the Plan is the P/Terapi section plus any
+  custom sections that follow it, until the next S/O/A/Penunjang. The rule
+  reads only those lines.
+- The message now quotes the plan line itself: *Lab sudah ada hasilnya,
+  tapi Plan masih menulis "…"*, so it can be judged without jumping.
+- Every finding now carries an **exact position** (`anchorMatch`), taken from
+  the text that triggered it: fluids, day marker, stale diagnosis value,
+  consult (the TS line), electrolytes, anemia. No finding searches for a
+  word again after the fact.
+- Regression tests: the Planimetry note, and "every anchor matches its own
+  text".
+
+### 2. AI check ("Periksa dengan AI"), rebuilt
+
+**What was wrong.** A free-text reply parsed from prose. It did not know
+what the rules had already said, so it could repeat them, and its findings
+had no position in the note to jump to.
+
+**Now.**
+- **Structured reply** (`askClaudeStructured`, forced tool
+  `laporkan_temuan`, temperature 0): at most 6 findings, each with a level
+  (Isi / Kemarin / Cek), a message and a **verbatim quote** from the note.
+- **Grounded:** a finding whose quote is not in the note is dropped (and the
+  count is shown). The quote is the jump target, so Tampilkan works.
+- **Rule-aware:** the rule findings are sent as "do not repeat". The AI is
+  pointed at what rules can't see: A↔P mismatch, abnormal values nobody
+  addresses, contradictions, numbers that disagree, identity, future dates.
+- **Stale marker:** after the note changes, results are marked out of date
+  instead of silently pointing at old text. They clear on date/patient change.
+- Still no clinical recommendations; still the H-2 "kemarin" meaning.
+
+### 3. Checklist: ticks lost, "versi lama" banner for no reason; redesign
+
+**Root cause.** Each tick **rewrote the whole `checklists` array** (every
+list, built-in ones included) from the copy on screen.
+- Two quick ticks, or two devices: the later write replaced the earlier
+  (bug pattern #5).
+- The first tick on a built-in list **saved a copy of it into the account**.
+  From then on, any update to the built-in list showed as "outdated".
+
+**Fundamental fix.** Ticks live apart from the lists: `checklistDone.<listId>`,
+changed with one atomic `arrayUnion` / `arrayRemove` per tick
+(`tickChecklistStep`). Built-in lists are never copied by ticking. Ticks
+stored the old way (inside a saved list) are read and carried over on the
+first new tick.
+
+**Redesign.**
+- Two panes on desktop; list → detail on phone (`?c=`, back works).
+- Search over titles and steps.
+- "Sedang berjalan" group first, with a progress bar per list.
+- Detail: progress, **"Langkah berikutnya"** highlighted, Reset with an
+  inline confirm.
+
+### 4. Dokumen redesign
+
+- Sticky header: search (title, category **and body**, with a highlighted
+  snippet), "Dokumen baru" (floating button on phone), ⋯ menu for the rarer
+  actions (add built-in formats, export, manage the selected category).
+- Category chips with counts.
+- Pinned documents in their own group; the rest grouped by category in a
+  2-column grid with a two-line preview.
+- `Highlight` moved to `components/common` (shared with Arsip).
+
+### Not done
+- AI check needs a network round-trip; nothing is cached across reloads.
+- Checklist ticks are still per account, not per patient (by design).
+
+```
+1658 tests passed (+20)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+## `2026-09-29.1`
+
+**Dropdowns readable in dark mode. "Salin dari hari sebelumnya" now empties
+the TTV however it is written. "Periksa lagi" reads vitals the ward's way,
+names what is left unfilled, and stays silent on a good note.**
+
+### 1. Dropdown list unreadable in dark mode (Urutan, and every select)
+
+**Root cause.** Chrome on Windows paints a `<select>`'s option list with the
+select's own background colour. Every select here is `bg-transparent`, so it
+sits flush in its control, and the list fell back to white while the options
+inherited the dark theme's light text. `color-scheme: dark` was already
+declared; it does not reach this.
+
+**Fix.** One base rule: `select option, select optgroup` take `--surface`
+and `--fg`. It covers all 11 selects in the app, whatever their own
+background.
+
+### 2. TTV sometimes not emptied by "Salin dari hari sebelumnya"
+
+**Root cause, two layers.**
+1. Vitals were cleared by **replacing each line with the seed template's
+   blank line**, matched on the exact text before the line's **first
+   colon**. It worked only for lines already shaped like that template.
+   `Tensi`, `Nafas` (which the template's own comment says the ward
+   writes), `TD`, `N`, `RR`, `Saturasi`, `*Tekanan Darah* :` and `TD 120/80`
+   (no colon) were copied with yesterday's readings.
+2. **One-line vitals** (`GCS E4V5M6; Tekanan Darah : 160/83 mmHg; Nadi : …`,
+   the app's own *Follow-up ringkas* template) were never cleared at all:
+   the first colon's label is `gcs e4v5m6; tekanan darah`.
+
+The wiring was fine (`ttv` is in the default clear list). What varied was
+the shape of the note, which is why it looked like "sometimes".
+
+**Fundamental fix.** **The number is removed, not the line replaced.**
+- New `domain/vitals.ts` is the **one vocabulary** for vital signs, used by
+  both carry-forward and the checker. Before, each kept its own
+  five-label list, which is the shared root of this bug and of the
+  checker's false "Tidak ada TTV" (§3).
+- Lines are read as segments (split at `;` and at a `,` that is not a
+  decimal comma).
+- A segment starting with any usual name of a vital has only its reading
+  removed (`160/83`, `88`, `36,5`, `98`). The label, units and qualifiers
+  stay as written.
+- Single letters (`N`, `P`, `S`, `T`) count only inside the O block and only
+  with a separator, so `S1 S2 tunggal`, the `*S:*` heading and `P 2 tablet`
+  in a plan are never touched. TB/BB are not vitals.
+
+**Wrong turn:** the first version split `S 36,5` at the decimal comma and
+left `,5`. The compact-form test caught it.
+
+### 3. "Periksa lagi" (the rule-based checker)
+
+Audit of what it could and could not see:
+
+| | Before | Now |
+|---|---|---|
+| Vitals | Only the five template names, so `TD 120/80, N 88` gave a **false "Tidak ada TTV"** | Shared vocabulary (§2): any usual name, the one-line form, bold labels |
+| Blank vitals | Invisible (`Tekanan Darah :  mmHg` looked like "no TTV" or nothing) | **"TTV belum diisi: Tekanan darah, Nadi."** Exactly what carry-forward leaves |
+| Empty S / A / P | — | **"S (keluhan) masih kosong."**; P judged with Terapi (the templates split the plan), empty only if both are |
+| S copied | — | **"Keluhan (S) sama persis dengan kemarin."** (the one section expected to change daily) |
+| Template holes | — | `hari perawatan ke  hari`, `TB :  cm` / `BB :  kg`, `()`, empty `- ` bullets (counted), `xx` / `??` |
+| Hari perawatan | — | Compared with **yesterday's note**, not the admission date (a patient entered on their day 3 would be wrong every day): "masih ke-4, sama dengan kemarin" / "ke-7, kemarin ke-4" |
+| Duplicate line | — | The same line (15+ chars) twice in one section: a therapy pasted twice |
+| Lab planned but resulted | Fired on **any** lab + **any** "cek lab" line | A plan for the next result (`ulang`, `besok`, `serial`, `evaluasi`, `per 12 jam`, …) is left alone |
+| Kept | Urine/balance copied, day counters, diagnosis value stale, TS not in DPJP, electrolyte corrected, anemia without Hb | unchanged |
+
+**Every finding has an urgency, and the list is ordered by it**:
+- **Isi**: something left unfilled.
+- **Kemarin**: copied from yesterday and not updated.
+- **Cek**: two parts of the note disagree.
+
+The heading shows the count. "Tampilkan" jumps to the exact spot (new
+`at` field), not the first matching text. `- ` and headings occur many
+times, and a text search found the wrong one. It falls back to a search if
+you have typed since the check ran.
+
+**The first test is a complete, correct note: it must produce zero
+findings, and does.** A checker that fires on a good note is one nobody
+reads.
+
+Still deterministic, still never edits.
+
+### Not done
+
+- **Tuning against your real notes.** The rules follow the templates' own
+  shapes and the conventions already in the code. The earlier 59-note
+  export was what settled format questions before; a fresh export
+  (anonymised or not, it stays in the sandbox) would show which rules are
+  noisy on real notes before you rely on them.
+- Keystrokes typed while a note loads are still not kept (see 28.5).
+
+```
+1638 tests passed (+20)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-28.6`
+
+**The pinned board header shrinks from ~260 px to 57 px on a laptop (one
+row), and to two rows on a phone that hide while scrolling down.**
+
+### Why
+
+Pinning the header (28.5) made its size permanent. It stacked four rows
+(search; scope chips; four order chips plus actions; the drag hint), about a
+third of a 1080p screen, measured from Avi's screenshot.
+
+### Change
+
+| | Before | Now |
+|---|---|---|
+| Scope | Two 44 px pills on their own row | One segmented switch beside the search (`Saya 6 · Titipan 3`); hidden when there are no titipan, as before |
+| Order | Four chips on their own row | One dropdown: `Urutan [Urutan sendiri ▾]`. Exactly one order is ever on, which is what a select is for |
+| Actions | Filled 44 px boxes | Compact text buttons in the same row. The canvas's Rapikan / Urungkan / Penanda are sized to match (`CanvasBoard`, `CanvasStickers`) |
+| Height | 44 px everywhere | `CONTROL`: **36 px with a mouse, 44 px on touch** (`[@media(pointer:fine)]:min-h-9`). The 44 px rule is about fingers |
+| Drag hint | A permanent line in Urutan sendiri | Shown until "Mengerti" is pressed once (per device) |
+| Phone | Everything stacked | Row 1: search + scope. Row 2: order + **Aksi** (a sheet with + Catatan tempel, Format lab, Pilih). While selecting, Aksi becomes **Batal** |
+| Phone scrolling | Header always there | **Hides on scroll down, returns on any scroll up** (`useHideOnScroll`); never while searching or selecting, never within its own height of the top. Laptop header never hides |
+
+Measured in Chromium (mocked data layer): laptop header **57 px** (97 px
+with the one-time hint), phone **113 px**, hidden on scroll down, back on
+scroll up.
+
+### Wrong turn (caught before shipping)
+
+`useHideOnScroll` first read `lastY` inside the `setHidden` updater. React
+runs an updater when it gets to it, and by then the next line had already
+set `lastY` to the new position. So it saw no movement and **never un-hid
+the header**. The first hide only worked because React computed that one
+update eagerly. The render check caught it; the previous position is now
+captured before the update. `nextHidden` itself is pure and tested (4).
+
+Also mine: the first draft put the phone's order dropdown on its own
+full-width line, which made three rows instead of the two proposed.
+
+### Not done
+
+- Tablets (768–1023 px) use the phone layout, including hide-on-scroll.
+- The FAB (+) on the phone is unchanged.
+
+```
+1618 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-28.5`
+
+**Four changes: the board header stays put; typing on a just-opened note no
+longer vanishes or jumps to the end; search can look inside archived notes;
+the Arsip page is rebuilt around finding a patient.**
+
+### 1. First keystrokes lost, then typing at the end of the note
+
+**Root cause.** The editor is locked while the day's entry loads. That lock
+is right: it is what stopped a blank editor wiping a note after a mobile
+sign-in. But the locked editor looked ready. It was empty, with the
+placeholder "Tulis SOAP hari ini…", and only a 70 % opacity to say
+otherwise. For a patient not already cached on this device, loading waits
+for the server, so the window lasts long enough to type into:
+
+1. You tap in and type. The textarea is read-only, so nothing registers.
+2. The entry arrives and React writes it into the focused textarea. **A
+   browser puts the caret at the END whenever a textarea's value is set
+   from outside**, so the next keystrokes land at the bottom of the note.
+
+Step 2 had a second trigger with the same effect: another device's edit
+adopted (or merged) while you are in the note.
+
+**Fundamental fix.**
+- **Every outside change now carries the caret through it** instead of
+  dropping it at the end. `BodyEditor` sends all of its own edits through
+  `emit`, which remembers the text it sent. Any other new `value` is an
+  outside change, and the caret is mapped from the selection recorded just
+  before it (`domain/caret.ts` `mapOffset`: before the change it keeps its
+  offset, after it it moves with its text, inside it it goes to the end of
+  the rewritten span).
+- **Loading says "Memuat catatan…"**, not "Tulis SOAP hari ini…".
+- The lock stays. Removing it would bring back the note-wipe bug.
+
+Checked in Chromium with the real `BodyEditor`: typing while loading is
+refused visibly, and when the note arrives the caret is at the start, not the
+end. Then, typing mid-line while a remote edit inserts a line at the top, the
+keystrokes land where they were being typed (`TD 120/80 N 88`) and the end of
+the note is intact.
+
+**Not done:** keystrokes typed during loading are still not kept. Putting
+them anywhere would be a guess about where they belonged.
+
+### 2. Board header pinned
+
+Search, scope, order and the actions are `sticky top-0` in the page's
+scroller, opaque, with a hairline under them; the cards scroll beneath. The
+card area is its own stacking context (`isolate`), because canvas cards
+raise themselves up to z-index 40 (bring-to-front) and would otherwise paint
+over the header. Peek windows are outside it and still float above
+everything.
+
+### 3. Search inside archived notes
+
+The board search already included archived patients, but only by name, RM,
+bed, ward, diagnoses, card preview and DPJP, never by what the notes said. A
+switch, **"Cari juga di isi catatan arsip (SOAP & catatan pasien)"**, on the
+board (while searching) and on Arsip, adds:
+- **every day's SOAP**, loaded on request (`useArchiveText`);
+- **the Catatan pasien**, which is on the patient document and searchable
+  immediately.
+
+How the SOAP is loaded:
+- it lives in a subcollection, so it's read once per patient version, keyed
+  by `id|updatedAt` (a discharge summary written after archiving moves
+  `updatedAt`);
+- four patients at a time, with a progress count;
+- then served from the device's cache, offline too.
+
+Remembered per device. A match that came from the notes shows a **snippet**
+of where, cut on whole words, with the words marked.
+
+`matchesQuery`'s field list became `patientHaystack` and is shared, so
+both pages match the same fields (`domain/archiveSearch.ts`).
+
+### 4. Arsip rebuilt
+
+| Before | Now |
+|---|---|
+| Search box over one long run of bordered boxes, 3 grey lines each | Pinned header: search, the notes switch, trash |
+| No way to narrow except typing | **DPJP · Ruang · Alasan · Bulan** filters, each offering only values that occur, with counts; ward spellings merged (`canonicalWard`); Reset |
+| Month sections only | "12 dari 142 pasien", then months, rows in one grouped card per month |
+| Reason as grey text on every row | Reason tag only when it isn't "Pulang": **MENINGGAL** in red, PINDAH outlined |
+| — | Search words highlighted in name, RM and snippet; a no-results state offers to search inside notes |
+
+The search field gained an accessible label (it had only a placeholder).
+Trash is unchanged in behaviour.
+
+### Wrong turns
+
+- The highlight first used `text-inherit`, which isn't a Tailwind class.
+  The highlight colour uses `bg-[var(--warn-soft)]`, not an opacity
+  modifier (see 28.3).
+- My first snippet test expected the wrong words for its radius; the
+  function was right.
+
+### Not done
+
+- Active patients' note text is not searched; this was asked for the
+  archive only.
+- The board header is pinned on every order, including the canvas. At
+  phone height it takes about three rows.
+- The board-header and Arsip changes were rendered with a mocked data
+  layer; the board itself was not rendered (it needs live Firestore). Worth
+  checking on a device: scroll a long board; open Arsip, switch the notes
+  search on, and watch the count finish.
+
+```
+1614 tests passed (+16)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-28.4`
+
+**Lab PDFs: results that were dropped or misread are now read correctly, and
+page furniture no longer reaches "Lain-lain". Radiology, echo and procedure
+PDFs are identified instead of being read as labs.**
+
+Corpus: 42 SIMGOS PDFs from Avi (36 lab, 6 other), run through the same
+extraction as the app (pdf.js, rows rebuilt from glyph positions) and the
+real `parseLab`. Kept in the sandbox only. Every fixture in the tests is
+invented, with the same layout.
+
+### Root cause
+
+Three structural faults, not a list of missing names.
+
+**1. Value patterns were not all anchored.** An earlier release anchored the
+NUMERIC result to the start of the value region, because an unanchored
+search had read reference ranges as results. The word, graded and
+blood-group patterns were never anchored, and made the same mistake:
+
+| Printed | Output was | Reports |
+|---|---|---|
+| `GOLONGAN DARAH/ GOL.DARAH (ABO) + RHESUS`, then `Golongan darah B Rh+` | **`Golongan darah A`** (the "A" of "(ABO)" on the test-name row; first occurrence won) | 1 |
+| `Vit, C - Negatif` (result `-` = not done) | `Vit C Negatif` (the reference) | 2 |
+| `Warna Kuning Kuning Muda` | `Warna Kuning Kuning` | 2 |
+
+The existing blood-group test asserted only that the words "Golongan darah"
+appeared, which is how a wrong group passed.
+
+**2. The name ended where the ALIAS ended, not where the value began.** The
+value region was the raw line sliced at the normalised alias's length.
+- A longer printed name left a word in front of the value, and anchored
+  reading found nothing: `Hs Troponin I < 0.010` (3 reports), `Laktat
+  Darah 1.2` (2).
+- Punctuation shifted the slice: `Sedimen Lain - lain BAC=2` became
+  `in BAC=2` (3). The comment on `matchAnalyte` described this and fixed
+  only the exact-match case.
+- **And a recognised analyte with no readable value was discarded
+  silently**, in neither the output nor "Lain-lain", against Rule 2.
+
+**3. The whole page was read, not the results table.** Anything shaped
+"words then a number" reached "Lain-lain":
+- `MAKASSAR, 15` (the signature date) on **all 36** lab reports;
+- wrapped diagnosis lines: `Hypokalemia ( 2.9`, `Post PCI 1`,
+  `Normoventricular Response (CHA 2`;
+- per-specimen range notes: `(Darah Arteri : 0.6 - 1.5)`;
+- the patient header repeated on page 2.
+
+Plus coverage: lipids and uric acid had no aliases (2 reports), and the 6
+non-lab PDFs were read as labs (`Radiografi Thorax 1`, `MR. 24`).
+
+### Fix
+
+| # | Change |
+|---|---|
+| 1 | **Every value pattern is anchored** to the start of the value region (`GRADED`, `QUALITATIVE`, `BLOOD_GROUP`, like the numeric one). Blood group must be a whole token (`AB|A|B|O` not followed by a letter). `Kuning` takes only `muda`/`tua` after it. |
+| 2a | **The name is mapped, not measured**: the alias's words are found in the raw line in order, across any punctuation (`matchAnalyte`). |
+| 2b | **The name extends over harmless qualifiers** until the value starts: `darah serum plasma arteri vena I T`, assay methods bare or in parentheses (`CMIA`, `( CMIA )`, `ECLIA`…). An **allowlist**: `Kalium Urin 20` is not serum K and chemistry `Bilirubin Total 0.5` is not the urinalysis bilirubin; skipping those words would put a real number under the wrong name (Rule 1). They go to "Lain-lain" under their full name. |
+| 2c | **No silent drop.** A recognised row whose value can't be read falls through to "Lain-lain": with its number, or verbatim if its result is a word. A `-` result (not done) is skipped deliberately, in both paths (`Titer - <1 : 100` no longer reports the reference). |
+| 3 | **Per-report table scoping**: `free → header → table → footer → free`. A report start (`HASIL PEMERIKSAAN LABORATORIUM`) begins the patient header, the table header row begins reading, and `Kesan / Saran` or `Halaman n dari m` ends it. The header row is recognised in both layouts (one row; one cell per line). **Fails open:** a report whose table header isn't found is read whole, as before. Parenthesised annotation lines and `CITY, dd-mm-yyyy` signatures are skipped anywhere. |
+| 3b | **Several sources in one box.** Scoping is per report, and the sheet now separates appended PDFs/OCR with a blank line (PDF text never has one), so pasted text before or after a report is still read. |
+| 4 | Aliases: `Kol Total`, `LDL`, `HDL`, `TG`, `Asam Urat`. Output `Kol total/LDL/HDL/TG 194/195/15/99` (after Ca/Mg) and `Asam urat 10.6` (after Ur/Cr). |
+| 5 | `labReportKind(text)`: `lab` / `other` / `unknown`. The sheet refuses a radiology/echo/procedure PDF with a message instead of reading it. |
+
+### Result on the corpus
+
+| | Before | After |
+|---|---|---|
+| Lab reports with junk in "Lain-lain" | 36 / 36 | **0 / 36** |
+| Wrong values (blood group, Vit C, Warna) | 5 rows in 3 reports | 0 |
+| Recognised rows dropped silently | 8 rows in 8 reports | 0 |
+| Table rows whose value is missing from the output | — | only `LED -` (not done, correct) and one ANA "Hasil" row (see Not done) |
+
+### Wrong turns (caught before shipping)
+
+- **Scoping to the table first made the old one-cell-per-line layout read
+  nothing at all.** Its header row is split across four lines, so the header
+  was never found and the parser stayed in "skip patient header" to the end.
+  The existing tests caught it (6 failures). Now both layouts are recognised,
+  and scoping fails open.
+- A first global "table only" rule would have ignored pasted text next to a
+  PDF. Made per-report, with blank-line separation.
+
+### Not done
+
+- **ANA IF**: the result row is labelled `Hasil` under an `ANA IF` heading
+  line. It isn't read (and isn't misread). Rare; say if you want it.
+- **Culture reports** (`Kultur & Sensitivitas Tidak ada pertumbuhan`) are
+  labs with no numeric table, so nothing is extracted. The Kesan is the
+  result there.
+- Troponin I and T both print as `Troponin`. The I/T distinction is in the
+  PDF, not the output.
+- Sex-split ranges (`L(1.3); P(<1.1)`, `L(>55); P(>65)`) aren't parsed, so
+  those values are never bolded. Unchanged; the no-hardcoded-ranges rule
+  stands.
+
+```
+1598 tests passed (+14)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-28.3`
+
+**Patient card: DPJP, KJS and RM now look different from one another.**
+
+### Root cause
+
+Two causes, and the second is the one worth remembering.
+
+1. **One shape for three meanings.** DPJP, KJS and RM were all a
+   `rounded border px-1 text-[10px] font-semibold` box in the card's ink.
+   Mine for RM, from `2026-09-28.2`: I copied the DPJP badge's style.
+2. **The differences that were meant to exist never rendered.** KJS·Kardio
+   was supposed to be told apart by a `bg-current/15` tint, and the new DPJP
+   pill got `bg-token-fg/15`. **Tailwind 3 emits no CSS for an opacity
+   modifier on `currentColor` or on a colour defined as a bare `var(--…)`.**
+   The class looks right in review and does nothing. Measured in Chromium:
+   the DPJP background was `rgba(0,0,0,0)`, and `border-current/60` fell back
+   to Tailwind's default grey border (nearly invisible on a light card).
+
+### Fix: form, not hue
+
+The card colour already means checklist progress, and a second hue on the
+same surface is the collision recorded on the discharge wash. So every mark
+stays in the card's own ink, which passes contrast on every card colour by
+construction. They differ by shape:
+
+| Mark | Look | Reads as |
+|---|---|---|
+| **DPJP** | rounded-full pill, soft fill (`bg-black/10`, `dark:bg-white/15`), no border | a person |
+| **KJS · KARDIO** | square tag, **solid inverted** (`bg-token-fg text-token`), uppercase | the rarer case that changes handling: not our patient |
+| **KJS · TS** | square tag, full-ink outline, uppercase | joint care, our patient |
+| **RM** | no box: mono digits, a copy icon (`IconCopy`, new), dotted underline | a control, tap to copy |
+
+Every tint uses colours that do take an opacity modifier (`black`, `white`)
+or none at all.
+
+### Tested
+
+Rendered in Chromium, light and dark, with a DPJP and both KJS kinds:
+- computed styles confirmed the fills are present;
+- RM copy still works and still does not open the patient;
+- no console errors.
+
+### Not done: the same silent failure exists elsewhere (predates this)
+
+Opacity modifiers on variable colours, 11 uses in 6 files. They render at
+full strength or not at all, not at the intended softness:
+
+- `PatientCard.tsx`:
+  - `text-token-fg/50` ×4;
+  - `text-token-fg/60`, `ring-current/40`, `border-token-fg/10` (the
+    identity band's hairline);
+- `CanvasBoard.tsx`: `text-token-fg/60`;
+- `ProgressStrip.tsx`: `bg-token-accent/25`;
+- `PatientPage.tsx` and `HelperPage.tsx`: `border-current/40`.
+
+The fundamental fix is either:
+- defining the token colours in the Tailwind config with `<alpha-value>`,
+  which needs the tokens as RGB channels; or
+- a guard test like `clampClasses.test.ts` that fails the build on
+  `-(current|token…)/NN`.
+
+Offered, not done.
+
+```
+1584 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-28.2`
+
+**Patient card: the bed number no longer sits beside the name. The RM number
+is on the card, and tapping it copies it.**
+
+### Why
+
+- **Bed beside the name.** It was duplicated: the location line directly
+  underneath already ends in the bed (`… Kamar 417 Bed 4`). Two copies of the
+  same number, one line apart, on the line you scan to find a patient.
+- **RM.** It was reachable only by opening the patient or the peek window,
+  and each of those has its own "Salin RM" button. On the board the number
+  itself is now the control, so the board gains no button.
+
+### Change
+
+| Where | Before | Now |
+|---|---|---|
+| Full card, name | `Ny. X · 4` | `Ny. X` |
+| Full card, location row | location · DPJP · KJS | location · **`RM 123456`** · DPJP · KJS |
+| Folded card | `Ny. X · 4 · DPJP` | unchanged: it has no location line, so the bed is its only "where" |
+| Archive rows | `Ny. X · 4` | unchanged, for the same reason |
+
+- `cardTitle(patient, initialsOnly, withBed = true)`; the full card passes
+  `false`. `BoardCard` gains `name` (without the bed), `mrn` and `mrnHidden`.
+- **The chip:**
+  - A tap copies the digits only (no `RM ` prefix), the same as the patient
+    page, because the paste goes into a search box.
+  - It shows "Tersalin ✓" for 1.2 s.
+  - The tap prevents the card's link and stops `pointerdown` and
+    `contextmenu`, so it neither opens the patient nor starts long-press
+    selection.
+  - The hit area is 44 px, pulled into the text row with negative margins,
+    so the row stays one line tall.
+- **Initials-only mode:** the chip reads "Salin RM" and still copies, but the
+  digits are not printed. An RM identifies a patient as surely as a name, so
+  hiding the name while showing the RM would not be the privacy the mode
+  promises (SPEC 18).
+
+### Tested
+
+- `board.test.ts` +4: `withBed`, `name` vs `title`, RM trimmed or null,
+  `mrnHidden`.
+- Rendered in Chromium, dark theme: normal mode and initials-only mode.
+  Tapping the chip put `123456` on the clipboard, and the page stayed on
+  the board. No console errors.
+
+### Not done
+
+- The chip is not on the peek window or the preview sheet, which already
+  have their own "Salin RM".
+
+```
+1584 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-28.1`
+
+**Catatan rebuilt. The list and the note sit side by side on a laptop, and a
+note opens full screen on a phone, where back closes it. You can search, pin
+notes, and reorder them by touch. Checklists continue on Enter. Deleting goes
+to Sampah. Underneath, each note is now stored and saved separately, which
+removes a race that could revert text you had just typed.**
+
+### Root cause
+
+"Clunky" had three layers. Only the first was visible.
+
+1. **Layout.** The board and the editor were two separate screens, so every
+   switch was "← Semua" and then another card. The editor stacked three bars
+   above the text (shelf tabs; back/title/Arsipkan/Hapus; a wrapping
+   toolbar), which on a phone took about a third of the screen. There was no
+   search. Drag used the HTML drag API, which touch screens never fire, so a
+   phone could not reorder. New notes were called "Catatan 7".
+2. **Checklists.** A row was `<li><input type=checkbox>`. An `<input>` inside
+   a contenteditable is foreign to the browser's editing engine, which caused
+   three problems:
+   - Enter split the row and left the box behind, so the only way to build a
+     list was one toolbar press per row.
+   - The caret could land beside the box instead of in the text.
+   - Ticks needed native listeners (pattern 4).
+3. **Storage.** All notes were **one array** on the profile (pattern 5).
+   - Every keystroke rewrote every note.
+   - `pendingBodies` patched the body-save path, but rename, add and delete
+     built their arrays from the last render **without** it. Renaming a note,
+     or adding or deleting one, within about a second of typing could write
+     back the old body.
+   - "Hapus" was a hard delete, unconfirmed, next to "Arsipkan". That broke
+     the soft-delete rule.
+
+### Fix
+
+| Layer | Change |
+|---|---|
+| **Storage** | `notesById.<id>.<field>`, one `FieldPath` leaf per change, the same as `boardNotes` (`scratchNotes.repo.ts`). A rename, a body save and a reorder touch different fields, so none can overwrite another. `pendingBodies` and `updateScratchNotes` are **deleted**. |
+| **Migration** | Zero writes. The old `notes` array (and `scratchNote`) is read for any id the map lacks. A legacy note is copied into the map whole on its first change, and after that only leaf writes happen (`materialised`, so a rename right after a body save can't copy it a second time). The array is never written again. |
+| **Order** | `order` is a number. A move writes only the moved note, at the midpoint of its new neighbours. New notes go to the top. `pinned` puts a note above the rest. |
+| **Delete** | Soft: `deletedAt` moves the note to Sampah. From there, "Hapus permanen…" (confirmed) writes a tombstone `{purgedAt}`, not `deleteField`. Removing the map entry would let the note's legacy copy reappear. |
+| **Layout** | ≥1024 px: list pane and editor side by side, so switching is one click. Phone: the list, then the note full screen; `?n=<id>` is in the URL, so the Android back gesture closes the note instead of leaving Catatan. |
+| **Editor chrome** | Two rows. The header (back · title · pin · ⋯) scrolls away. The toolbar stays and scrolls sideways instead of wrapping. Arsipkan, Pindahkan rak, Salin sebagai teks and Sampah moved into ⋯. |
+| **Titles** | An empty title shows the first line of the note, in the row and as the placeholder. Enter in the title field moves into the note. |
+| **Finding** | Search covers both shelves and the archive (never Sampah); every word must match, in any order. Each row shows colour, title, two lines, ☑ progress (e.g. 2/4) and the last edit time. |
+| **Reorder** | A grip on each row, on pointer events with `touch-action: none`: finger, mouse or pen. The drop line shows before the drop. Arrow keys on a focused grip move the note one step. |
+| **Checklists** | A row is `li[data-checked]` and the box is drawn with CSS (`.note-editor` in `index.css`). `checklistDom.ts` handles the rest: Enter continues the list; Enter on an empty row ends it; Backspace at the start of a row turns it into a plain line; the ☐ button toggles the current line (and turns a bullet list into a checklist); Ctrl/Cmd+Enter ticks. Ticking fires on pointerdown in the box, so a tap on a phone does not raise the keyboard. Ticked rows are struck through. Old `<input>` rows are converted when opened, keeping their ticks, and saved on the next edit. |
+| **Paste** | Plain text only. A rich paste brought fonts, tables and stray `<li>` / `<input>` elements into rows. |
+
+Kartu/Daftar is replaced by one list. Its rows carry what the cards did
+(colour, title, first lines) plus progress and edit time, in less height.
+
+### Tested
+
+- `scratchNotes.test.ts` (29): migration, malformed entries, tombstones,
+  views, search, titles, progress, ordering.
+- `checklistDom.test.ts` (19): run on a **real DOM** (jsdom, added as a dev
+  dependency). This is the first time Catatan editing is under test; it
+  broke twice before with no test to catch it.
+- Driven in Chromium through a throwaway harness (real page, in-memory
+  profile) at 1280 px and at 390 px with touch:
+  - an old checklist converted with its ticks kept;
+  - tick → saved; Enter → new row; Enter twice → out of the list;
+  - ☐ on a plain line; search; grip drag; new note focused with its first
+    line as title;
+  - Sampah → purge with no resurfacing;
+  - phone open → `?n=`, back → list;
+  - dark theme;
+  - zero console errors.
+
+### Wrong turns (caught before shipping)
+
+- **Purge by `deleteField`** would have brought a legacy note straight back
+  from the old array. It is now a tombstone.
+- **Whole-note copy on every legacy write.** Two quick writes (body, then
+  title) each carried a full copy, and the second would have reverted the
+  first. That is the exact race this release removes, reintroduced in the
+  migration path. A note is now copied once, then written leaf by leaf.
+- The row colour used the pastel `-bg` token, which is invisible at 4 px. It
+  now uses `-accent`.
+
+### Not done
+
+- **Update every device.** A device still on the old version keeps
+  writing the old array. Its edits to a note that has already moved to the
+  map won't show on updated devices. Reload each device once (update banner).
+- **Undo (Ctrl+Z) does not cover** checklist Enter/Backspace/ticks. They
+  change the DOM directly, outside the browser's undo stack. Typing and
+  toolbar formatting still undo as before.
+- Ticked rows stay where they are; there's no "move ticked to the bottom".
+- Reordering works within a group (Disematkan / Lainnya), not across it. Pin
+  or unpin to change group.
+- `updateProfileNote` (the pre-tabs single-note writer) was already unused
+  and has been left alone.
+
+```
+1580 tests passed (+32: +48 new, −16 removed with NoteCards/pendingBodies)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-27.4`
+
+**A resident picked for a tukar jaga whose name fits two Jarkom rows can now be
+resolved right there. A swap updates when its person is corrected.**
+
+### Root cause
+
+Mine, from `2026-09-27.3`. The "which Jarkom row?" question was attached to the
+ROSTERED person on each post (`post.initials`), and hidden on swapped posts.
+Yusuf's case was a swap: he was picked into CVCU. So:
+
+- **The tukar jaga picker had no answer to give.** His legend name
+  (`Ahmad Rizki Yusuf`) is now correctly treated as undecidable, so it
+  offered him with no nickname: "Ahmad Rizki Yusuf YS".
+- **The row that would ask the question was not shown** on a swapped post.
+- **A swap stored the nickname and agama as they were at pick time.** Even a
+  correct link made afterwards would not have reached a night he had already
+  been swapped onto.
+
+The fix in 27.3 answered the question for the posts it looked at, not for the
+person, who can appear either way.
+
+### Fix
+
+1. **The picker asks.** A resident whose legend name fits several rows is
+   listed once per row: nickname, the Jarkom full name, and "Jadwal: <legend
+   name> — pilih yang benar". Picking one links the initials to that row
+   (for every shift and device) and swaps them in with the right nickname and
+   agama.
+2. **Swapped posts get the same question** as rostered ones, about the person
+   swapped IN (`personInitials`), not the one printed in the roster.
+3. **Swaps are re-read against the directory** (`refreshSwap`). A swap picked
+   from the list (it has initials) takes the directory's current nickname and
+   agama. A swap typed as free text is left exactly as typed. Correcting a
+   person once corrects every night they were swapped onto.
+
+`Resident` now carries `linked` and `ambiguous`.
+
+### Wrong turn
+
+Ran `prettier --write` on `HelperPage.tsx` mid-edit. It reformatted about 500
+unrelated lines. Reverted and the edit reapplied, so the diff holds only this
+change.
+
+### Not done
+
+- **The link still takes one tap.** Type "Yusuf" (or "Ahmad") in the CVCU
+  field and pick **Yusuf — dr. Ahmad Rifqi Yusuf**. After that he is fixed
+  everywhere.
+
+```
+1548 tests passed (+3)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-27.3`
+
+**Konfirmasi Jaga: a roster name that fits two Jarkom rows is no longer
+settled by row order. You pick the row, and the pick brings the right
+nickname and agama. The tukar jaga label is now a clearly visible header.**
+
+### Root cause
+
+The roster legend spells one resident `dr. Ahmad Rizki Yusuf`; the Jarkom
+sheet has `dr. Ahmad Rifqi Yusuf` (nickname Yusuf). "Rizki" and "Rifqi" are
+two letters apart, past the one-typo tolerance, so the legend name shared
+exactly two words with each of two rows:
+
+| Jarkom row | Words shared | Score |
+|---|---|---|
+| dr. Ahmad Rizki Imran (Rizki) | ahmad, rizki | 2/3 |
+| dr. Ahmad Rifqi Yusuf (Yusuf) | ahmad, yusuf | 2/3 |
+
+`matchJarkom` kept the first best score it met (`score > best.score`), so
+**row order decided who this person was**. Rizki Imran is row 36 and Rifqi
+Yusuf row 50. The wrong nickname was printed and nothing on screen said a
+choice had been made. The name override by initials could not repair it
+either: it changes the displayed nickname only, not the agama or the full
+name.
+
+**Two people who fit equally is a question, not a match.**
+
+### Fix
+
+1. **Ties are reported, not broken by order.** `resolveJarkom` ranks by the
+   share of words in common, then by how rare those words are across the
+   sheet. `ahmad` appears on 4 rows and says little; `yusuf` is on one. When
+   both measures tie, it returns no match plus the tied rows. Here it
+   genuinely ties (rizki and yusuf are each unique), so it asks rather than
+   guesses.
+2. **The question is asked where the name is shown.** The row shows a
+   warning box: "“dr. Ahmad Rizki Yusuf” cocok dengan 2 orang di Jarkom. Yang
+   mana …?", with one button per candidate, name and nickname.
+3. **The answer is a link, not a label.** `setJarkomLink(initials, row)` is
+   stored as a new synced state field (`links`). A linked person takes the
+   row's **full name, nickname and agama**, so the greeting is corrected with
+   the name. It applies in the Formasi, the confirmation messages, and the
+   tukar jaga picker.
+   - The link stores the row's name, so a re-imported sheet in another order
+     still finds it.
+   - A link to a row a newer sheet no longer has is ignored, and matching
+     takes over.
+4. **"Salah orang?"** under every matched name opens a picker over the whole
+   sheet, for a match that is confidently wrong rather than ambiguous.
+   "Kembalikan ke pencocokan otomatis" removes a link.
+
+**No rules change needed:** `links` is one more map in the existing
+`users/{uid}/jaga/state` document.
+
+### Tukar jaga label
+
+**Before:** a 10 px grey chip in the top corner of the message box, sitting on
+the text.
+
+**Now:**
+
+- a header strip in the warning colour: **⇄ Tukar jaga · menggantikan
+  <rostered name>**;
+- the message box border in the same colour, so a swapped message stands out
+  when scanning down the list;
+- the small grey full-name line is hidden on swaps, because it showed the
+  rostered person under the swapped-in name.
+
+### Not done
+
+- **Not applied to your data yet.** The fix for this resident happens when
+  you tap "dr. Ahmad Rifqi Yusuf (Yusuf)" once on a shift they are on. After
+  that it syncs to your other devices.
+- **Tests use invented names** with the same shape as this case, not the
+  real ones. Colleague names stay out of the public repo.
+
+```
+1545 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-27.2`
+
+**Pengampu defaults now carry full names and titles, exactly as in Avi's sent
+PAKAR confirmations.**
+
+### Root cause
+
+Mine. The previous release seeded the weekly pengampu from a condensed
+restatement of Avi's request, carried over when the session was compacted,
+instead of from the messages he had pasted. That restatement had cut each name
+down to a surname, e.g. "Alkatiri" for "Dr. dr. Abdul Hakim Alkatiri, Sp.JP(K)",
+and the seed repeated it.
+
+**Reference data typed from memory is a copy of a copy.** The fix is in two
+parts:
+
+1. The defaults are now copied verbatim from the sent confirmations, and the
+   tests check the parser's output from those same messages against them.
+2. Pengaturan MR gains **"Ambil jadwal dari pesan PAKAR yang pernah
+   dikirim"**. Paste one or several sent confirmations, and each weekday block
+   found replaces that weekday's list. The schedule then comes from the
+   messages themselves and never has to be retyped when a pengampu changes.
+
+The line parser finds the status by its words ("menunggu", "konfirmasi",
+"berhalangan", "hadir"), not by the last parentheses. It has to, because the
+samples contain:
+
+- titles with brackets of their own (`Sp.JP(K)`, `Sp.JP (K)`);
+- a status glued on with no space (`Sp.JP(K)(menunggu …)`);
+- a status missing its opening bracket (`Sp.JP(K)  konfirmasi … WITA)`);
+- WhatsApp's invisible U+2060 around `•` bullets.
+
+### Already-saved data
+
+- **A weekday list or status list identical to the old seed** counts as
+  "never edited" and picks up the corrected defaults. Anything else stored is
+  treated as a hand edit and kept.
+- **A date saved in that window** has its surname-only names shown in full,
+  with statuses unchanged. Only exact matches are converted.
+
+The status presets now follow the samples: `Konfirmasi kehadiran pukul 07:00
+WITA`, `… 07:30 WITA`, `Konfirmasi berhalangan hadir`.
+
+### Not done
+
+- Pasting a sent confirmation sets the weekly schedule only. It does not set
+  statuses for a date: a status belongs to the day it was sent for.
+
+```
+1539 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-27.1`
+
+**Helper is split into tabs, and has a new one: Morning Report.**
+
+### Helper tabs
+
+Konfirmasi Jaga, Verifikasi Sensus and Morning Report are now one tab each
+instead of one long page. The tab is in the URL (`/helper?tab=mr`), so reload
+and the back button return to it. Only the open tab is mounted, so the jaga
+sync listener still runs only while Konfirmasi Jaga is open, as before. The
+Work-in-progress badge moved to the Helper title and covers all three.
+
+### Morning Report confirmator (new, WIP)
+
+One working state per MR date, three messages from it:
+
+| Message | Built from |
+|---|---|
+| Request to the senior | your name + MR date + the chosen jaga |
+| Laporan Grup Prodi | every covered jaga's pasted list, pengampu with status, Zoom block |
+| Konfirmasi Grup PAKAR | pengampu with status |
+
+- **Covered jaga:** Monday's MR covers Jumat, Sabtu Pagi/Malam, Minggu
+  Pagi/Malam. Any other day covers the day before. "Jaga mulai dari" moves the
+  start earlier by hand (holidays). No holiday calendar is guessed.
+- **Patient lists are pasted as the senior sent them.** The parser accepts bold
+  or plain, `-` or `•`, "Diagnosis:"/"Diagnosa", and renumbers per jaga.
+  Numbered diagnoses stay diagnoses unless the line reads like a patient
+  (Tn./Ny./RM/several ` / `). A line before the first patient is kept and
+  flagged, never dropped. An empty jaga prints `(Tidak ada pasien)`.
+- **Pengampu:** the weekday's scheduled list (Avi's five lists as the default),
+  each starting "menunggu konfirmasi kehadiran". The status is picked from the
+  account's presets or typed freely. Editing a date's list makes it that date's
+  own; "Kembalikan ke jadwal" goes back to the weekday's.
+- **Settings (Pengaturan MR):** your name, the Zoom block, the status presets,
+  and the weekly pengampu per weekday.
+
+**The Zoom meeting ID, passcode and host key are NOT in the repo.** The repo is
+public. They are pasted once into Pengaturan MR and stored on your profile,
+which only you can read.
+
+**Storage and sync.** Settings are on the profile (`morningReport`); drafts are
+under `mrDays.<date>` and pruned after 21 days. The profile was chosen because
+it is already subscribed on every device and its rules already allow the owner
+to write any field: **no rules deploy is needed.** Every write names one leaf
+(one jaga's list, one date's pengampu), so the phone and the PC editing
+different parts cannot overwrite each other.
+
+Typing is kept local and written after a pause (`useSyncedDraft`). A value from
+another device is adopted only when it actually changed and nothing typed here
+is waiting to be sent. That way the echo of your own write cannot roll the field
+back mid-sentence. The decision is a pure function with four tests.
+
+### Wrong turn
+
+The first render gave every pengampu four status chips plus a text field, about
+250 px per person. That was replaced by one select with a "Ketik sendiri…"
+option before shipping.
+
+### Not done
+
+- **Same-date pengampu edits on two devices at once:** the date's list is one
+  array, so the last write wins for that list. Patient lists are per jaga and
+  do not have this problem.
+- **Titles:** the default pengampu were seeded as surnames only. That was
+  wrong; see `2026-09-27.2`.
+- **Formatting guesses, to confirm against a real send:**
+  - the divider (30 `-`);
+  - the blank line between patients;
+  - a divider before "Pimpinan Morning Report terjadwal".
+- **Rendered in isolation only** (phone and desktop width, with a mocked
+  profile), not signed in against Firestore.
+
+```
+1535 tests passed (+20)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-24.2`
+
+**A card resized while its note was open no longer springs back.**
+
+### Root cause
+
+Mine, from the previous release. A card whose note is open is shown at full
+height so the note can be read, and dragging the height grip there was made an
+explicit override — but the record of that override was held in React state,
+in the canvas component.
+
+So the height was written to storage correctly and then ignored on the next
+mount: switching tabs unmounts the canvas, the in-memory set came back empty,
+the card was uncapped again, and it sprang back to full height. The height was
+never lost; it was overruled every time the board was rebuilt.
+
+**A decision the user made by hand is not session state.** The override now
+lives in the layout, beside the height it applies to (`hMaxWithNote`), and is
+stored with it.
+
+- Dropped on read when there is no cap, so a stray flag cannot claim a height
+  nobody set.
+- Ignored unless exactly `true`, like every other field read from storage.
+- Cleared by the double-click that removes the cap, which is the one act that
+  says "no height".
+- Layouts written before the flag existed are untouched.
+
+Five tests, including the report itself: set a height with the note open, read
+it back, and it is still there. With the flag dropped from storage — the old
+behaviour — that one fails.
+
+### Not done
+
+- **Positions and sizes are still per device**, as they have always been.
+- **Not rendered here.** Worth checking: resize a card with its note open,
+  switch to another tab and back, and confirm it keeps the height you gave it.
+
+```
+1515 tests passed (+5)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-24.1`
+
+**Catatan checklist ticks save again, the height grip is back on cards with an
+open note, stickers stick to cards, and consult replies are read properly.**
+
+### 1. Catatan checklist ticks were not saved
+
+**Root cause.** The native listener that saves a tick was bound in
+`useEffect(…, [])`, which runs once, when the PAGE mounts. Since the Catatan
+board, the editor only exists after a card is opened, so at mount the editor
+ref was null, the effect returned early, and the listener was never attached.
+Ticks changed on screen and were never written.
+
+This is the blank-note bug of `2026-09-22.1` again, in the same component: a
+DOM effect tied to the page's lifetime instead of the node's. That fix moved
+the text write into a callback ref and left this listener, a few lines above
+it, behind. The listener now lives in the same callback ref, attached when the
+editor attaches and removed when it detaches. The rest of the file was audited
+for the same shape: the one other `[]` effect listens on `document` and reads
+the node only when an event fires, which is safe.
+
+### 2. The height grip "sometimes" missing
+
+My doing, in `2026-09-21.2`: the grip was hidden whenever a card's note was
+open, on the reasoning that a cap would not apply until the note closed. That
+hid it on exactly the cards being worked on.
+
+The canvas now distinguishes WHY a card is uncapped:
+
+- **folded** — no height grip (one line has no height to cap; the grip there was
+  the dark bar under folded cards);
+- **note open** — the grip is shown. Dragging it is an explicit choice of
+  height, so from then on the card honours it even with the note open,
+  starting from the height it is showing — not the cap stored before the note
+  opened, which would make the card jump the instant the drag began.
+
+The zero-warnings lint rule caught the new state missing from the gesture's
+dependencies; a stale copy would have let a second drag re-take a card already
+taken over.
+
+### 3. Stickers stick to cards
+
+Drop a sticker ON a card and it is stuck there: drawn inside the card's own
+box, at an offset from its corner, so it moves with the card — including while
+the card is being dragged — with no position kept in step by hand. Drop it on
+empty canvas and it is free, as before.
+
+- **A card that leaves the board takes its stickers with it** (filtered out,
+  discharged, the other scope). Drawing them where the card used to be would
+  be a mark on whichever patient is there now — the bug this whole area has
+  been about.
+- Sticker state moved to one owner (`useBoardStickers`) read by two places:
+  the canvas draws free stickers, each card draws its own. One list, not two
+  copies that could disagree.
+- Drags run on window listeners instead of pointer capture: a sticker pulled
+  off a card is re-drawn on the canvas mid-gesture, a different element, and
+  capture on the old one would have ended with it.
+- The card under the pointer is found with `elementsFromPoint` on the drop,
+  which sees through the sticker to the topmost card beneath it.
+- A stored attachment that cannot be read falls back to FREE at its last
+  position rather than dropping the sticker.
+
+### 4. Consult replies
+
+**What was wrong, measured on the two notes you sent.** The parser recognised
+S and O, and each TS block as its own section. The cardiology conclusion —
+"Saat ini evaluasi Kardiologi … pasien kami assess dengan …" — was not
+recognised at all. It is one bolded sentence of ~200 characters, and a fully
+bolded line counts as a heading only up to 72 characters (a deliberate guard:
+a bolded sentence is not a label). So it was swallowed into the last
+investigation above it: no A in the jump bar, and the card preview, finding no
+assessment, fell back to S, O and every investigation.
+
+**The fix.**
+
+- The conclusion is recognised by its **opening formula**, not by relaxing the
+  length rule, which would start turning any bolded sentence into a section.
+  It becomes section A, as a heading that owns its line, so tinting, copy and
+  carry-forward treat it like any other; `carriesContent` tells the one reader
+  that needs the words — the preview — that the line IS the content.
+- **Card preview**: the question, then the answer —
+  `Konsul: kelayakan bronkoskopi dengan general anestesi` /
+  `Low Risk (Lee RCRI) 0.9% … MACE …`. The method statement that opens every
+  conclusion ("berdasarkan anamnesis, pemeriksaan fisik, EKG …") is skipped;
+  the finding after "pasien kami assess dengan" or "pasien termasuk (kategori)"
+  is kept. With neither phrase, the whole sentence is shown rather than a
+  guess.
+- **Jump bar**: `Identitas · S · O · A · TS Bedah Dige… · TS EMD` — each TS block
+  in note order. Their `A/`, `P/`, `I/` stay inside the block and are never read
+  as this note's own A or P, as `classifyProseHeader` has always required.
+
+**Checked against the whole export**: 237 notes, none loses a character, and the
+new rule touches exactly one — the one existing consult reply.
+
+The two notes are kept as test fixtures with the patients' names, dates of
+birth and RM numbers replaced; every heading and marker line is untouched.
+
+### Not done, and why
+
+- **Built on two samples and one old note.** Rules this narrow will miss a
+  variation — a conclusion opening "Evaluasi kardiologi saat ini …", or a TS
+  block written `*TS: Pulmo*`. Each such case falls back to today's behaviour
+  rather than misreading, but it will not be recognised until seen.
+- **The Catatan and grip fixes have no automated test.** Both live in
+  components, and this suite renders none. The Catatan fix is the same pattern
+  as the blank-note fix, now applied to both effects in that file.
+- **Not rendered here.** Worth checking: tick a checkbox in a Catatan note and
+  reload; drag a sticker onto a card and move the card; open a consult reply's
+  card on the board.
+
+```
+1510 tests passed (+17)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-23.3`
+
+**Stickers no longer bleed between Pasien saya and Titipan.**
+
+### Root cause
+
+The board has two scopes over one canvas — Pasien saya and Titipan — showing
+different cards at the same (x, y) positions. Stickers were stored once,
+globally, so a flag placed beside a patient in one scope was drawn at the same
+spot in the other, next to whatever card happened to be there. A mark meant
+for one patient landed on a different one.
+
+Card positions never had this problem, because they are keyed by patient id
+and ids do not collide across scopes. A sticker has no such key — it belongs
+to a position, not a patient — so the scope has to be part of where it is
+stored.
+
+### The fix
+
+Stickers are now stored per scope. Switching between Pasien saya and Titipan
+shows that scope's own stickers; a drag in progress when you switch belongs to
+the scope you left, not the one now on screen.
+
+**Existing stickers are migrated once, into Pasien saya.** Before this release
+every scope read one shared key, so whatever was there was placed while
+looking at some scope — most often Pasien saya, the default view. Moving it
+there keeps it findable; leaving it in the old key would have made it quietly
+stop appearing the moment this shipped. Titipan starts empty, since the old
+key was never particularly its.
+
+The decision of which key to read (`stickerMigrationPlan`) is a pure function,
+tested on its own: migrate only for Pasien saya, only when it has never had its
+own key yet, and only when the old key actually has something in it.
+
+### Not done, and why
+
+- **Not rendered here.** Worth checking: place a sticker while on Pasien saya,
+  switch to Titipan, and confirm it is not there; switch back and confirm it
+  is.
+
+```
+1493 tests passed (+5)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-23.2`
+
+**Stickers that look like stickers, a bigger labelled set, and imported
+checklist steps set apart from your own.**
+
+### 1. Die-cut stickers
+
+The white disc from `2026-09-22.4` solved the right problem — a bare emoji
+vanished into a card of the same colour — the wrong way: a circle reads as a
+button or a badge, not as something stuck on.
+
+Each sticker is now **die-cut**, like a vinyl sticker: a white border that
+follows the emoji's own outline, and a soft shadow under the whole thing. Four
+offset, unblurred copies of the glyph in white make the border; one dark
+shadow lifts it off the card. It still separates from every card colour in
+either theme — white against the card, shadow beneath — but it keeps the shape
+of the thing.
+
+Each has a slight tilt (−8° to 8°) derived from its id, so it is slapped on
+rather than aligned, and keeps the same angle every time the board draws.
+
+### 2. More stickers, with names
+
+33 stickers in five groups: Status (🚩 ✅ ❌ ⭐ ⚠️ ❗ ❓), Menunggu (🕒 ⏳ 📞 🔔 📝),
+Klinis (🩸 🧪 💉 💊 🩺 🫀 🫁 🧠 🍽️), Disposisi (🚗 pulang, 🏠 🚑 🏥 ✂️ 🛏️) and six
+colour dots.
+
+**Every sticker has a label** — the tooltip in the picker and on the board, and
+what a screen reader says. "🚗" alone does not say *pulang*, and a marker is only
+useful if its meaning is shared.
+
+### 3. Imported checklist steps in their own band
+
+Steps added with **Ambil dari checklist harian** now sit in a block ruled above
+and below with a dashed line, headed **Dari checklist: <nama checklist>**, after
+your own items. One block per checklist if you imported from more than one.
+
+A template's steps and your own reminders are different kinds of thing — one is
+the ward's routine, the other is what only you know this patient needs — and in
+one run they read as a single list someone wrote.
+
+**How an item is known to be imported.** New imports record their source
+(`fromChecklist`, the checklist's title). Items imported before this release
+have no source, so an item whose label matches a step in one of your checklists
+is treated as imported. The import only ever adds such labels, so a match almost
+always is one; the one misread is an item typed by hand with exactly a step's
+wording, and the cost is only which block it is drawn in.
+
+Ticking, the ⟳ toggle and delete are unchanged, and the rows are the same
+component in both groups.
+
+### Not done
+
+- **The sidebar's minimised Custom Checklist preview is not grouped.** It is a
+  four-line glance; bands in four lines would be mostly rule.
+- **Not rendered here.** Worth checking: import a checklist into a patient who
+  already has your own items, and put a 🚗 on a green card.
+
+```
+1488 tests passed (+7)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-23.1`
+
+**The census verifier's Stages 4–8, ported from Avi's `verifier.ts`, with the
+confirmation loop the spec asks for.**
+
+(This release also carries `2026-09-22.4`, which was not yet pushed.)
+
+### What was ported
+
+`domain/census/verifier.ts` is Avi's file: the pipeline (flatten → match →
+checks → diff → report → markdown), every rule, every severity and every
+message, as written. Each change is marked `PORT:` at the line where it
+happens. None re-interprets a rule; each is a fix or a spec item the original
+did not implement.
+
+The re-uploaded `extraction.ts` was compared against last release's port:
+schemas and prompt are identical, so the extraction layer is unchanged.
+
+### It did not compile
+
+In C3 the comparison object read `header /* alias */ as any: undefined` — not
+valid TypeScript. The whole file failed at that line.
+
+### Five bugs, each with a test that fails without the fix
+
+Confirmed by reverting the fixes and watching six tests fail, then restoring
+them.
+
+1. **Issue ids collided.** An id was `ruleId + patient keys`, and C3, C9 and
+   C10b have no patients — so every DPJP's count mismatch was `C3:`, every
+   chief `C9:`, every category `C10b:`. Stage 6 diffs by id, so fixing one
+   DPJP reported a DIFFERENT one as resolved, and two open issues collapsed
+   into one. Ids now carry what the issue is about (the DPJP code, chief,
+   category or RM).
+2. **O5 had the same collision** (`O5:` for every vanished patient), and its
+   message said "with no LEPAS RAWAT / Pindah CVCU / Operkan ke Tmn Lain
+   notation found" although it never looked. It now names the patient (from
+   the saved history — the original's own comment asked for this) and says
+   only what it knows.
+3. **One missing RM made two patients.** A name-only record was keyed apart
+   from its RM-keyed twin, so a patient whose RM was left off in the LIST
+   became an O3 orphan AND an O4 stale entry — two high-severity findings for
+   one missing number. Name-only records now fold into the RM match with the
+   same normalised name, and only when exactly one exists: two RMs sharing a
+   name are two people.
+4. **C3 checked only configured DPJPs.** A doctor new to the ward — exactly the
+   one nobody has checked yet — was skipped silently. It now checks every code
+   that appears.
+5. **C9's message described something it did not do** ("if unconfirmed name
+   variants are folded in"). Only confirmed aliases are folded; the message now
+   says so.
+
+### Spec items the original did not implement
+
+- **Transposition detector (§3.4).** Two DPJPs each off by one in opposite
+  directions: the total still matches, so C1 and C2 pass and C3 would report two
+  unrelated mismatches. They are replaced by one issue: "Counts swapped between
+  X and Y".
+- **F5 (§3.5).** A dual DPJP code (`AHA-NP`) in the room grid, cosmetic when the
+  other views agree. The original normalised it away and never reported it.
+- **F6 (§3.5).** Same RM, different spelling of the name. Cosmetic.
+- **The confirmation loop (§6, §7.6)** and O5's "carry it forward until the user
+  confirms" (`domain/census/history.ts`).
+
+### The confirmation loop
+
+Kept on this device between runs: the last run's open issues (the baseline
+for resolved / persisting / new), the RMs on the ward with their names, and
+your answers.
+
+- 🟡 items carry three buttons: *Sudah pulang / pindah*, *Memang disengaja*,
+  *Salah ketik, sudah diperbaiki*. An answer closes the item on this run and
+  later ones.
+- **Answers close ONLY 🟡 items.** If "intentional" could close a count
+  mismatch, the next shift's genuinely wrong count — same rule, same DPJP,
+  same id — would be hidden by yesterday's answer.
+- A vanished patient stays "on the ward" for O5 until confirmed gone, run after
+  run.
+- **Cleared on sign-out.** It holds names and RMs of the whole ward, and the
+  next person on a shared PC must not inherit them.
+
+### The screen
+
+Following spec §7: pre-flight problems in red first; the verdict (CLEAN /
+NOT CLEAN — n / PARTIAL) with date and patient count; resolved since last run;
+issues grouped 🔴 → 🟠 → 🟡 → cosmetic, each with its view-by-view values as a
+table; answered items; **Salin laporan** copies the original's markdown report.
+The provisional checks from `2026-09-22.4` are deleted, not kept beside the
+real verifier.
+
+### Not done, and why
+
+- **C4's "numbering typos" and the other cosmetic line checks** (`11.`, `3Plan:`)
+  are not implemented: the spec lists them as cosmetic, the original has no rule,
+  and they need the raw line grammar rather than the transcription.
+- **The cascade detector is the original's**: C6 gains a note when C5 or C7 also
+  fired. It does not merge them into one issue as the spec describes.
+- **Chief aliases stay empty** (`confirmedChiefAliases: {}`), as in the original,
+  until you confirm Gaby → Gabi. There is no screen to edit the config yet; it is
+  `DEFAULT_CONFIG` in code.
+- **History is per device**, like the canvas layout. Running on the phone and
+  then the PC gives two separate baselines.
+- **Not run against real PDFs.** 28 tests (19 verifier, 9 history) cover the
+  rules on synthetic shifts — net +23, since the provisional checker's 5 were
+  deleted with it. A real DENAH will find what they do not.
+
+```
+1481 tests passed (+23)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-22.4`
+
+**Ward census verification in Helper (WIP), markers that stand out, and
+images in board notes.**
+
+### 1. Verifikasi sensus bangsal — WIP
+
+Your `extraction.ts` (Stages 0–3), ported into the browser.
+
+**What was ported unchanged:** the roster, the patient-line sub-schema, both
+tool schemas and the whole system prompt, word for word
+(`domain/census/schemas.ts`). They are the specification of what the model is
+asked to do, and paraphrasing a spec while porting it is how two copies of one
+instruction come to disagree. Also unchanged: the model, 16 000 tokens,
+`temperature: 0`, the forced tool call, one retry on a failed self-check, and
+returning the data WITH `_extractionWarnings` on the last attempt rather than
+discarding it.
+
+**What had to change:** the original is Node (`@anthropic-ai/sdk`,
+`readFileSync`, a key in the server environment). Plano is a browser app, so
+the call goes through `lib/ai` with the user's own key, like every other AI
+feature, and the PDF comes from a file input, base64-encoded in chunks (a
+single `fromCharCode(...bytes)` on a multi-megabyte PDF exceeds the argument
+limit and throws).
+
+**One behaviour change in `selfCheckProblems`, found by a test:** the original
+pushed "Expected DENAH, got LIST_PASIEN" and carried on counting `roomGrid`.
+With the wrong document's shape those arrays are missing and the count throws —
+so dropping the LIST into the DENAH slot produced an exception instead of the
+one message that says what to do. It now stops at the type mismatch.
+
+**Its own AI switch**, off by default and off for every flag set saved before it
+existed: it is the one feature that sends WHOLE documents — every patient's
+name, RM and date of birth on the ward — rather than one note someone is
+looking at, and that is a different decision from the others.
+
+**What the checks cover so far** (`censusFindings`): a printed count against
+the lines under it in the LIST (section headings and the header's per-DPJP
+lines), and a patient — matched by RM digits, leading zeros kept — present in
+one document and not the other. Nothing else yet, on purpose: chief-name
+matching, holder lists and dispositions need the Stage 4–8 spec, and guessing
+that "Gaby" is "Gabi" is exactly the correction the prompt forbids the model
+from making. The verifier must not make it either.
+
+**Nothing is stored** — not the PDFs, the transcriptions or the findings. The
+raw JSON is viewable, collapsed, for checking the transcription itself.
+
+### 2. Markers stand out
+
+A bare emoji on a coloured card is an emoji on a coloured background, and the
+cards come in twelve colours — a flag on the red card simply disappeared. Each
+marker now sits on a white disc with a dark ring and a real shadow, which
+separates from every card colour in both themes; no single tint could.
+
+### 3. Images in board notes
+
+Drag an image onto a note, or paste one while typing in it. Each image has
+**Salin**, which puts the image itself on the clipboard (PNG, the one type
+every browser's clipboard accepts), so it pastes into WhatsApp as a picture.
+Right-click → copy works too; the button is for the phone.
+
+**Where the images live, and why.** Firebase Storage is not enabled, and the
+profile document was not an option: it holds settings and every Catatan note
+under Firestore's 1 MiB cap, and a few photos there would push it over and break
+every save to it. So each image is **its own document**
+(`users/{uid}/boardImages/{id}`), the note holds only the ids, and the profile
+is untouched.
+
+Each image is re-encoded to fit: longest side 1400px, JPEG at stepped quality
+until it is under 700 000 characters. JPEG because it is the only browser
+encoding whose size trades for quality — a lab screenshot shrunk to fit is one
+that can no longer be read. Transparent PNGs get a white background first,
+since JPEG would turn them black.
+
+The **rules** accept an image only under 900 000 characters with an
+`image/jpeg` or `image/png` type, and never allow it to be updated or deleted.
+The type is checked on a small field rather than by a regex over the image: a
+pattern run across ~900 KB is a rule-engine limit waiting to be found in
+production. Removing an image from a note only drops its id; the document stays
+(no client hard-deletes). The image is written BEFORE its id is attached, so a
+failure leaves an unused document, never a broken tile.
+
+**Bounds follow the content.** The note used to report 96–640px whatever was in
+it — fine for text, which scrolls, wrong for an image, which does not, and
+would have been clipped under a small cap.
+
+### 4. A note no longer looks like a patient
+
+Paper, not a card: near-square corners, a strip of tape across the top, a
+folded bottom-right corner, a stronger tilt and shadow, 📌 beside the label, and
+no header band. On a board of patient cards, the one thing a note must never be
+is mistaken for a patient.
+
+### Deploy
+
+**`firestore.rules` changed** (the image documents). Wait for
+`firestore-deploy` to go green; until then image uploads are refused and the
+note says so.
+
+### Not done, and why
+
+- **Stages 4–8 of the verifier.** Only the checks that follow from the schema
+  itself are in. The rest needs the spec.
+- **The roster is still the constant from your file.** Deriving it from the
+  Jarkom import is the obvious next step, and it should be a decision rather
+  than a quiet substitution.
+- **`claude-sonnet-5`** as in your file, including its own advice to test Haiku
+  against real shifts before switching. Not tested against real PDFs here.
+- **Image documents are never cleaned up.** A detached image stays, per the
+  no-hard-delete rule, and costs its own storage.
+- **Not rendered here.** Worth checking: drop a screenshot on a note and paste
+  it into WhatsApp with Salin; run the verifier on one real shift.
+
+```
+1458 tests passed (+26)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-22.3`
+
+**Penanda moved out of the way.**
+
+The button was pinned to the top-right corner of the canvas — which is where a
+card sits. It floated over that card and covered it, and a control that hides
+the thing it is meant to mark is worse than no control.
+
+It now sits in the board toolbar beside Rapikan and Urungkan, through the same
+portal slot they use. The palette hangs below the toolbar while it is open and
+closes as soon as a marker is picked, so it covers a card only while it is
+being used.
+
+Nothing else changed: markers still land on the board, drag the same way, and
+are still per device.
+
+### Not done
+
+- **A new marker still lands at the top left of the board**, which is on top of
+  whatever card is there — by design, since a marker is meant to sit on the
+  cards, and dragging it is the next thing you do. If it should land somewhere
+  emptier, that is a placement rule worth deciding rather than guessing.
+
+```
+1443 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-22.2`
+
+**Compare two versions of a day's SOAP, and emoji markers on the canvas.**
+
+### 1. Comparing two versions
+
+Expanding a version in Riwayat perubahan already diffs it against the note as
+it is NOW, which answers "what has changed since then". It could not answer
+"what changed between the morning SOAP and the one after the chief's round" —
+two points in the past, which is what a trail of thirty snapshots is for.
+
+Each row now carries a **Banding** button. Pick two and the comparison appears
+above the list, marked `1` and `2` on the rows it came from.
+
+- **Ordered by `rev`, not by tap order.** A diff reads "what became what";
+  picking the newer one first would print every addition as a removal.
+- **Held by id, not by body.** A version can be deleted while the sheet is
+  open, and a stored body would then be compared against something no longer
+  in the list.
+- **A third pick replaces the oldest** rather than being refused: refusing
+  makes you work out which one to clear before you can do what you are already
+  doing.
+- The comparison sits above the list, not inside one of the two rows — it
+  belongs to both.
+- Picking is its own button. Tapping a row still expands it; a row that
+  sometimes expanded and sometimes queued a comparison would be neither.
+
+### 2. Penanda — emoji markers on the canvas
+
+A **Penanda** button on the canvas opens twelve marks (🚩 ✅ ❌ ⭐ ⚠️ ❗ 🕒 📞
+🩸 💉 🫀 👀). Pick one and it lands on the board; drag it next to the card it
+is about.
+
+- **They sit above the cards and take no part in the layout.** Their whole
+  meaning is which card they are beside, so nothing reflows around them and
+  nothing is pushed by them.
+- **Per device, like the canvas layout itself.** A marker means something by
+  WHERE it is, and where a card sits is already per device. Syncing markers
+  while the cards stayed local would put a flag beside a different patient on
+  the phone — worse than not syncing at all.
+- **Coordinates are the canvas's own** (`x` a fraction of the width, `y` in
+  pixels), so resizing the window keeps the marker beside the same card, which
+  is the entire point of it.
+- Dragged with pointer events, like the cards: the gesture survives the
+  pointer leaving the marker, and it works with a finger.
+- Written to storage once per drag, on release, not on every frame.
+- `×` on hover removes one. No confirmation: it is two taps to place again.
+- Hidden while searching or selecting, like the sticky notes.
+
+Nothing else in the app reads a marker. What it means lives with whoever put
+it there, and it is true until they move it.
+
+### Not done, and why
+
+- **A marker is not attached to a patient.** It is next to a card, not on one,
+  so Rapikan — which re-lays the cards — leaves markers where they are and
+  they will need moving. Attaching one to a patient would make it a clinical
+  field, which is a different feature with a different bar.
+- **The compare view is the same character-level diff** the trail already
+  uses, not the word-level one from Bandingkan → revisi tempelan. Worth
+  aligning them, but they answer differently shaped questions and that is its
+  own change.
+- **Not rendered here.** Worth checking: pick two versions of a busy day, and
+  drag a flag next to a card on the ward PC.
+
+```
+1443 tests passed (+12)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-22.1`
+
+**A note opened blank, the canvas could not bring a card forward, tighter
+Catatan spacing, and initials on a folded card.**
+
+### 1. A Catatan note sometimes opened empty
+
+**Root cause.** The editor's text is written into the page by an effect that
+runs when the TEXT changes (it has to: writing `innerHTML` on every render
+moves the caret to the start). Since the board redesign, the editor only
+exists once a card is opened. Opening the card that was already the active
+note — the first one, or the last one you opened — mounted a fresh, empty
+editor while the text had not changed, so the effect never ran. Switching tabs
+changed the text, the effect ran, and the note "appeared".
+
+The write depended on the value when what had changed was the element. It is
+now also done by a callback ref, which runs exactly when the editor attaches,
+reading the current note through the existing `syncRef` so it cannot hold a
+stale one. The value effect stays for edits that arrive while it is open.
+
+Recurring shape worth naming: **anything that writes into a DOM node must run
+when the node appears, not only when its input changes** — the textarea
+autosize had the same blind spot the other way round.
+
+### 2. Bring a card to the front on the canvas
+
+Stacking was fixed: the card in hand on top, expanded cards next, everything
+else level. A card that ended up partly under another stayed there, with its
+drag tab and grips under the other card and no way to reach them.
+
+Now **pressing any visible part of a card raises it** above every card at rest,
+and its tab and grips are reachable again. On pointer-down in the capture
+phase, so it rises before the drag or resize the same press may start. Not
+remembered: it means "what I am working on now".
+
+### 3. Catatan spacing
+
+~24px between cards → 8px. The old gap was a 12px margin plus two 4px strips
+reserved above and below every card for the drag line. The drop lines now
+overlay the gap instead of reserving space for it, so they still cause no jump
+when they appear and cost nothing when they do not.
+
+### 4. A folded card shows the DPJP's initials
+
+As on the full card's badge. The full name is on hover.
+
+### Not done
+
+- **A card completely hidden behind another cannot be pressed**, so it cannot
+  be raised this way. Rapikan still lays everything out without overlap.
+- **Not rendered here.** Worth checking: open the first Catatan card straight
+  after loading the page — it should not be blank.
+
+```
+1431 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-21.4`
+
+**The width grip is usable on a folded card; the drag tab is back to its old
+size.**
+
+Last release widened the wrong thing. The request was the width-resize grip,
+not the drag tab — the drag tab is reverted to exactly what it was.
+
+### Why the width grip was a sliver
+
+`inset-y-6` inset it 24px from the top AND the bottom. On a full card that is a
+reasonable bar. On a folded card, about 46px tall, it left the grip almost no
+height at all — and a folded card is the one card where width is the only size
+left to change.
+
+Now:
+
+- inset 4px from each end, so it spans nearly the card's whole height at any
+  height;
+- a 16px-wide hit area centred on the card's edge, with the visible 6px bar
+  inside it. The bar used to BE the target, which is a thin thing to catch.
+  8px of the hit area sits in the 12px gap between cards, so it never reaches
+  the neighbour.
+
+The height grip is unchanged.
+
+### Not done
+
+- **Not rendered here.** Worth checking: hover a folded card on the canvas —
+  the bar on its right edge should run nearly its full height.
+
+```
+1431 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-21.3`
+
+**A compact pass on the patient card, and the display bugs in the screenshots.**
+
+### What was wrong, screenshot by screenshot
+
+| Seen | Cause | Fix |
+|---|---|---|
+| Header two or three lines tall on a narrow card | "−" and the eye were two 44 × 44 targets with a gap: ~90px of header, paid for out of the name and the location | One tight pair, 44px tall and 28px wide each, no gap — ~56px |
+| An empty band between the header and "Belum:" | The card's minimum let the body shrink to zero, so under a small cap it became a sliver too short for text but tall enough for the fade | The minimum always keeps ONE line of body (or everything, if there is less) |
+| A dark bar under a folded card | The height grip, on a card whose single line has no height to cap | Folded cards are uncapped: natural height, no grip |
+| A drag tab too small to find on a folded card | 48px wide | 112px wide |
+
+### The header controls
+
+They stay 44px **tall** — the dimension a thumb misses on — and are 28px wide
+each, still above the 24px minimum in WCAG 2.2. They sit as one group, so the
+rule the header has kept since the eye's first bug still holds: a control never
+shares a wrapping row with content, and the name column wraps on its own.
+
+### Compact, not smaller
+
+Nothing got a smaller font. What changed is the air around it:
+
+- card padding 12px → 10px, the header band tightened to match;
+- diagnoses at `leading-snug` instead of `relaxed` — a list of diagnoses reads
+  fine at 1.375, and `relaxed` spent about a fifth of the body's height between
+  the lines;
+- the gaps above the body, the progress strip and the "Belum:" line
+  trimmed.
+
+With twelve cards on a board, every pixel of padding is paid twelve times.
+
+### The drag tab
+
+Wider, not taller. Canvas cards are 12px apart (`GAP_PX`), and the tab already
+sits in that gap — a taller one would sit on the card above.
+
+### Renamed
+
+"Catatan tempel" is now **Catatan**, on the note and on the toolbar button.
+
+### Not done, and why
+
+- **The last visible diagnosis still fades** on a capped card. That is the
+  intended signal that there is more below, drawn only when there IS more — a
+  fade under every card would claim more on cards where there is none.
+- **"Catatan" now names two things**: the Catatan page and the board's sticky
+  notes. They are different features with the same word; say if you want the
+  board's to read differently in the toolbar.
+- **Not rendered here.** Worth checking on a narrow canvas card: the name,
+  EKG badge and location should each fit on one line where they did not
+  before.
+
+```
+1431 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-21.2`
+
+**An open note shows the whole card, and a folded card is a plain box.**
+
+### 1. Opening the note squeezed the card
+
+Under a height cap the note took its height from the body above it, so the
+diagnoses faded out at exactly the moment the card was opened to be read.
+Last release made the card stop OVERLAPPING in that state; it did not make it
+readable.
+
+Now, while a patient card's note is open, the canvas ignores that card's cap
+and renders it at its natural height. Closing the note gives the cap back,
+unchanged.
+
+**Why the board decides, not the card.** The board already holds which notes
+are open, so the canvas asks it (`isUncapped`). A card reporting "uncap me"
+through its own measurement would stop measuring the moment it was uncapped —
+the measurement only runs under a cap — and could never report the note
+closing again.
+
+**The height grip is hidden while a card is uncapped.** A drag there would set
+a cap that does not apply until the note closes: a control whose effect you
+cannot see.
+
+The corner "show in full" toggle keeps its own state separately. An uncapped
+card is not "expanded by the toggle", and offering to collapse it there would
+fight the note that uncapped it.
+
+### 2. The folded card is one plain box
+
+Last release folded a card by hiding its body, progress and note with
+conditionals through the full card — and left everything else. The EKG and
+discharge badges, the KJS mark, the eye and the location all survived the
+fold, so "folded" still looked like a card, and anything added to the full card
+later would have survived it too.
+
+The folded card now has its own render: **one box, the name and the DPJP as
+text, and `+`**. Nothing else exists in it to leak through.
+
+It keeps the card's colour, because the colour is the checklist progress —
+information, not decoration. And it still behaves as a card on the board: it
+opens the patient, selects in selection mode, and has its drag handle in custom
+order.
+
+The name wraps rather than truncating, which is the rule the full card's name
+has always kept: a name cut short is a patient you cannot tell from the next.
+
+The old scattered conditionals were removed rather than left unreachable, so
+there is one folded view in the code, not two.
+
+### Not done, and why
+
+- **Uncapping moves the cards below it on the canvas only after Rapikan.** The
+  canvas places cards by hand; an opened note makes one card taller, and the
+  canvas does not push its neighbours down on its own.
+- **Not rendered here.** Worth checking: open a capped card's note and confirm
+  the diagnoses are all visible; fold a card and confirm only the name, DPJP
+  and `+` remain.
+
+```
+1431 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-21.1`
+
+**The overlapping text on capped cards, remembered note state, and folding a
+card to its name and DPJP.**
+
+### 1. Why "Belum:" printed over the note
+
+Two faults, one on top of the other.
+
+**The minimum was measured from the box, not from what is in it.** A capped
+card reported its smallest usable height as `root.offsetHeight -
+body.clientHeight`. Under a cap the root is pinned to the cap (`h-full`), so
+once the shrinkable body reached zero the formula returned *the cap itself*.
+It could not see the header and progress strip overflowing the box, so it
+reported a minimum smaller than the parts that cannot shrink, and the height
+grip allowed a height that did not fit them. The note strip was left out of
+the sum entirely, because it sits outside the link.
+
+It now measures `link.scrollHeight` — the content height whatever the box is
+clamped to — minus the body's current share, plus the note strip, measured
+on its own.
+
+**Nothing enforced the minimum when rendering.** The canvas slot was
+`height: cap`. A cap valid when set becomes too small when the card later
+grows a taller minimum — the note is opened, a badge appears — and the fixed
+parts then overflowed each other. That is the screenshot: a cap set with the
+note closed, then the note opened.
+
+The canvas now keeps each card's reported bounds and renders the slot at
+`max(min, min(cap, max))`: never below what the card cannot shrink past,
+never above what its content needs, otherwise the cap. It re-renders only
+when a card's bounds CHANGE, which is rare — the reason the bounds lived in a
+ref (not re-rendering the board on every reflow) still holds.
+
+A cap is a maximum (the field is `hMax`), so a card that needs less than its
+cap now takes less, instead of sitting at the top of a tall empty slot.
+
+### 2. The note's open/closed state is remembered
+
+Per card, per device. The old comment said this was deliberately not
+persisted — closing a note was a "crowding the board right now" act. In use it
+is a standing choice about that patient, and closing the same note again after
+every reload is the app forgetting what you told it.
+
+### 3. Fold a card to its name and DPJP
+
+A `−` beside the eye folds the card to its name and its DPJP (initials and
+name); `+` unfolds it. Location, badges, body, progress and note all come back
+with one tap. Remembered per card, per device, like the note.
+
+The DPJP is the one fact kept because it is what a folded card is still
+scanned for — whose patient this is.
+
+On the canvas, a folded card reports its folded height so its slot shrinks to
+fit; without that, the floor from before the fold would have kept the slot
+tall and empty.
+
+Both remembered sets are only ever toggled one id at a time, never rebuilt
+from the cards on screen — a set rewritten from a filtered board would forget
+every card the filter hides (recurring pattern 1).
+
+### Not done, and why
+
+- **Per device, not per account.** Folds follow the screen, like the canvas
+  layout: the phone and the ward PC want different cards folded.
+- **Remembered ids are never pruned.** A discharged patient's fold stays in
+  localStorage. It is a few bytes per patient; pruning it safely would mean
+  knowing every patient on every scope, which is the thing pattern 1 warns
+  against guessing.
+- **A folded card on the canvas can leave a gap below it** until Rapikan is
+  pressed, because the canvas places by hand and does not move the cards
+  underneath on its own.
+- **Not rendered here.** Worth checking: cap a card, open its note, and
+  confirm the card grows instead of overlapping; fold a card and reload.
+
+```
+1431 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-20.3`
+
+**Catatan tempel: sticky notes on the patient board.**
+
+`+ Catatan tempel` in the board toolbar puts a blank yellow note on the board.
+Type straight into it — there is no page behind it and no sheet; the note IS
+the card, the way a paper note is written where it is stuck.
+
+### On the canvas it is a card like any other
+
+In `Urutan sendiri` a sticky note is dragged by the same handle and resized by
+the same width and height grips as a patient card. That is not a copy of the
+behaviour: the canvas was already written against ids and a `renderItem`
+callback, so a note is just another id it places. A fix to dragging is a fix to
+both, and there is no second drag system to drift out of step.
+
+It honours the same height contract as `PatientCard`: under a height cap it
+fills the space and scrolls inside; uncapped it grows with its text.
+
+Notes are listed AFTER the patients, because the canvas auto-places in that
+order — a new note takes the next free slot instead of pushing every arranged
+card down one.
+
+Outside the canvas (the other orders, and phones) the notes sit in their own
+row above the patients. Masonry places by measurement, not by hand, so there is
+nowhere for a note to be "left" among the cards.
+
+### Storage, and the bug it was designed around
+
+On the profile, as a **map keyed by note id**, with every change written to
+exactly ONE field path — `boardNotes.<id>.text`, `.color`, `.deletedAt`.
+
+Not an array. Catatan are one array in one document, and two quick saves there
+lost the first (recurring pattern 5), which needed `pendingBodies` to fix.
+Here, typing in one note and recolouring another — or editing on the phone
+while the PC changes a colour — write different fields and cannot overwrite
+each other. `FieldPath` rather than a dotted string, so a path cannot be
+misread whatever the id contains.
+
+Position and size are not stored here: they belong to the canvas layout, as a
+patient card's do.
+
+### Editing
+
+- Saves after a 600 ms pause, and on blur, and when the board unmounts — a
+  note left mid-sentence is saved, not dropped.
+- While a note has focus it keeps its own text and ignores echoes. Replacing
+  text under a caret moves the caret and eats what was typed in between; on
+  blur it catches up with the stored version.
+- **Colour**: the dot opens six swatches in place — kuning, oranye, merah muda,
+  hijau, biru, ungu. They are the shared card tokens, so they follow the theme
+  and pass `check:contrast`. Yellow is the default because that is what a
+  sticky note looks like.
+- **Delete**: `×`, then `Hapus?` to confirm. Soft delete, like everything else:
+  the note leaves the board and its text stays in the profile.
+- A slight tilt, the cheapest way to say "this is not a patient".
+
+Hidden while searching (a search asks "which patient", and a note would sit in
+the results looking like an answer) and while selecting (a note cannot be
+ticked for archive).
+
+### Not done, and why
+
+- **Positions are per device**, exactly as patient cards' are. The note's text
+  and colour sync; where it sits on the canvas does not. If that turns out
+  wrong it is one change in `readLayouts`/`writeLayouts`, for both at once.
+- **No undo for a deleted note.** Its text is kept, but there is no screen to
+  bring it back yet.
+- **Text only.** No checklist or formatting inside a note — it is for "lab jam
+  14", not for a document; Catatan is where documents go.
+- **Not rendered here.** Worth checking: add two notes on the ward PC, drag one
+  between patient cards, cap its height, change its colour, and check the phone
+  shows the same text.
+
+```
+1427 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-20.2`
+
+**Both emphasis engines rewritten against the real corpus. `Aa*` and Format
+bangsal now agree with the notes, and with each other.**
+
+### How this was decided
+
+Every rule below was measured, not chosen. The method: take the 237 real notes
+from the export, strip every `*` and `_`, run the function, and compare line by
+line with what was actually written.
+
+| | before | after |
+|---|---|---|
+| `restoreEmphasis` (the `Aa*` button) | 95.2% | **96.9%** |
+| `autoEmphasis` (Format bangsal) | 95.9% | **97.3%** |
+
+**The corpus is not in the repository and never will be** — it is patient data.
+What is kept is the conclusion and the count behind it, in the tests, so a
+later change that contradicts the notes fails there instead of on a ward.
+
+### What changed in the `Aa*` button
+
+- **Investigation headings in every date shape the ward writes.** The rule
+  demanded two digits for day and month and no month names, so a third of them
+  stayed plain: `Foto thorax RS Batara Siang 2-9-2026`, `EKG Poli Aritmia
+  31/8/26`, `USG Vascular Doppler (4 Agu 2026)`, `Laboratorium RSWS
+  06-09-2026:`. Also `Thoraks`, `X-ray`, `Biakan`, `Laporan Arteriografi`.
+- **A heading with a place and no date** — `Echo Hemodinamik IGD`, 17 lines,
+  all bold. Bounded to five words with no sentence punctuation, so `Echo ulang
+  bila klinis memburuk` stays a plan.
+- **`Mohon izin kami … dengan` without the closing colon** (90% bold over 116
+  lines), including the spelling `assesst`, which is in the notes 25 times. A
+  rule that only matches the correct spelling leaves the typed ones unmarked.
+- **Bare `Plan`** (83% bold over 74 lines).
+- **`LUS` / `Lung Ultrasound` is no longer bolded**: plain in 124 of 141
+  lines. It was being bolded because the alias table names the section — and
+  the alias table is about what a heading MEANS, not how it is written.
+
+### What changed in Format bangsal
+
+Same evidence, and it had the opposite problem: it was over-marking.
+
+- **`A/`, `P/`, `S/`, `O/` stay plain.** This is a reversal. The old rule came
+  from one worked note where a consult block reads `*TS Interna GH* *A/*
+  *Plan:*`; across the corpus those lines are plain 267 times and bold 22 —
+  and all 289 sit inside a TS block, so "inside a consult block" does not
+  explain the bold ones either. It matters beyond tidiness: bolding another
+  service's assessment makes it read as ours, in a document whose purpose is
+  to say what we think.
+- **`Selanjutnya mohon arahan …` stays plain.** It was bolding 118 lines; it
+  is the closing sentence of the note, not a request heading.
+- **An identity line written without the letters `RM`** —
+  `Ny. X / 3 Juli 1958 / 68 tahun / 1715410` — is now bold, as the corpus and
+  the seeded templates have it.
+- **`Pasien dikonsulkan …`** is italic; the rule listed `dirujuk`, `rujukan`,
+  `datang` and `masuk` but not the commonest of them.
+- The same date shapes and the same undated-heading rule as above.
+
+### Not done, and why
+
+- **There are still two emphasis engines.** They now agree on the measured
+  cases, but they are separate code with separate rules, and this release is
+  the second time both needed the same fix. Merging them is the right next
+  move and is a refactor with its own risk, not a rider on a data-driven
+  rule change.
+- **Dose spacing is untouched.** `/24 jam/oral` (503) against `/24jam/oral`
+  (197) is a real inconsistency, but normalising it edits clinical text rather
+  than its markup. Its own release.
+- **The day-counter check is untouched.** Counters go backwards in 5 of 49
+  consecutive pairs, which is a genuine error the SOAP checker could catch —
+  also its own change.
+- **The minority styles are now actively overruled.** `Plan:` is bolded even
+  though 13 lines write it plain, because 108 write it bold. That is what
+  following a convention means, and `Aa*` is a button somebody presses, not an
+  automatic rewrite.
+
+```
+1421 tests passed (+26)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-20.1`
+
+**The mobile typing jump, and Catatan as a list as well as a board.**
+
+### 1. Why the screen jumped while typing on a phone
+
+The textarea grows with its text, and it measured itself by collapsing to
+`height: 0`, reading the height the content needed, then putting it back — on
+every keystroke.
+
+On a desktop that is invisible. On a phone the textarea is FOCUSED, and
+collapsing a focused element to nothing makes the browser scroll the caret
+back into view against the collapsed layout. The old code then restored the
+scroll from here, so the view snapped away and came back, once per character.
+
+**Restoring the scroll afterwards could never fix it**: the browser's
+correction and ours are two scrolls fighting inside one frame. The fix is not
+to disturb the element being typed in.
+
+It now measures a hidden COPY that carries `METRICS` — the same class string
+the textarea and the tint layer already share, which exists so these layers
+cannot drift apart. The real box is set to the height that copy reports and is
+never collapsed.
+
+**The fallback stays.** If the copy ever under-measures — a font not loaded in
+one layer, a style that drifts — the note would be CUT, and that is the one
+failure this component must not have. So after setting the height it asks the
+real box whether its content still overflows, and only then falls back to the
+old collapse-and-measure, scroll capture included. Correct beats fast; the
+slow path now runs approximately never instead of on every key.
+
+### 2. Catatan: Kartu or Daftar
+
+A toggle above the board. **Kartu** is the masonry board. **Daftar** is one
+note per row, full width, with a single line of preview — for a long shelf
+where the titles answer "which one was it" faster than the colours do.
+
+Same component, same drag, same drop line: a list that behaved differently
+would be a second thing to keep in step. The choice is remembered per device,
+not per account — it follows the screen you are on, and syncing it would let
+one device change the other's.
+
+### 3. The guard I added last release was broken, twice
+
+`clampClasses.test.ts` was supposed to fail the build if `line-clamp` ever
+shared an element with `block`. While using it:
+
+- It **fired on a comment** — the words "no `block` here", written to explain
+  the bug, counted as a `block` class. A guard that trips on the text warning
+  about the thing it guards is a guard that gets deleted.
+- Fixing that, it then **matched nothing at all**: the pattern expected
+  `className={[...]}`, and every array in this codebase ends `].join(' ')}`.
+  It passed because it looked nowhere.
+
+It now strips comments, reads only the quoted class strings, and matches the
+real array shape. Verified both ways: put the bug back, it fails; take it out,
+it passes.
+
+### Not done, and why
+
+- **Nothing was changed from the export analysis yet.** The conventions it
+  shows (bold for section and investigation headings, italic for DPJP lines)
+  are worth encoding in Rapikan, and dose spacing is inconsistent enough in
+  the real corpus to be worth normalising — but both rewrite the text of a
+  clinical note, so they are their own release with their own tests, not a
+  rider on a layout fix.
+- **The phone still cannot reorder Catatan** (drag is the HTML API). Unchanged
+  from the last release.
+
+```
+1395 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-19.5`
+
+**The card preview really is four lines now, and ordering is a drag that shows
+where the card will land.**
+
+### 1. Why the preview never shortened
+
+Not a wrong number. `line-clamp-4` sets `display:-webkit-box`, and the span
+also carried `block`. Tailwind emits `.block{display:block}` AFTER the
+line-clamp utilities, so the later rule won, the clamp did nothing, and every
+card printed its whole note.
+
+That is why it survived two releases: the class list reads correctly, and
+nothing on screen says which of two display utilities won. Removing `block`
+fixes it — the clamp sets its own display.
+
+**`clampClasses.test.ts` now fails the build** if any `className` in the app
+pairs `line-clamp-*` with `block`, `flex`, `grid` or `inline-block`. Confirmed
+by putting the bug back and watching the test fail.
+
+### 2. Ordering: drag, with the drop shown first
+
+Both previous attempts were wrong for the same reason — you could not see what
+the drop would do. The first had no indicator at all. The second moved the
+controls into the open note, a different screen from the one whose order was
+being changed.
+
+Now: drag a card, and an **accent line appears on the edge of the card it will
+land next to** — above it or below it, following which half of that card the
+pointer is over. The dragged card dims. Release, and it lands exactly where
+the line was.
+
+`moveBeside` in the domain makes the line a promise rather than a guess. It
+computes the destination AFTER removing the dragged note, so "the side you
+were shown" holds whichever direction the drag came from — computing it before
+removal is the off-by-one that makes a downward drag land one place short. Six
+tests, including that a move never disturbs notes the shelf or archive filter
+is hiding.
+
+The ↑ / ↓ buttons in the open note are gone: one way to order, on the screen
+that shows the order.
+
+### Not done, and why
+
+- **Touch dragging is not supported.** This is the HTML drag-and-drop API,
+  which phones do not fire. Reordering on a phone now has no control at all —
+  if that matters, say so and it becomes a pointer-event drag, which is a
+  bigger piece of work than it sounds because it has to own the scrolling too.
+- **The insertion line reserves 4px above and below every card**, so the board
+  does not jump when the line appears. It costs a little space on a dense
+  board and it is what stops every card shifting mid-drag.
+
+```
+1395 tests passed (+6)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-19.4`
+
+**Catatan cards show four lines, and ordering moved off the drag gesture.**
+
+### The preview was the note
+
+Ten lines filled a whole column with a long reference note, so the board
+became the notes themselves, stacked — the wall of text the tabs were meant to
+replace. Four lines is enough to recognise a note and not enough to read it
+instead of opening it.
+
+### Dragging a card onto a card is not a gesture anyone can see
+
+There was no drop indicator, no gap opening, and no sign afterwards that
+anything had moved: the only feedback was the card fading while dragged. That
+is a gesture you have to be told about.
+
+Ordering is now **↑ / ↓ in the open note**, one step per press, disabled at the
+ends. Pressing one is either a move you can see when you go back to the board,
+or a button that is plainly unavailable.
+
+The rewrite still goes through `reorderWithinVisible`, so a move made while a
+shelf or the archive filter is hiding notes cannot drop the hidden ones — the
+guard that mattered is unchanged; only the way it is triggered is.
+
+### Not done, and why
+
+- **No drag anywhere on the board.** A drag worth keeping needs a drop
+  indicator and a gap that opens as you move, which is the canvas machinery on
+  the patient board. That is a real piece of work and this is a shelf of notes.
+- **The card colours are unchanged.** They come from the theme's card tokens.
+  If they read as too heavy in dark mode, that is a palette choice worth making
+  deliberately rather than while fixing something else.
+
+```
+1389 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-19.3`
+
+**The sidebar stops resizing itself, the checklist fits in its minimised box,
+and Catatan is a board of sticky notes.**
+
+### 1. The sidebar resized on every expand
+
+Expanding a panel pushed the column past the viewport, the scrollbar appeared,
+and it took ~15px of width from the cards — so every panel reflowed and the bar
+appeared to jump. `scrollbar-gutter: stable` reserves that space whether the
+scrollbar is showing or not, so the width never changes.
+
+### 2. The whole checklist, minimised
+
+It showed four items and `+3 lagi`, which hides exactly the ones that might be
+unticked — the only question the minimised view exists to answer. It is now two
+columns with every item and no "+N".
+
+### 3. A finished checklist says so
+
+When everything is ticked the minimised box reads **✓ Semua selesai** instead of
+seven struck-through lines. The list only answers "what is left", and when the
+answer is "nothing" a word says it faster than a list. Custom Checklist follows
+the same rule.
+
+### 4. Catatan as sticky notes
+
+The shelf was a row of tabs: it scrolls sideways, shows one title at a time,
+and says nothing about what is IN a note, so finding one meant opening several.
+It is now a board.
+
+| | |
+|---|---|
+| **Layout** | Masonry through CSS columns, one to three by width. A grid would pad every card to the tallest in its row, and notes are not the same length |
+| **Preview** | The first ten lines, with the markup stripped and list items marked, so a checklist still reads as one |
+| **Colour** | Derived from the note's id, so it never changes for a given note and the note stays findable. Not a stored field: that needs a picker, a migration and a default, for a job that is only "tell these apart" |
+| **Opening** | A card opens the editor, with **← Semua** to come back. The editor's toolbar, title field and archive/delete belong to a note being written, not to a card being scanned |
+| **Order** | Still drag and drop, now by dragging cards |
+
+The preview strips tags rather than rendering them: bodies are HTML from a
+contenteditable, and rendering that in a card would bring its headings and
+font sizes into a space sized for plain lines — along with whatever a pasted
+fragment carried. 9 tests cover the stripping, including that no tag survives.
+
+The colours are the shared card tokens, so they follow the theme and pass
+`check:contrast`. A literal hex would have failed it, correctly.
+
+### Not done, and why
+
+- **No per-note colour picker.** The palette is derived; choosing colours is a
+  feature with its own storage and UI, and nothing has asked for it yet.
+- **No pinning and no search on the board.** Both are real Keep features and
+  both are their own work; the shelves (Catatan / Catatan jaga) and Arsip
+  already divide the board.
+- **The editor itself is unchanged.** Same toolbar, same contenteditable, same
+  saving. Only the way in changed.
+- **Not rendered here.** Worth checking: the board at three columns on the ward
+  PC, and that a long note's card stops at ten lines rather than filling the
+  column.
+
+```
+1389 tests passed (+9)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-19.2`
+
+**Real undo/redo for the note, and the panel sidebar was clipping its own
+content.**
+
+### 1. Undo and redo that can be relied on
+
+The editor had no history of its own; Ctrl+Z was the browser's. That works for
+plain typing and for nothing else this editor does. A template, Rapikan SOAP,
+carry-forward, an AI rewrite, restoring a revision, a merge arriving from
+another device — every one of those sets the value from React, which drops out
+of the native stack. So Ctrl+Z after Rapikan either did nothing or jumped past
+the reformat to some older state.
+
+`domain/textHistory` is now the history, and it is the app's:
+
+| | |
+|---|---|
+| **Typing** | Coalesces into one step per burst (900 ms), so undo goes back a phrase at a time, not a character |
+| **A transform** | Always its own step. Undo after Rapikan gives exactly the note before Rapikan |
+| **A change that arrived** | A merge or an adopted remote version is a step too: that is the change people reach for Ctrl+Z after |
+| **Redo** | Survives until the next real edit, then is dropped — keeping a future that no longer follows from the present is how redo resurrects text nobody expected |
+| **The caret** | Stored with each step and restored with it, so an undo puts you back where the edit was |
+| **Saving** | An undo saves like any other change. An undo left unsaved is one that comes back on the next device |
+
+Two buttons at the left of the format toolbar (↶ ↷, disabled when there is
+nothing to do), plus Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl+Y. The native
+behaviour is refused when the app's history answers, so the two cannot
+disagree. 12 tests, including the cases that broke before: a transform between
+two bursts of typing, redo dropped by a new edit, and a keystroke after an undo
+not merging into the step it just restored.
+
+### 2. The sidebar was cutting its own headers off
+
+Not a missing header: a clipped one. In the screenshots the Tanggal panel had
+no header and Custom Checklist had no buttons, both cut at the card edge.
+
+**Root cause.** `2026-09-19.1` made the panel sidebar a fixed-height flex
+column so it would scroll on its own. Flex children shrink by default, and the
+panel cards clip their corners with `overflow-hidden` — so instead of the
+column scrolling, every card was squeezed to fit and cut off whatever no
+longer fitted. The fix is `shrink-0` on the card: a panel is its natural
+height, and the column scrolls, which is what was asked for in the first place.
+
+**Also in the sidebar:**
+
+- **Catatan pasien had two headers** — the panel's and the component's own, one
+  line apart, reading the same words. `PatientNotes` gained a `bare` mode for a
+  caller that already provides the heading. Its `startOpen` prop, added for the
+  panel one release ago and now unused, is deleted rather than left behind.
+- **Custom Checklist's actions** sat right-aligned against an empty spacer in
+  compact mode. They start at the left now.
+
+### Not done, and why
+
+- **Undo is per open note.** Switching day or patient starts a new history
+  rather than carrying one across, because an undo that reaches back into a
+  note you are no longer looking at is worse than no undo.
+- **The history is not persisted.** A reload starts fresh; Riwayat perubahan is
+  the record that survives, and it already holds every transform.
+- **The jaga note editor has no buttons yet.** It shares the machinery, so it
+  is a small addition, but it was not asked for and an untested control in a
+  second editor is not a free win.
+- **Not rendered here.** Worth checking: apply a template, type a sentence,
+  press Ctrl+Z twice — the first should undo the sentence, the second the whole
+  template.
+
+```
+1380 tests passed (+12)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-19.1`
+
+**Notes could not be written on a cleared day. That is fixed, and it was my
+bug from `2026-09-18.1`.**
+
+### 1. Why the note would not save
+
+From the recording: *"Disalin dari hari sebelumnya"* appeared, the editor went
+back to empty, and the day still offered "Mulai dari format". The app accepted
+the write and the SERVER refused it.
+
+**Root cause.** `clearEntry` writes `body: ''` but never updated `bodyHash`, so
+a cleared day stored a hash of text it no longer held. The compare-and-set I
+added in `2026-09-18.1` hashed the body MYSELF and compared that with the
+stored `bodyHash`. On a cleared day those two can never agree, so every write
+to that day was refused — for ever. Typing, carry-forward, everything.
+
+I picked the wrong thing to compare. A compare-and-set must compare a field
+with the same field, not with a value recomputed from another one. Hashing
+locally silently assumed `bodyHash` always describes `body`, and one writer in
+this codebase already broke that assumption.
+
+**The fix, three parts:**
+
+- **The write sends back the server's OWN `bodyHash`**, kept in `localBase`
+  alongside the confirmed body (`expectedBaseHash`, tested). A write this
+  device sent but has not seen confirmed still hashes its own text, which
+  matches by construction because we wrote that hash too.
+- **`clearEntry` writes `bodyHash` with the body.** The two now move together,
+  which is what made the day unwritable.
+- **A refused write reconciles within seconds**, not at the next startup. It
+  used to wait, which at the keyboard is indistinguishable from the app
+  refusing to take the note at all.
+
+Existing broken days heal themselves on the first write after this ships: the
+hash sent is the stored one, so it matches, and the write that lands stores a
+consistent pair.
+
+**Not blocked, and deliberately so:** a day whose hash this device cannot
+verify is written WITHOUT a check rather than refused. A missed check costs a
+possible revert; a wrong check costs the note. The note wins.
+
+### 2. Watermark: `Mengambang`
+
+`Pengaturan → Watermark di catatan` now chooses between **Berulang** (tiled,
+what it does today) and **Mengambang** — one mark that floats with the scroll.
+It is a setting, so it is remembered per account and applies on every device.
+
+The floating overlay carries no `overflow`, because an `overflow: hidden`
+ancestor turns a sticky child into an ordinary one — which would park the mark
+at the top of a long note and leave the rest of the scroll unmarked, the exact
+failure tiling was introduced to fix.
+
+### 3. The panel sidebar, again
+
+**"Minimised" now means less of the thing, not none of it.** The first version
+collapsed each section to a bar, and four closed bars answer nothing without
+four taps — slower than the flat list it replaced. Each section now shows a
+condensed view of its own content:
+
+| Section | Closed shows |
+|---|---|
+| Catatan pasien | The first three lines of the note |
+| Checklist | The first four steps with their ticks, `+N lagi` |
+| Custom Checklist | Same, or "Belum ada langkah khusus" |
+| Tanggal | The last four dates as chips, today highlighted, `+N` |
+
+Tapping the preview opens the section, which is where anything can be changed.
+The preview is deliberately read-only: a control that works in a preview and a
+different one that works when open is two places to fix one behaviour.
+
+**Scrolling.** In the panel layout the sidebar is now a fixed-height column, so
+it is always its own scroll container. `max-h` alone left the column as tall as
+its content until that content passed the viewport, and an expanded panel could
+then run past the bottom with the scroll belonging to the page.
+
+### Not done, and why
+
+- **Rules unchanged, so nothing needs deploying for the fix** beyond the app
+  itself. Push and reload.
+- **No test reproduces the refusal end to end**, which needs Firestore. The
+  decision that was wrong is now a pure function with four tests, including the
+  cleared-day case.
+- **The floating watermark sits at one third of the note's height.** That is a
+  fixed choice, not a setting; a slider for it is more knobs than the problem
+  has.
+- **`clearEntry` still leaves `deletedAt` set**, which is correct: a day with
+  text in it is revived by the write itself (fixed earlier), and an empty write
+  must not resurrect a day someone deliberately cleared.
+- **Not rendered here.** Worth checking first: open a day you previously
+  cleared, type a line, reload. It should still be there.
+
+```
+1368 tests passed (+4)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-18.2`
+
+**6MWT consults check for TB/BB, Salin always copies the open note, and the
+patient page has a second layout.**
+
+### 1. TB/BB for a 6MWT consult
+
+The walk test is reported per metre and read against the patient's size, so a
+request without height and weight comes back. The note usually has them — just
+on a different day from the one the consult was composed from.
+
+`missingKonsulMeasurements` checks the body being sent, not the patient
+record, because the body is what the consultant reads. It fires only for
+purposes that need them (`6MWT`, `6 MWT`, `six minute walk test`), names which
+one is missing, and treats a label with no value (`TB :`) as missing.
+
+**A reminder, not a block.** A consult sent without them is still a consult,
+and a copy button that refused would be worked around within a day.
+
+### 2. Salin always copies the note on screen
+
+The range chooser offered today, this day, the last three days and all days.
+Every shape Salin actually sends describes ONE day — a daily handover, a
+consult, an invasive-group message, a jaga note — so those options were four
+ways to send something other than what fills the screen behind the sheet. The
+multi-day list existed because the composer accepts one, not because anything
+asked for it.
+
+Removed properly rather than hidden:
+
+- the Rentang chips, the range state, and the fetch of every other day that
+  only the range needed;
+- `range` and `lastN` from `CopyPreset`, and from the two seeded presets;
+- `resolveRange` and the `CopyRange` type, with their tests.
+
+`composeCopy` still takes a list of days, since a day header per day is what
+would make a multi-day export readable if one is ever wanted.
+
+### 3. A second layout for the patient page
+
+`Pengaturan → Tata letak halaman SOAP`, **defaulting to Klasik**, which is
+exactly what the page is today. Changing where someone's checklist lives
+without asking is not an improvement to them.
+
+**Panel** rebuilds the sidebar:
+
+| | |
+|---|---|
+| **Order** | Catatan pasien · Checklist · Custom Checklist · Tanggal |
+| **State** | Every section starts closed |
+| **Header** | Carries the answer: `ada`/`kosong`, `7/7`, `0/1`, `12 hari`. A finished checklist is tinted |
+| **Shape** | Each section is a card with its own edge, instead of four blocks separated by a gap |
+| **Dates** | Capped and scrolling inside their own panel |
+
+**Why that order.** Read top to bottom it is what the round asks, in the order
+it asks: what carries over, what must be done every day, what must be done for
+this patient, and only then which day you are on. The date list was above both
+checklists and grows without limit, so on a three-week stay it pushed the
+thing you tick while reading off the screen.
+
+**Why closed and not remembered.** A sidebar that reopens whichever sections
+were open on the last patient puts different things in front of you depending
+on where you have been. The summaries are there so that a closed section is
+not a hidden one.
+
+`PatientNotes` gained `startOpen` so the panel can own the open/closed
+decision; its own default (open when there is something to read) is unchanged
+for the classic layout. The date rail is now built once and rendered by
+whichever layout is on, rather than written twice.
+
+### Not done, and why
+
+- **Phones are unchanged.** The sidebar is an `xl` screen feature; the phone
+  arrangement is a separate surface and was not part of this.
+- **The layout setting does not change the note column**, only the sidebar.
+  The header tools, the section jump bar and the editor are the same in both.
+- **6MWT is the only consult with a measurement rule.** Others would need the
+  same evidence this one has: a request that actually came back.
+- **Not rendered here.** Worth checking on the ward PC: switch to Panel on a
+  long-stay patient and confirm the four headers answer their questions
+  without opening anything.
+
+```
+1364 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-18.1`
+
+**The revert is fixed: a late write is now merged instead of replacing a newer
+note. Plus "Pakai versi revisi ini" in Bandingkan.**
+
+### 1. Why a note reverted hours later
+
+`writeBody` sent the whole text with no statement of what it was replacing,
+and Firestore is last-write-wins. Firestore's queue is persistent, so a write
+made with no signal is delivered whenever that device next reconnects — hours
+later, after the note has been edited somewhere else. The late write then
+replaced the newer text.
+
+The three-way merge could not help: it runs inside a live editor holding both
+versions, and a queued write left the app long ago. **The merge guarded the
+front door; these writes came through the back.**
+
+### The fix, in three parts, none of which works alone
+
+**1. Every body write says what it was built on.** It carries `baseHash`: the
+hash of the body this device last saw **confirmed** by the server.
+
+The base comes from `localBase`, which was already written on every confirmed
+snapshot and — this is the part that made the bug possible — **was never read
+by anything**. The machinery existed and was inert. The live entry cannot be
+used instead: offline, Firestore's optimistic copy already contains this
+device's own unsent text, so the "base" would be our own edit, and a later
+merge would conclude we had changed nothing.
+
+**2. The rules refuse a stale write.** `allow update` on an entry accepts a
+body only if `baseHash` still matches the stored `bodyHash`. A write built on
+a version the server has moved past is rejected rather than applied.
+
+Untouched: writes with no body (lock, presence, shift notes, preview), the
+explicit clear, and older app versions, which send no `baseHash` and behave
+exactly as before until they update. An entry stored before `bodyHash` existed
+cannot be checked, and is allowed rather than refused forever.
+
+**3. A rejected write is merged, not dropped.** This is what makes 2 safe.
+Every body write is recorded in an outbox (a second store in the same
+IndexedDB) with the text and its confirmed base, and cleared when the server
+confirms it. At startup and on reconnect, `reconcileOutbox` reads what the
+note holds now and decides:
+
+| Situation | What happens |
+|---|---|
+| The server already has this text | Record dropped, silently |
+| The server is still on the base | Written again: the write was simply lost |
+| The server moved, **different lines** changed | Merged; the replaced version goes to Riwayat perubahan first |
+| The server moved, **same line** changed | The offline version is saved to Riwayat perubahan and you are told |
+
+**Stricter than the live merge, deliberately.** `mergeThreeWay` is
+character-level: asked to combine "Aspilet 160 mg" with "Aspilet 80 mg + CPG"
+it produces a merged line, and in the editor that is fine because the result
+is on screen before it is kept. The reconciler runs at startup with nobody
+watching, on a drug line. **A dose neither doctor wrote must never be written
+by a background task**, so a late write is merged only when the two sides
+changed different lines. Two drugs appended at the same spot are also handed
+back rather than ordered by guesswork.
+
+**Ordering matters in the write path.** The write is handed to Firestore
+FIRST, from a synchronous in-memory base, and recorded afterwards. My first
+version awaited IndexedDB before sending, which on a `pagehide` flush would
+have meant the write never reached Firestore at all — losing the edit the
+flush exists to save.
+
+**Two writes in a row from one device** are handled separately from merging.
+What a write expects the server to hold is the last body this device *sent*
+(Firestore preserves write order per document); what a merge treats as the
+common ancestor is the last body *confirmed*. Using the sent body as a merge
+base would silently drop every change it carried if it turned out to be
+refused; using the confirmed body as the write's expectation would have the
+rules refuse the user's own newer text on a slow connection.
+
+**You are told what happened.** A banner names each settled note, links to it,
+and says whether it was merged or needs review. Notes that simply landed say
+nothing.
+
+### 2. "Pakai versi revisi ini"
+
+In Bandingkan → Dengan revisi tempelan, the pasted revision can now replace the
+note on screen. Two-step. It applies the text **exactly as pasted**, not the
+normalised form the diff compares, since that form has bold markers and blank
+lines stripped and would silently reformat a note nobody edited. The current
+version goes to Riwayat perubahan first, so it is undoable. Not offered for a
+jaga note or a locked day.
+
+**A bug this exposed:** `restoreTo` set the draft without bringing the
+editor's ref forward, so `restoreTo(body); flush();` in one tick would have
+flushed the text being *replaced*, or seen `dirty` false and written nothing —
+the same trap `setValue` documents. Fixed in `useTextSync`, which also makes
+restoring from Riwayat perubahan safe to flush immediately.
+
+### Also
+
+`createEntry` is deleted. It wrote `body: ''` with `merge: true`, had no
+callers, and wired to an existing day would have blanked that day's note.
+
+### Not done, and why
+
+- **Rules not run in the emulator** (the sandbox cannot download it). The
+  compare-and-set is reviewed line by line and the decision logic it depends
+  on is tested. A syntax error fails the deploy and leaves the old rules in
+  place.
+- **The reconciler has no end-to-end test**, since it needs Firestore.
+  `planLateWrite` and the base/in-flight bookkeeping are tested (16 new tests).
+- **The board preview can lag after a refused write.** The preview write
+  carries no body check by design, so a refused body still updates the card
+  until the next successful write.
+- **Devices still on an older version keep the old behaviour** until they
+  update, since their writes carry no base. The reverting device is the one to
+  update first.
+- **Nothing was tested on two real devices.** The test is: edit a note on the
+  phone in airplane mode, edit the same note on the PC, then bring the phone
+  back online and open Plano.
+
+```
+1366 tests passed (+16)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-17.5`
+
+**Access control and a hidden admin page (`/admin`).**
+
+### Root cause
+
+The rules checked only `request.auth != null`. Any Google account, or any
+email/password sign-up, that found the URL could store data in this Firebase
+project. Isolation held, since members-only rules kept accounts from reading
+each other, but nothing decided who may be here at all. Five accounts exist;
+nobody chose that number.
+
+### The model (`src/domain/access.ts`)
+
+- **One admin, fixed by UID**, written into `firestore.rules`, not stored as
+  data, so there is no document anyone could write to become admin. A test
+  checks that the rules and the client name the same UID, and that there is
+  exactly one.
+- **`access/{uid}`** is created by each account's own app at first sign-in
+  with `status: 'pending'`. The admin approves once and the approval stands
+  until revoked. **Revoke = `status: 'revoked'`**, never a delete, so the
+  record of who decided and when survives, and re-approving is one tap.
+- **`config/access.enforce`** is the switch. It is **off by default**, so
+  deploying this changes nothing. The admin approves the existing accounts
+  first and then turns it on, so nobody is locked out in between.
+- **Every data path** (patients and their subcollections, documents,
+  templates, jaga) now requires `allowed()` = signed in AND (admin OR switch
+  off OR approved).
+- The user's own profile stays readable, and writable for sign-in's
+  bootstrap fields only, so the waiting screen can load. Everything else
+  waits for approval.
+
+### What the admin can and cannot see
+
+The admin reads `access/*` only: email, name, first and last seen, device,
+app version, and counts each app reports about itself (patients, daily
+notes, approximate KB of that device's copy, measured from the local cache
+at no read cost).
+
+**Not `users/{uid}`, because it also holds Catatan notes.** Rules cannot hide
+one field of a document, so the only way to keep those notes out of the
+admin's browser is never to grant the read. Clinical data stays unreadable
+to the admin.
+
+### Hardening inside the access record
+
+- A user may write only the registry fields, **never `status`** (enforced by
+  the rules through `registryKeys()`, which a test keeps identical to the
+  client's `REGISTRY_KEYS`).
+- The record may not claim another uid, and **its email must equal the
+  email in the signed Google token.** Otherwise anyone could label their
+  pending record `nottezio@gmail.com`, and the admin decides by what the list
+  shows.
+
+### Client
+
+- **`AccessGate`** sits after the lock screen. It shows *Menunggu
+  persetujuan* or *Akses dicabut* with a sign-out button, and it is **live**:
+  approving opens the app without a reload, and revoking closes it.
+- **Never refuses before the answer is known.** A cache miss before the
+  server responds shows *Memeriksa akses…*, not a rejection, so an approved
+  resident on a new phone is not told they were refused.
+- **Registration is throttled** per device: last-seen at most hourly, stats
+  at most every six hours.
+- **`/admin`** shows the switch, *Setujui semua yang menunggu*, and one card
+  per account with Setujui / Tolak / Cabut / Setujui lagi. Destructive
+  actions are two-step. For anyone else the route renders the ordinary *not
+  found* page. That is courtesy, not security: the data comes from documents
+  only the admin can read.
+- A Settings → Tentang → **Admin** link, shown to the admin only.
+
+### Rollout, in this order
+
+1. Push. Wait for **both** workflows (Pages and `firestore-deploy`) to go
+   green.
+2. Open **Pengaturan → Tentang → Admin**.
+3. Each existing account appears, as *Menunggu*, once it has opened this
+   version. Compare against Firebase Console → Authentication.
+4. **Setujui semua yang menunggu.**
+5. When all four are approved, **Aktifkan pembatasan.**
+
+### Not done, and why
+
+- **Rules not run in the emulator** (the sandbox cannot download it). They
+  are reviewed line by line, and the client/rules agreement is tested. A
+  syntax error fails the deploy workflow and leaves the previous rules in
+  place, which is safe. The next step worth taking is a rules test job in
+  GitHub Actions against the emulator.
+- **Already-open live listeners.** New reads and all writes are refused the
+  moment access is revoked, and the app's own gate closes the screen at once.
+  Firestore does not promise to cut a listener that was already open at that
+  instant, so a revoked device may receive updates until it reconnects.
+- **A revoked device keeps what it had already downloaded.** Rules cannot
+  erase another device's offline cache. *Keluar* on the waiting screen clears
+  it; nothing does that automatically, so a mistaken revoke cannot destroy
+  someone's unsynced notes.
+- **Sign-up itself cannot be blocked** without a paid Firebase feature.
+  Strangers can still create an Auth account; they land on the waiting
+  screen and read nothing. Turning off the Email/Password provider in the
+  console (all five accounts use Google) removes the open sign-up form's
+  purpose.
+- **Accounts that never open this version never appear in the list.** The
+  Auth user list is not readable from a web page without a server.
+- **Cost:** each request from a non-admin account adds one or two small
+  document reads for the checks. That is negligible at ward scale.
+
+```
+1350 tests passed (+9)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-17.4`
+
+**Helper keeps only the latest document for each import, and Formasi gets
+"Kembalikan ke jadwal".**
+
+### 1. Latest document, not latest import
+
+**Root cause.** Both the import and the sync (17.3) treated "imported last"
+as "newest". Those differ exactly when it matters. Say the phone imported
+September, and the PC, before syncing, imported August's file from an old
+WhatsApp message. The PC's import was the more recent act, so August would
+have become the schedule on every device.
+
+**The rule** (`recency.ts`, `compareRosters`). A document is later by, in
+order:
+
+1. the last date it covers, then the first, read from the parsed schedule;
+2. the PDF's own modification/creation date, now read at import. A corrected
+   re-issue of the same month counts as newer. The date on disk is not used,
+   because that is the download time;
+3. import time, as the last resort.
+
+A key missing on either side is skipped, not treated as oldest, so rosters
+stored before this release still compare correctly. Jarkom has no dates in
+its content, so for it only 2 and 3 apply.
+
+**At import**, an older document is **refused** with both versions named:
+
+> PDF ini lebih lama dari yang tersimpan, jadi tidak dipakai. PDF: 1 Agu 2026
+> – 31 Agu 2026. Tersimpan: 1 Sep 2026 – 30 Sep 2026.
+
+It is refused rather than asked, because a roster is replaced whole and
+synced everywhere: one mistaken tap would change every device. Re-importing
+the same document is still allowed.
+
+**In the sync**, `pickRoster` uses the same ordering. After the first sync, a
+device holding a later document than the account now uploads it, which heals
+an account that received an older copy from a device that had not synced yet.
+The comparison is antisymmetric (tested), so two devices can never both
+upload, and every device converges on the latest document.
+
+**Import cards** now show what is stored, e.g. `62 shift · 1 Sep 2026 –
+31 Okt 2026 · dokumen 28 Agu 2026`, so you can see which version you have
+without opening anything.
+
+**Fixed alongside, because the new rule would have exposed it.** The
+Pediatri sheet names its month but not its year, and the year was taken from
+the date being viewed. A January sheet imported while looking at December
+2026 was dated January 2026, which the new rule would have refused as eleven
+months old. The year is now the one nearest the viewed date (`nearestYear`).
+
+### 2. Kembalikan ke jadwal
+
+A two-step button in the Formasi Jaga header. It is hidden when there is
+nothing to reset. The first tap arms it and lists what will be cleared; the
+second clears. It disarms after 5 s or on changing shift.
+
+| Cleared | Kept |
+|---|---|
+| Tukar jaga for this date + shift | Name corrections ("Selalu") and religion, which are facts about a person, not a shift |
+| DPJP swaps for the two dates this Formasi prints | Tukar jaga on the other shift |
+| Confirmation ticks **on posts that had a swap**, since the tick was the swapped-in resident's reply | Ticks on posts nobody swapped |
+
+DPJP swaps are stored per date, so on a Pagi/Malam day the reset also clears
+them for the other shift. The armed text says so. Every cleared key syncs as
+a deletion (tested).
+
+### Not done, and why
+
+- **No "import anyway" for an older PDF.** An override would need its own
+  rule to survive sync against newer copies on other devices, and nothing
+  here has shown a real need for one. If a case appears, it is a deliberate
+  addition.
+- **A PDF with no metadata and the same dates as the stored one** is decided
+  by import time, since nothing else distinguishes them.
+- **Not tested with the real PDFs' metadata.** Whether the programme's
+  exports carry ModDate/CreationDate is unknown until an import shows
+  `dokumen …` on the card.
+
+```
+1341 tests passed (+22)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-17.3`
+
+**Konfirmasi Jaga syncs between devices through your account.**
+
+### Why this changed
+
+Helper kept everything in `localStorage`, on the reasoning that the PDFs are
+on the WhatsApp group and re-importing takes ten seconds. That held for the
+rosters. It did not hold for the working state: a confirmation ticked on the
+phone was invisible on the ward PC, and the evening round is done on both.
+
+### What is synced, and how
+
+**The parsed rosters, not the PDFs.** That means a few kilobytes instead of
+megabytes, no Firebase Storage, and nothing to re-parse on the other device.
+
+| Data | Firestore document | Rule |
+|---|---|---|
+| Jadwal Jaga, DPJP, Pediatri, Jarkom | `users/{uid}/jaga/{roster,dpjp,pediatri,jarkom}` | Stored as a JSON string, replaced whole. The later `importedAt` wins. |
+| Confirmation ticks, tukar jaga, name and religion corrections, DPJP swaps, sender | `users/{uid}/jaga/state` | Written **one key at a time** |
+
+**Why per key.** A device writes only the date+shift or the initials it
+changed, using `setDoc` with `mergeFields`, so two devices ticking different
+shifts cannot overwrite each other. Two alternatives were rejected:
+
+- `merge: true` deep-merges. A tukar jaga replaced with one that has no
+  `initials` would have kept the old initials.
+- Rewriting the whole map from one device's copy is recurring patterns 1
+  and 5.
+
+**Why rosters are a JSON string.** A string accepts whatever the parser
+produces with no Firestore type rules applying. `undefined` fields in state
+values are stripped before writing (`toStorable`), because Firestore rejects
+them.
+
+**localStorage is still what the page reads.** Reads stay synchronous and
+offline. Every store write also goes to the account through a `JagaRemote`
+sink. `useJagaSync`, mounted on the Helper page, writes changes from other
+devices back into localStorage and bumps a revision, and the page re-reads.
+Changes made while the page is closed arrive the next time it opens.
+
+### The first sync, where most of the risk is
+
+- **Waits for the server's answer.** On a device's first sync Firestore's
+  first snapshot comes from an EMPTY cache. Read as "the account has nothing",
+  it would upload this device's old rosters over newer ones. Initial
+  reconciliation therefore waits for a server-confirmed snapshot. Before that,
+  cached data is applied, but nothing is uploaded or removed.
+- **Merges without losing anything.** Nothing local is thrown away. Keys the
+  account lacks are uploaded; where both sides have a key, the account wins.
+  After that the account leads field by field, so a deletion on one device
+  reaches the others.
+- **Shared ward PC.** localStorage belongs to the browser, not to a person. A
+  colleague signing in on a PC you used would have had your ticks, swaps and
+  sender name uploaded into their account. The local copy is now claimed by
+  the account that syncs it (`claimJagaLocal`). A different account clears it
+  first, while unclaimed data from before this release goes to the first
+  account that syncs.
+
+### UI
+
+- The note under the title no longer says changes stay on this device. A
+  status line shows *Sinkron dengan akun* / *Menunggu koneksi…* /
+  *Sinkron gagal…*.
+- The WIP badge stays.
+
+### Rules
+
+`firestore.rules` gains `users/{uid}/jaga/{docId}`:
+
+- owner only;
+- create and update only for the five ids the app writes;
+- no delete.
+
+**This deploys through `firestore-deploy.yml` on push.** Until that workflow
+has run, the sync fails with *Sinkron gagal* and the page keeps working
+locally.
+
+### Tests
+
+- `sync.test.ts` (12): roster pick, first-sync merge, following the account,
+  undefined stripping.
+- `store.sync.test.ts` (12): each local write sends exactly one key, cleared
+  values delete, nothing is sent when signed out, remote data is applied
+  without an echo, and the shared-PC claim.
+
+### Not done, and why
+
+- **Rules not run in the emulator.** The sandbox cannot download it, so the
+  rules are reviewed but not executed. Check the Actions run after pushing.
+- **The hook's orchestration has no test.** The decisions it makes are in
+  `sync.ts` and tested; the hook only sequences them, and testing it would
+  need a Firestore mock.
+- **State history is never trimmed.** Confirmations and swaps are kept
+  forever, as before. That is a few hundred bytes per jaga, about 150 KB a
+  year, well under Firestore's 1 MiB document limit for several years. It
+  needs a trim rule before then.
+- **Jarkom holds colleagues' phone numbers** and now lives in your account,
+  readable by you only.
+- **Nothing was run on two real devices.** The test is: tick a confirmation
+  on the phone, then open Helper on the PC.
+
+```
+1319 tests passed (+24)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-17.2`
+
+**Riwayat keeps Custom Checklist items that were checked and then deleted.**
+
+### Root cause
+
+The ward workflow is: tick a step, then delete it so the list stays short.
+Delete removed the item from the array, and `todoHistory` skips ticks whose
+id is no longer there, because the label left with the item. So the step
+most certainly done was the one the history could not show. The history was
+built on the assumption that deleting means "never mind", and here it means
+"done".
+
+### The fix
+
+- **New optional field `removedOn: ClinicalDate`.** Deleting an item that was
+  ever checked hides it instead of removing it. It keeps its label, stays in
+  the history marked *(dihapus)*, and disappears from the list and its counts.
+- **An item never checked on any day is still removed outright,** as before.
+  That matches the request: checked-and-deleted is kept,
+  unchecked-and-deleted is not.
+- **"Ever checked", not "checked today".** A repeating item ticked yesterday
+  and not yet today has real days of history, so deleting it keeps it.
+- `removeTodo()` and `activeTodos()` are pure, in `patientTodos.ts`.
+  `todoViews` shows only visible items.
+
+**Trap caught before shipping (recurring pattern 1).** Import skipped labels
+already present, checked against the **whole** array. With deleted items now
+kept in that array, importing a checklist again the next morning would have
+silently skipped every step deleted the day before. That is exactly the daily
+cycle this feature is for. The check now uses visible items only
+(`labelsToImport`, tested). Every write still sends the full array, so the
+hidden items and their history are never rebuilt away.
+
+### Not done, and why
+
+- **Items deleted before this release are gone.** Their records were removed
+  at the time, and nothing can recover them.
+- **Hidden items stay in the patient document for the admission.** They are
+  tens of bytes each, so a long stay adds a few KB. There is no purge,
+  following the rule of no hard deletes without an explicit action.
+- **Riwayat does not offer "restore".** Nothing asked for it, and re-importing
+  or re-adding a step does the same job.
+
+```
+1295 tests passed (+8)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-17.1`
+
+**Two copy paths that bypassed the formatter are fixed. Also new: peek
+SIMGOS/WA as view switches, Salin RM in the peek, Custom Checklist history,
+and comparing against a pasted revision.**
+
+### 1. The `?` in SIMGOS: two paths that never formatted
+
+**Evidence.** Two captures in **Periksa hasil salin** each showed exactly one
+character, U+200B (zero-width space), at `baris 1:1`.
+
+**Measurement, not reasoning.** I ran a note seeded with U+200B, U+00A0 and
+friends through every composer in plain format:
+
+| Path | Result |
+|---|---|
+| Laporan harian, per-section, document, Ringkas PDF, SOAP jaga, peek | clean |
+| **Konsul** | U+200B and U+00A0 passed straight through |
+| **Grup invasif** | U+200B and U+00A0 passed straight through |
+
+**Root cause.** `composeKonsul` and `composeInvasif` returned their joined
+lines as they were. They were the only composers that never called
+`formatBody`, so for those two shapes:
+
+- the Format chip did nothing, and "Teks polos" produced WhatsApp text with
+  `*` markers still in it;
+- invisible characters and NBSPs from the note reached the clipboard
+  unchanged.
+
+**Why nobody saw it.** The Salin sheet's non-ASCII warning was hidden whenever
+"Teks polos" was selected. It trusted the format flag instead of looking at
+the output, so the one case where plain output was *not* ASCII was also the
+one case the warning could not show.
+
+**Fix.**
+
+- Both composers take `format` / `bullet` and end in `formatBody`. The
+  default is WhatsApp, and the existing Konsul/invasif tests pass unchanged,
+  so the formatter is idempotent on these messages.
+- The warning is keyed on the output. With plain selected and non-ASCII
+  present, it now says plainly that this is a Plano bug.
+- Invisible characters in that warning are shown by code point. The old list
+  printed a zero-width space as, effectively, nothing.
+- **New invariant test** (`plainOutputAscii.test.ts`): every composer, listed
+  by name, must produce pure ASCII in plain format from a note seeded with
+  every character class seen in the corpus. With the fix stashed, 5 of its 12
+  tests fail.
+
+**Also hardened: the select-and-Ctrl+C sanitiser.**
+
+- It read `document.getSelection()`, which does not reliably include text
+  selected *inside a textarea*; Firefox returns an empty string. The note
+  editor is a textarea, so in that case the sanitiser bailed out and the
+  browser copied the raw text.
+- It now reads the focused control's own selection range.
+- Whether to fold to ASCII is now declared per element via
+  `data-copy-format`, with the global flag as fallback. Several peek windows
+  can show different views at once, and one global boolean cannot be right
+  for all of them (recurring pattern 1).
+
+**Not established.** Which path produced *your* capture. Both captures show
+the character at 1:1, while Konsul and Grup invasif both open with a fixed
+greeting, so the zero-width space should not be first in their output. The
+checker now shows about 16 characters either side of every finding. The next
+capture will say what the character sits next to, and which button produced
+the text will settle it.
+
+### 2. Peek: SIMGOS and WA switch the VIEW and do not copy
+
+- Pressing **SIMGOS** shows `toPlain(body)` in the window; pressing **WA**
+  shows `toWhatsApp(body)`. Pressing the active one returns to the note as
+  written. Nothing is written to the clipboard.
+- The window becomes the staging area: pick the destination, see exactly what
+  it will receive, then select the part you need.
+- The Salin sheet on the patient page is unchanged. It still copies and still
+  does not change the screen. The two are deliberately different tools.
+- The subtitle says which view is showing (`tampilan SIMGOS` instead of
+  `hanya dibaca`).
+- The `<pre>` carries `data-copy-format`, so a selection copied from the WA
+  view keeps `°` and one from the SIMGOS view is folded.
+
+### 3. Peek: Salin RM
+
+- The number is shown in the subtitle (`RM 00800001`), and **Salin RM** in the
+  title bar copies the digits only, matching the patient page.
+- The minimum window width is now 360 px (was 280). With five fixed-width
+  controls in the title bar, the patient's name was the only thing left to
+  shrink, and at 280 px it shrank to nothing (recurring patterns 6/7).
+
+### 4. Custom Checklist: Riwayat
+
+- **Data model.** Repeating items already kept ticks per date in `todoTicks`.
+  One-off items stored only `done: true`, which records *that* something was
+  done but not *when*.
+- **New optional field `doneOn: ClinicalDate`** on one-off items. It is set
+  on tick and on switching a done item to one-off. On untick the key is
+  *removed*, not set to `undefined`, because Firestore rejects undefined
+  values.
+- **`todoHistory()`** is derived, never stored, so a second record cannot
+  disagree with the first. It groups by day, newest first, in list order.
+  - Items ticked before this release are listed under *Tanggal tidak
+    tercatat*. No date is guessed.
+  - Ticks on deleted items are skipped, since their label is gone.
+  - Past ticks of an item that has since become one-off are kept.
+- **Riwayat** button in the Custom Checklist header, on the patient page and
+  in the peek. It is read-only: ticking happens only on the list for the day
+  on screen.
+
+### 5. Bandingkan → Dengan revisi tempelan
+
+- A second mode in the compare sheet (⇄): paste the revised SOAP and it is
+  compared with the note on screen.
+- **Abaikan format**, on by default, compares content only. A revision comes
+  back through WhatsApp or SIMGOS, and both change markers, blank lines and
+  spaces that nobody edited. Tested: a full SIMGOS round trip (no markers,
+  CRLF, no blank lines, NBSP) reads as *no changes*.
+- **Word-level edits.** A line that was edited rather than replaced shows as
+  one row with only the changed words marked (`Atorvastatin ~~20~~ 40 mg`).
+  A line is treated as edited when at least half its words survive; below
+  that it shows as removed + added, because pairing unrelated lines reads
+  worse.
+- **Summary** (`n diubah · n ditambah · n dihapus`) and a **Hanya yang
+  berubah** option that keeps one line of context either side.
+- A `+ − ~` gutter carries the meaning as well as the colour.
+- The pasted text is never saved. It lives in the sheet's content, which
+  Radix unmounts on close.
+
+### Wrong turns
+
+- One `todoHistory` test fixture gave an open one-off item a tick *today*.
+  The real write path cannot produce that, because `setRepeat` removes
+  today's tick. I corrected the fixture, not the function.
+- The first version of the revision rows placed all edits before unpaired
+  removals, which could move an edit above a line that preceded it. Rows now
+  keep their position.
+
+### Not done, and why
+
+- **No "Pakai versi revisi" button.** Adopting someone else's text into the
+  note is an edit, and it should be a deliberate step of its own.
+- **The WA view with the "guarded" bullet style.** The copy sanitiser strips
+  zero-width characters from every manual copy, so guards shown in the WA
+  view do not survive select-and-copy. That was already the sanitiser's
+  behaviour and is unchanged.
+- **Riwayat shows the clinical day, not the time.** Neither kind of tick has
+  ever stored a time, and inventing one would be worse than leaving it out.
+- **Not rendered.** The sandbox has no browser. Worth checking:
+  - the peek title bar at 360 px wide;
+  - a Konsul copied as Teks polos (it should have no `*`);
+  - a real chief revision pasted into Bandingkan.
+
+```
+1287 tests passed (+34)
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-16.5`
+
+**The peek window's Checklist, Custom Checklist and Catatan pasien are one row
+of tabs now.**
+
+### Root cause
+
+These were three stacked collapsible strips, each a full-width row with a
+44 px tap target and its own border. The problem was the structure, not the
+padding:
+
+- **Closed**, the three strips cost about 135 px of a 380 px window, and the
+  note (what the window is for) got roughly a third of the height. Your
+  screenshot shows this: four windows, each mostly labels.
+- **Open**, each strip added its own panel of up to 160 px, and nothing
+  stopped all three being open at once. Stacked accordions add up, so the note
+  body could be squeezed to zero.
+
+Shrinking the padding would only have made the same stack smaller. It would
+still grow with every strip added.
+
+### The fix
+
+- **One bottom row, three tabs.** Closed, it costs one 44 px row instead of
+  three.
+- **One panel slot.** Only one tab is open at a time. Pressing the open tab
+  closes it, and pressing another switches straight to it. The panel is capped
+  at 45 % of the window height and scrolls inside itself, so the note always
+  keeps the rest.
+- **The panel opens above the tabs,** so the row never moves. Switching from
+  Checklist to Catatan is two presses on the same spot.
+- **Counts are badges** that never truncate. When space is tight the label
+  shortens ("Custom Chec…") but "0/1" stays whole. A badge is tinted when
+  everything is done. Catatan pasien shows a dot when it has content, and a
+  tab with nothing in it is dimmed.
+- Tabs size to their label (`flex-auto`), so the short "Checklist" does not
+  take the space "Custom Checklist" needs.
+- The row keeps `pr-6` so the last tab stays clear of the resize grip.
+- The tabs are disclosure buttons (`aria-expanded`/`aria-controls`) rather
+  than ARIA tabs, because a tablist must always have one tab selected and this
+  row can have none. The full label and count are in `aria-label`.
+- The content is unchanged. The panel shows the same live checklist, the real
+  `PatientTodos` in compact mode, and the same standing note. What is open is
+  still not remembered.
+
+### Not done, and why
+
+- **Tabs stay 44 px tall.** That is the project-wide tap-target rule
+  (`check:a11y`), and peek windows are not limited to mouse screens. A
+  fine-pointer variant at around 32 px would save another 12 px on ward PCs,
+  but it would be the first `pointer: fine` rule in the codebase. That is a
+  decision for you, not something to slip into this release.
+- **The title bar was not touched.** It is the other large block in the
+  window, since the SIMGOS / WA / Buka / ✕ buttons are 44 px each.
+  Compressing it is the next win if the note is still too short.
+- **Not rendered here.** The sandbox has no headless browser, and the browser
+  download host is not allowed. Typecheck, lint and tests pass, but the layout
+  has not been seen. Please check on a ward PC with 3–4 windows open,
+  including one resized to its 280 px minimum width.
+
+```
+1253 tests passed
+typecheck / lint (0 warnings) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-16.4`
+
+**"Pakai format ini" changed the button and not the text. Lint now fails on
+any warning.**
+
+### Root cause
+
+The six lint warnings had been sitting in `verify` output while every entry
+here said "lint — clean". That was true only of errors. `exhaustive-deps` was
+set to warn, and a warning that does not fail the pipeline is a list that
+grows quietly.
+
+One of the six was a real bug. In Salin, the Ringkas report read the
+consultant's switches (`active?.plainText`, `?.staffing`,
+`?.verificationTime`) inside a `useMemo` that listed none of them. It also did
+not list `applied`, the flag that selects them. So the memo only recomputed
+when something *else* changed.
+
+**How it showed on the ward:**
+
+1. Ringkas (PDF) is already selected.
+2. You press **Pakai format ini** for ZD.
+3. The button turns to *Format ini sedang dipakai*.
+4. `setShape('ringkas')` is a no-op, so nothing the memo watched had moved.
+5. The copied text has no *Jam verifikasi* line. For MZ, the staffing lines
+   and markers stay in.
+
+The output kept the old shape until you typed a character or touched a chip.
+That is the exact failure the comment above `applied` warns against: a control
+that says one thing while the output is another.
+
+Reading the state around it turned up two more faults in the same family:
+
+- **`applied` did not reset on reopen.** The sheet stays mounted with the
+  patient page, and opening it resets the shape. The flag survived, though, so
+  a reopened sheet could show a disabled "sedang dipakai" over a shape the
+  consultant never asked for, with no way to press it again.
+- **`applied` was a boolean.** It remembered *that* a format was applied, not
+  *whose*. If the note's DPJP Utama line was edited while it was `true`, the
+  new consultant's switches took effect without anyone pressing anything.
+
+### The fix
+
+- **`appliedFor: string | null`** holds the DPJP id instead of a boolean.
+  `appliedReportConfig()` returns the config only while that id matches the
+  note's consultant, so a stale application stops matching on its own. The
+  flag also resets whenever the sheet opens.
+- **`consultantReportOptions()`** resolves the three switches to plain values
+  *before* the memo, and the memo depends on those values. This makes the
+  dependency list complete by construction. It also stays stable across
+  renders, which the config object would not guarantee.
+- Both helpers are pure, live in `pdfReport.ts`, and have 7 tests.
+
+**The structural guard:** `exhaustive-deps` is now an **error**, and `npm run
+lint` runs with `--max-warnings 0`. From now on there are only two states,
+clean or red. I confirmed the guard actually fails by appending an unused
+disable directive and watching lint exit 1.
+
+### The other five warnings, individually
+
+| Where | Verdict | Change |
+|---|---|---|
+| `CopySheet` open effect (`activeShiftNote`) | Deliberate: it depends on the id so the shape does not reset mid-typing | The id is read into `shiftNoteId` before the effect and used inside it. Same behaviour, and the list is complete as written |
+| `CopySheet` `selected` memo (`body`, `aliases`) | Unnecessary deps left behind by the switch from section ids to groups | Removed |
+| `CompareSheet` diff memo (`leftPane`, `rightPane`) | Safe: it listed `.body` while reading the pane objects | The bodies are taken out as strings first. Still no re-diff on unrelated renders |
+| `DocumentPage` title effect (`document`) | Safe: it listed `id` and `title` | The same fields are read into consts first |
+| `formatters.ts` unused `eslint-disable no-control-regex` | Stale | Removed |
+
+None of the "deliberate" omissions needed a suppression comment. Each one was
+really "depend on a field, not the object", and the way to say that is a
+const declared before the hook. The comment in `eslint.config.js` that
+justified `warn` is rewritten to say so. It also names the escape hatch: a
+line-level disable with its reason, visible and greppable.
+
+### Wrong turn
+
+My first draft of this change cited this release's version in two code
+comments. `check:version` rejected both, correctly. They now point at
+`CHANGES.md` without naming a version.
+
+### Not done, and why
+
+- **No component test for the memo itself.** The suite does not render
+  components (there is no `@testing-library`), and adding a DOM test harness
+  for one regression is a bigger decision than this fix. The lint rule is now
+  the regression test for this class of bug. The tests cover the resolution
+  logic.
+- **The `DocumentPage` title draft does not stop following the stored title
+  once the field is touched**, although the comment above it says it does. If
+  another device renames the document while you are typing, your draft is
+  overwritten. This predates this change and was not touched here. It needs
+  its own decision, whether to add a `touched` flag or to commit on blur only.
+- **Nothing was run on a device.** Worth checking on the ward: open Salin →
+  Ringkas (PDF) → Pakai format ini on a ZD patient. The *Jam verifikasi* line
+  should appear immediately.
+
+```
+1253 tests passed
+typecheck / lint (0 warnings, enforced) / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-16.3`
+
+**Custom Checklist in the peek window, and one name for it everywhere.**
+
+### The name
+
+`Checklist pasien` → **`Custom Checklist`**. One instance in the codebase, and
+that is the point of changing it now: the daily checklist, the per-patient one
+and the note strip were close enough in name to be confused, and the peek
+window was about to show two of them one line apart.
+
+The import link inside it now reads **"Ambil dari checklist harian"** rather
+than "Ambil dari checklist", which named neither of the two things it sits
+between.
+
+### In the peek window
+
+A third strip, between the daily checklist and the standing note.
+
+It renders the **real `PatientTodos`**, not a read-only copy — so ticking,
+adding and importing behave exactly as they do on the patient page. A second
+implementation would be a second thing to keep in step, and the first time they
+disagreed nobody would know which was right.
+
+It reads the day ON SCREEN, like everything else in this window: a peek at an
+older note shows that day's ticks, not this morning's.
+
+`PatientTodos` gained a `compact` flag that drops its own heading, because the
+strip already names it and two headings one line apart reading the same words
+is how a 420 px window runs out of room for the thing it is showing. The counts
+move to the strip label, so they are visible while it is closed — which is
+usually all anybody wants from it.
+
+```
+1246 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-16.2`
+
+**Several peek windows at once, a visible resize grip, Salin, a date chip, and
+collapsible checklist and standing note.**
+
+### More than one window
+
+One peek at a time is a sheet with extra steps. The case this exists for —
+comparing two patients, or keeping one open while working through the others —
+needs more than one.
+
+`previewIds` is an array, and **the array IS the z-order**. Bringing a window
+forward is moving its id to the end; nothing tracks a separate stacking number
+that could drift out of step with the list. Pressing anywhere in a window
+focuses it, which is last-touched-on-top — the rule every window manager uses
+and the only one nobody has to be told.
+
+Two details that only show up with several open:
+
+- **First placement cascades** by 28 px per open window. Two landing on the
+  same pixel look like one, and the second appears not to have opened.
+- **A window survives a filter change.** The patient is looked up in the full
+  list, not in the filtered cards, so searching does not close the window you
+  were reading.
+
+Re-peeking a patient already open brings that window forward rather than
+opening a second copy of it.
+
+### A visible resize grip
+
+Two short strokes in the corner, the convention every desktop window uses,
+drawn in the border colour so it reads as part of the frame rather than as a
+control competing with the buttons above. It was a transparent 16 px square —
+a feature nobody could find.
+
+### Salin, in the two formats that leave the app
+
+Not the full Salin sheet: that offers sections, presets, a preview and an
+identity line, and a 420 px window is not where any of that gets chosen. What
+is wanted from a peek is the whole note, now, in the form it is about to be
+pasted into — so the two destinations are two buttons and there is nothing to
+configure.
+
+`toPlain` for SIMGOS, `toWhatsApp` with the user's bullet setting for WhatsApp
+— the same functions the main sheet calls, so a note copied from here and one
+copied from there are identical.
+
+### The date is a chip
+
+With several windows open, "hanya dibaca" is the same on every one and the date
+is the only thing that differs. It is now a chip, tinted differently when the
+note is not today's — a note from three days ago read as today's is the mistake
+this window makes easiest.
+
+### Checklist and Catatan pasien
+
+Two strips that open, closed by default. They are the reason somebody peeks at
+a patient they are not going to open — "did anyone do the EKG", "what was the
+access problem" — and both are short.
+
+The checklist is **live**: ticking here writes through the same controller the
+patient page uses. It reads the day ON SCREEN, not today, so a window opened on
+an older note shows that day's ticks.
+
+Neither strip's open state is remembered. A window is a moment — opened to
+answer one question and closed again — so restoring it would restore the state
+of a question somebody already finished asking.
+
+```
+1246 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-16.1`
+
+**Buka and ✕ on the peek window did nothing.**
+
+The title bar is the drag handle and also carries both controls, and the drag
+handler called `setPointerCapture` on every `pointerdown` inside it — including
+presses that landed on a button.
+
+Capture retargets every subsequent pointer event to the capturing element, so
+the `pointerup` never reached the button underneath and no click was ever
+generated. The bar dragged perfectly while both controls were dead, which is
+why it looked like a styling problem rather than a gesture one.
+
+A press that starts on a `button` or an `a` is no longer a drag. Checked on the
+event TARGET rather than by moving the handler somewhere narrower, because the
+whole bar should stay draggable — the space around the title is the obvious
+place to grab a window from, and putting the handler on the title text alone
+would trade two broken buttons for a handle nobody can find.
+
+The resize grip is itself a button, so the check only applies to the move
+gesture; its own press must still start a drag.
+
+Both controls also got proper tap targets now that they are actually
+pressable — they had been sized as decoration.
+
+```
+1246 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-14.5`
+
+**The checklist tick was never being saved. And the peek is a window now.**
+
+### Why the ticks kept disappearing — and why yesterday's fix did not help
+
+Not the sync race fixed in `2026-09-14.4`. The tick was **never saved in the
+first place**, so there was nothing for any sync to lose.
+
+The handler was React's `onChange` on the contenteditable container. React's
+change plugin handles checkboxes through `click`, and only for inputs React
+itself rendered. These boxes are inserted by `execCommand` into a
+contenteditable, so they have no fiber. React walks up to the nearest element
+it does know — the `div` — sees that a `div` is not a checkbox, and dispatches
+nothing.
+
+The `onChange` prop looked correct, had a comment explaining exactly the right
+thing about attributes versus properties, and had simply never run. The box
+ticked on screen because the browser ticked it; nothing wrote it down, and it
+came back blank the next time the note was read from storage.
+
+Bound natively now, on both `change` and `click`. The redundancy is cheap
+because the handler is idempotent — it reads the box's own state rather than
+toggling anything — and it is worth having because whether a given browser
+fires `change` for a synthetic checkbox inside a contenteditable is not
+something to rely on.
+
+The attribute is still what gets written, for the reason the old comment gave:
+`innerHTML` serialises attributes and ignores properties.
+
+### The peek is a floating window
+
+A sheet is modal — it covers the board, and closing it is the only way to see
+the board again. That is the wrong shape for what this is used for: reading one
+patient's note WHILE looking at the others, comparing a plan against the card
+beside it, keeping a note open while writing a report. Every one of those needs
+both things visible at once, and a sheet makes them alternate.
+
+It is now a panel dragged by its title bar, resized from the corner, closed
+with Escape or ✕.
+
+- **Position is not persisted.** A card's position on the canvas is saved and
+  has to survive a different screen; this window lives for as long as it is
+  open. It is placed once per patient, offset from the top right — unless you
+  have already moved it, because a window that jumps back on every peek is one
+  you reposition every time.
+- **The title bar can never leave the viewport.** A window dragged past the
+  edge has no handle left to drag it back by.
+- **The header carries the full identity**, not "Pratinjau". On a board of
+  twelve this is often one of several things being read at once, and a panel
+  you have to click into to identify is not much of a peek.
+- **Still read-only.** Nothing typed here could be saved anywhere, so there is
+  nothing to type into — a read-only window cannot leave a half-written note in
+  a chart nobody is looking at.
+
+Both axes resize from one corner grip, unlike the board cards where they are
+deliberately separate: a window has no neighbours to disturb, so there is
+nothing for a stray pixel of the other dimension to break.
+
+```
+1246 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-14.4`
+
+**Salin RM; the Catatan checklist that vanished on a tab switch; Rapikan SOAP
+without AI.**
+
+### The checklist was not removed, it was overwritten
+
+A lost update, and the mechanism is worth stating because it will recur
+wherever a list lives in one document.
+
+The Catatan notes are ONE Firestore document holding an array, so saving any
+note rewrites all of them. Each save built that array from the `notes` value
+its own render closed over — and a tab switch fires two saves in quick
+succession: a flush for the note being left, then a save for the note being
+entered.
+
+The second save's array came from a render that had **not yet seen the first
+echo back**. It carried the old body for the note just left, and overwrote the
+checklist added seconds earlier. Read-modify-write, with the read too old.
+
+It was intermittent because it depends on whether the subscription echoed
+between the two writes, which on a fast connection it usually does.
+
+Bodies now sent and unconfirmed are kept and replayed over every subsequent
+array — including the archive toggle and the drag-reorder, which rewrite the
+same array and would revert an in-flight body the same way. Entries are dropped
+by **value**, not when the write resolves: a resolved promise says the request
+was accepted, not that this is what the document holds. Another device may have
+written in between, and then the pending value is genuinely stale and must stop
+being replayed.
+
+### Salin RM
+
+Beside the identity row. It is the single most retyped thing in the app — every
+SIMGOS search, radiology request and consult starts with it, eight digits that
+are wrong if one is — and it was readable but not copyable, which meant reading
+it off the screen and typing it back in. The exact transcription this app
+exists to remove.
+
+It copies the digits alone, with no `RM ` prefix, because it is going into a
+search box that wants the number. A sibling of the identity button rather than
+nested inside it: a button within a button is invalid HTML that browsers
+resolve by dropping one.
+
+### Rapikan SOAP, now deterministic first
+
+The sheet no longer needs an API key. Two passes run with no model and no
+network, both read off the worked bangsal note:
+
+**`autoEmphasis`** puts the markers where that format has them — identity bold
+(matched on the RM number, not the slashes, since a therapy line is full of
+slashes too), every `DPJP` line italic, the referral sentence italic, `S :` /
+`O :` bold, the request lines and `Plan :` bold, `TS <Bagian>` and `A/` bold,
+and every investigation heading bold.
+
+An investigation heading is recognised by **modality + a date on the same
+line**. That is what keeps it off the findings underneath: `EKG di PJT
+(02-09-2026)` is a heading, `Ventricular pacing rhythm, HR 60 bpm` is not.
+
+`Selesai:` is left plain, because it is plain in the worked note. The point is
+to reproduce that format, not improve on it.
+
+Idempotent by construction — every rule skips a line already carrying a marker,
+so running it twice cannot produce `**S :**`, and a line somebody formatted by
+hand is never touched, **including where they chose differently**.
+
+**`orderInvestigations`** then sorts the blocks into ward order, run after the
+markers so the heading it sorts by is the one the note ends up with.
+
+The AI pass stays, moved behind them as "Perbaiki lagi dengan AI" and handed
+the deterministic result rather than the original — the same relationship the
+CVCU reformatter already has. "Kembali ke hasil otomatis" is one press away.
+
+```
+1246 tests passed (was 1227 — 19 added on emphasis and pending writes)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-14.3`
+
+**Arranging a Titipan card erased every position in Pasien saya.**
+
+### Root cause: a stored map rebuilt from a filtered view
+
+`commit` wrote the resolved layout as the WHOLE stored map. That was
+deliberate — it is what stopped the board rearranging itself on every resize,
+fixed on 11 September — but "the whole board" is only ever the scope on screen.
+
+The store is a single map covering every patient. The ids handed to `placeAll`
+are just the ones the current filter admits. So dragging a card in Titipan
+wrote back a map containing only the Titipan cards, and every position in
+Pasien saya was gone. The reverse held too.
+
+**This is the same failure as rebuilding a stored list from a filtered view** —
+the one guarded against in `reorderWithinVisible` when the Catatan tabs got
+drag-reordering, and not guarded against here, because the canvas was written
+first and the filter arrived later.
+
+`mergeLayouts` now merges rather than replaces: every id the current view
+cannot see is kept, and the resolved entries still win for the ids it can —
+which is what freezes the visible board so a commit does not move its
+neighbours. Applied to all three write paths: drag, resize, and
+Rapikan/Urungkan.
+
+**Positions already lost cannot be recovered** — they were overwritten in
+localStorage, not soft-deleted. The affected scope will auto-place its cards
+into the default grid on next load, and can be rearranged from there.
+
+```
+1227 tests passed (was 1223 — 4 added on the merge, including the reported case)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-14.2`
+
+**"Ringkas perjalanan pasien" — the summary you read out when a consultant
+asks who this patient is.**
+
+In the ⋯ sheet, behind its own switch in Pengaturan → Fitur AI. Off by default
+like the others.
+
+```
+Identitas · DPJP · Diagnosis · Perjalanan singkat ·
+Keluhan sekarang · Terapi saat ini · Plan / KJS
+```
+
+### Why a model belongs here and not in the other four
+
+Every other AI feature in Plano competes with deterministic code that does the
+job better: the section parser is lossless, the lab parser is exact, the
+checker compares two numbers. This one has no deterministic equivalent, because
+the task is not transformation — it is deciding which three weeks of daily
+notes matter and which do not, and saying it in the order a DPJP expects to
+hear it.
+
+It also cannot damage anything. **Nothing is written back to the note**, and
+there is deliberately no "insert into note": a summary is a retelling,
+retellings lose things, and that is fine when you are standing next to the
+patient and terrible when it is filed.
+
+### Which days get sent
+
+A three-week admission is more text than one request can carry, so something
+has to be dropped and WHICH is the whole decision.
+
+| Kept | Why |
+|---|---|
+| The admission note, always | Identity, referral, presenting problem, first assessment. Without it the summary has to infer why the patient is in hospital from a mid-stay note that assumes everyone knows |
+| The most recent days | "Keluhan sekarang" and the current plan exist nowhere else |
+| **The middle is what goes** | Its content is largely carried forward into the days either side. A gap there costs a detail; a gap at either end costs the shape of the story |
+
+The dropped dates are reported twice — to the user, above the summary, and to
+the model inside the transcript. A gap the model does not know about is a gap
+it will narrate straight through, and a summary that silently skipped a week is
+one nobody can trust.
+
+### What it is told not to do
+
+The failure mode of a summary is not a wrong word. It is a confident number
+that was never measured — so everything here is a quotation rather than a
+calculation: no changed figures, doses, units or dates; nothing concluded that
+is not written; no clinical advice; "terapi saat ini" excludes anything marked
+finished; "keluhan sekarang" comes from the last day only.
+
+The identity line is shown from the patient record, beside the summary, and
+labelled as not coming from the model — the one field where a plausible
+invention would be hardest to notice and worst to read aloud.
+
+Available on a **locked** day too, unlike the other AI actions: a locked note
+is one you are reading out rather than editing, which is exactly when this is
+wanted.
+
+```
+1223 tests passed (was 1215 — 8 added on which days get selected)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-14.1`
+
+**A false KJS badge that no rebuild could clear; an AI checker that reported
+work already done; the 2026 Jarkom sheet.**
+
+### The rebuild could not fix a false positive
+
+Ny. Rukiah's note names four consultants — Kardio, Tindakan, Aritmia, EMD —
+and no `Utama` line. Under the current rule that is `null`, correctly. She was
+still badged `KJS · Kardio`, because the value was written by the PRE-13-
+SEPTEMBER rule, which fired on any `DPJP Kardio` line at all.
+
+And "Perbarui kartu pasien" could not clear it. The rebuild copied the write
+path's rule that **absence is not a correction** — `if (kjs) fields.kjs = kjs`
+— so a recomputed `null` was quietly skipped and the wrong badge survived every
+rebuild.
+
+The two are not the same act. On a write, a note that names nobody must not
+erase a role set from a note that did: the user is mid-edit and the old answer
+is still the best one. A rebuild exists BECAUSE the rule changed, and its whole
+job is to replace old answers with what the rule now says — including
+"nothing". It now clears the field.
+
+**Run Pengaturan → Perbarui kartu pasien once after installing this.**
+
+### The AI checker reported things that were already updated
+
+It announced that a lab planned yesterday had no result, and that a urinalysis
+was not in the assessment, when both were written in the note it was reading.
+A checker that reports work already done gets ignored — and takes its true
+findings with it.
+
+Three changes to how it is asked:
+
+- **Both dates are now given to it.** It had been dating findings by guesswork,
+  which is how a result headed with today's date got reported as yesterday's.
+- **A verification step, stated as a procedure:** for anything it intends to
+  report, search TODAY's note first; if the result is there, say nothing —
+  even if the plan line is still written. If unsure, say nothing.
+- **`H-2` means HARI KE-2**, not two days before something, and tomorrow is
+  `H-3`. The count runs forward. The one exception is discharge planning,
+  where `H-1` does mean tomorrow, and that is stated too.
+
+The deterministic rules are untouched. They never had this failure, because
+they compare two numbers rather than forming an opinion.
+
+### The 2026 Jarkom sheet
+
+Parses: **91 residents**, and the identifier recognises it unchanged.
+
+It also carries a second table on the right — `list NIM Semnol` — which is
+read now. Those are the PJ-Jarkom seniors, and they are exactly the 14 names
+that previously had no row of their own and fell back to the neutral greeting
+forever. They arrive with **no agama**, because that side of the sheet has no
+such column; the confirmation row shows "Agama?" and takes a correction rather
+than guessing.
+
+**Paediatrics nicknames now resolve for the greeting.** That sheet gives a
+short name and nothing else — `Suci`, `Ken`, `Dira` — so the agama is looked up
+by nickname, tolerantly: `Fatur` on the roster is `Fathur` in Jarkom, and
+`Auri` is `Aurea`. The same one-edit rule the full-name matcher uses.
+
+```
+1209 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-13.10`
+
+**Jadwal Jaga Pediatri is the fourth import.**
+
+### What the brackets meant
+
+Confirmed from the group message, and it changes who gets contacted: a
+bracketed name is a **PPDS BTKV**, not a cardiology resident. Taking it as the
+person on call would have sent the confirmation to somebody who cannot answer
+for a cardiology post — and whose own confirmation goes through Kardio anyway.
+
+So the pair prints as the group writes it, `Raden (BTKV)/ Ken`, and only the
+cardiology name gets a confirmation row.
+
+### A comma is a shift, not a second person
+
+`Rizki, Ken` is Rizki on pagi and Ken on malam. `(Kifli) - Galih, Dira` is
+Galih with Kifli on pagi, Dira on malam — the BTKV name attaches to the half it
+is written on, so `Fatur, (Kifli) - Suci` puts Kifli on the malam side.
+
+One name covers the whole day, **including Saturdays**: paediatrics still
+counts as dinas, so the sheet prints a single name where the cardiology roster
+splits the day. Asking for the "pagi" of a one-name Saturday returns that
+person rather than nothing.
+
+### The year comes from the date you are viewing
+
+The sheet spells out the month and never the year, so there is nothing in the
+document to read. Taken from the selected date rather than from `new Date()`:
+importing December's sheet in January still dates it to December, as long as
+you are looking at the month you are importing.
+
+### Where it sits in the chain
+
+```
+manual swap  >  paediatrics roster  >  nothing
+```
+
+Paediatrics is the one post the main roster leaves blank, so this is the only
+place its name can come from other than by hand — but a swap still wins,
+because the roster is right about the schedule and a swap is right about
+tonight.
+
+The import is identified by its `PPDS Jaga` / `Petugas Jaga` column header, and
+tested **last** of the four: its title is just `Jadwal Jaga <bulan>`, which any
+of these documents could claim.
+
+```
+1209 tests passed (was 1195 — 14 added on the parser and the paediatrics post)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-13.9`
+
+**Confirmation wording matches the sent messages; investigation order
+corrected to spec; two transforms the reformatter was missing.**
+
+### The post names in the confirmation message
+
+Taken verbatim from the message file:
+
+| Formasi prints | Message asks |
+|---|---|
+| IGD A | `*Jaga IGD A*` |
+| CVCU | `*Jaga CVCU PJT*` |
+| RSWS/UH | `*Jaga RSWS/UH*` |
+| Bangsal B | `*Jaga Bangsal PJT B*` |
+| Chief Non PJT | `*Chief Jaga Non-PJT*` |
+| Chief Konsul | `*Chief Konsul*` |
+
+Its inconsistencies are kept, not tidied: `Chief Konsul` and `Chief Jaga
+Non-PJT` carry no `Jaga` prefix while every other post does, and `Non-PJT` is
+hyphenated where the roster column is not. This string is read by a senior
+checking it against their own roster line, and a version that is neater than
+the one everybody else sends is a version that reads as a different post.
+
+### The swap tag moved onto the message box
+
+It was a small grey word on the row above. The box is what gets copied and
+sent, and a swap is the one thing about that message not in the roster anybody
+else is reading — so it is marked where the text is, seen by the person about
+to press Salin rather than before they have decided to.
+
+### Import cadence
+
+Jarkom is labelled **per semester**. New residents arrive twice a year, and a
+monthly prompt for a document that changes every six months is a prompt people
+learn to ignore. The two rosters stay monthly.
+
+### Investigation order — the specified one, not an inferred one
+
+```
+EKG · Laboratorium · Urinalisa · ADT · Foto Thorax · CT · USG · Echo ·
+LUS · Laporan Tindakan
+```
+
+Three corrections against the version inferred from note samples:
+
+- **Urinalisa and ADT had no rank at all** and therefore sorted to the end,
+  below the imaging.
+- **USG now comes before echo**, rather than being lumped in with lung
+  ultrasound after it. LUS is matched first in the table precisely because
+  both contain "ultrasound" — reversed, `Lung Ultrasound` would take the
+  generic USG rank and land two places early.
+- **`Laporan …` blocks** — the TPM and PPM implantation reports — were
+  unranked and stayed wherever they started. They now close the run.
+
+Inferring the order from two samples was the mistake. Two notes agreeing says
+they were written by one person on two days, not that the order is the ward's.
+
+### Two transforms the reformatter never did
+
+Both visible in the worked CVCU → bangsal pair, neither implemented before.
+
+**Finished drugs move out of the active list.** A CVCU note marks them inline —
+`• CA Gluconas … (selesai)` — because there the list is a running record of
+everything given. A bangsal note separates them: the active list is what the
+nurse is still giving today, and a finished drug sitting in it is an
+instruction to continue something that has stopped. The marker is dropped on
+the way, since repeating it under a `Selesai:` heading is how a heading stops
+being read.
+
+Only lines that SAY so are moved. A drug that finished in real life but is not
+marked stays where it is — the note is the only evidence there is. And a blank
+line does not end the block: these lists are written with gaps between groups,
+and stopping at the first would leave half the list unexamined.
+
+**`•` becomes `- `.** Not cosmetic: `•` is not ASCII, so every one of them
+reaches SIMGOS as a `?` — the bug chased through four releases this month. A
+note that has been through this transform can no longer carry them onward, and
+this pass runs even on a note the rest of the transform cannot restructure.
+
+### The AI fallback was returning a different document
+
+Asked to tidy, it produced `# CATATAN PERKEMBANGAN TERINTEGRASI` with markdown
+headings and regrouped sections — a rewrite, not a repair. Asking for a
+tidy-up without saying what the target looks like invites exactly that.
+
+The prompt now states the target shape explicitly: a WhatsApp note, no
+markdown, `*tebal*` and `_miring_` preserved, the section order, the
+investigation order above, and newest date first within a modality.
+
+```
+1195 tests passed (was 1185 — 10 added on the therapy split and bullets)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not in this release:** the paediatrics roster PDF. Its shape is different
+from the other three — dates against nicknames, two month sections, and
+parenthesised names whose meaning I do not know yet (`(Kifli)`, `(Raden)`).
+Parsing it on a guess about what the brackets mean would put the wrong person
+in a report.
+
+---
+
+## `2026-09-13.8`
+
+**Tukar jaga picks a PERSON; religion is correctable; the local-edit rule is
+stated on screen.** Still WIP.
+
+### Swapping names a person, not a string
+
+A tukar jaga is "Rheza is on for Jordy". Typing that as free text loses
+everything else about them — and the thing lost is the one that matters: their
+agama, and therefore the greeting the confirmation message opens with. A swap
+entered as bare text silently kept the PREVIOUS occupant's religion.
+
+So a swap now stores `{ name, initials, muslim }`, picked from this month's
+rota. `buildDirectory` joins the roster legend to Jarkom once; the legend is
+the spine, because it is who is actually on the rota — a resident in Jarkom who
+is not rostered cannot be swapped in, which is correct.
+
+**Searched by nickname first**, because that is what a resident is called and
+therefore what gets typed: "Rheza" has to reach `dr. M. Rheza Rivaldi Salam`.
+Exact initials outrank everything (`AV` means that person), then nickname,
+then any part of the full name.
+
+**Free text still works**, and deliberately. Paediatrics keeps its own roster
+and never appears in the legend, so that name can only ever be typed — a picker
+that refused anything off-list would make the one post needing hand entry the
+one post it could not do. A typed name commits on blur.
+
+The list appears only while typing. Nine of ten rows are already correct, and a
+control demanding attention on all ten to fix one is a worse trade than a field
+that looks like text until you use it.
+
+### Religion, three states
+
+Jarkom is a semester old and the rota is not, so a resident who joined since
+has no row, no agama, and the neutral greeting forever. Each row now carries
+`Otomatis / Muslim / Non-Muslim`, keyed by **initials** — a person's religion
+is not a property of a shift.
+
+Three states rather than a toggle: "Otomatis" is what Jarkom said, which is a
+different thing from an explicit answer. A two-state control would commit a
+guess for everybody the first time anyone touched it.
+
+It applies to **whoever is actually on**: a correction follows the swapped-in
+resident, not the post.
+
+### The edits are local, and that is the design
+
+Now said on the screen where they are made rather than in a help page nobody
+opens:
+
+> Perubahan di layar ini (tukar jaga, nama, agama, DPJP) tersimpan di perangkat
+> ini saja dan hanya untuk tanggalnya. Sumber utamanya tetap PDF jadwal.
+
+Re-importing a new month replaces the schedule wholesale and a swap entered
+against an old date stops applying. That is intended, not a limitation: a tukar
+jaga is a fact about one night, and carrying it into a schedule nobody has
+checked it against would be worse than losing it.
+
+```
+1185 tests passed (was 1174 — 11 added on the directory, search and swaps)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-13.7`
+
+**Konfirmasi Jaga: tukar jaga, the paediatrics name, and DPJP swaps — all
+editable.** Still WIP.
+
+### Two kinds of "wrong name", kept apart
+
+This is the decision the rest of it hangs on.
+
+| | Keyed by | Means | Applies to |
+|---|---|---|---|
+| **Koreksi nama** (existing) | initials | the roster is right about the day, the MATCH is wrong | every shift that person appears in |
+| **Tukar jaga** (new) | date + shift + post | the roster is right about the person, and wrong about TONIGHT | that one shift |
+
+Writing a swap into the by-initials map would rename that resident in every
+other shift on the board — a worse error than the one being fixed, and one
+nobody would connect back to a swap entered days earlier. So the inline name
+field now edits the DATE, which is what a tukar jaga is, and a **"Selalu"**
+link beside a swapped name promotes it to the permanent correction when the
+roster is the thing that is wrong. Two presses for the rare case, none for the
+common one.
+
+### The paediatrics row
+
+Every post now renders, including the ones with no initials. Paediatrics keeps
+its own roster that only they see, so its column is blank in every row — its
+name can only ever arrive by hand, and until now there was no hand to arrive
+by.
+
+A post filled in this way is a **real** post: it prints in the Formasi, it
+carries `(belum konfirmasi)` until ticked, and it counts in the outstanding
+total. Keying "staffed" on initials alone had left that resident permanently
+unconfirmable.
+
+### DPJP swaps
+
+Under the Formasi, "Ubah DPJP (tukar jaga)". Each field replaces only itself —
+a swapped Utama does not imply a swapped Tindakan — and an empty field falls
+back to the imported roster rather than printing blank.
+
+**Edited by DATE, not by position.** The pair after 00.00 is the next calendar
+day's row, so an edit made tonight against "setelah 00.00" is the same edit
+read tomorrow as "hari ini". Keying it by position would need it entered twice
+and would drift the moment one of them was.
+
+It also works with no DPJP roster imported at all: filling both fields by hand
+produces the block.
+
+```
+1174 tests passed (was 1168 — 6 added on the swaps)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+All three edits are per device, like the rosters themselves, and clearing a
+field restores what the schedule said rather than erasing the line.
+
+---
+
+## `2026-09-13.6`
+
+**Catatan pasien opens when it has something in it; a new checker rule and a
+rewritten AI prompt, both derived from counting the export rather than
+guessing.**
+
+### Catatan pasien
+
+Collapsed-by-default made sense when the section was empty on most patients. It
+stopped making sense the moment it was used: a standing note is allergies, an
+access problem, a DPJP's request — things that exist precisely because somebody
+must see them without being told to look, and a one-line truncated preview
+behind a `+` is the opposite of that.
+
+It now opens when the note is non-empty, from a one-shot initialiser so it does
+not fight you afterwards — collapse it and it stays collapsed for that patient.
+And the collapsed preview shows the **whole** note, wrapped, rather than the
+first line truncated: closing the section says you do not want it taking the
+space, not that you want two thirds of a sentence.
+
+### What actually gets updated, counted
+
+Diffed all 97 consecutive day-pairs in the 2026-09-11 export. What changes,
+by frequency: vitals (272 lines), therapy (270), subjective (211), plan (108),
+lab (104), EKG (92), diagnosis (86), echo (68), day counters (52), urine and
+balance (35), consults (17).
+
+Then the more useful measurement — which whole blocks are copied forward
+UNCHANGED:
+
+```
+urine      identical  13 / 41   (31%)
+balance    identical  12 / 30   (40%)
+echo       identical  75 / 93   (80%)
+foto thorax identical 68 / 84   (80%)
+terapi     identical  17 / 93   (18%)
+vitals (whole block)   5 / 94   ( 5%)
+```
+
+**New rule: urine output and fluid balance unchanged from yesterday.** They are
+daily measurements like the vitals and the two most often copied forward
+untouched — about a third of the time, against 5% for the vitals block.
+
+**Echo and chest films are deliberately NOT checked**, despite being identical
+80% of the time. There the sameness is correct: the study was not repeated. The
+distinction that matters is whether the number is measured every day, not
+whether it changed — and a rule that fired on every echo would bury the real
+findings under two that are always there.
+
+The same numbers rewrote the AI prompt. It now lists the nine fields that move
+daily, ordered by how often they move, and — just as importantly — an explicit
+"this is not a mistake" list naming echo, thorax, MSCT, old ECGs, unchanged
+diagnoses and risk factors. Without that the model reports them, because they
+genuinely are identical to yesterday.
+
+```
+1168 tests passed (was 1164 — 4 added on urine and balance)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Measured but not built:** a rule for a drug in the active therapy list that
+also appears under `Selesai:`. Only one note in the whole export has both lists
+in a parseable form, which is not enough to write a rule against — it would be
+a guess wearing a test.
+
+---
+
+## `2026-09-13.5`
+
+**The H- rule in the SOAP checker has never fired. Fixed.**
+
+Not the AI — a wiring bug of mine, present since the checker shipped in
+`2026-09-12.8`.
+
+`PatientPage` passed `dayMarkersDismissed: staleMarkers === null`. That reads
+null as "the user has dealt with the counters", but `staleMarkers` is null in
+three situations and only one is a dismissal:
+
+1. nothing has happened yet — the ordinary case, every note you open
+2. carry-forward ran and found no counters
+3. the user pressed "Sudah"
+
+So the rule was suppressed on essentially every note. The only window where it
+could fire was the moment right after a carry-forward — when the dedicated
+banner is already showing the same thing. It therefore contributed nothing,
+ever.
+
+**And it did so quietly, which is the part worth recording.** A check that
+finds nothing looks exactly like a check that is switched off. Five of the
+checker's rules were working, so the panel appeared, behaved, and gave every
+impression of being on.
+
+Dismissal is now its own state, set only by pressing "Sudah", and cleared when
+the day or the patient changes — a dismissal means "these counters, on this
+note, are dealt with", not a preference. Carrying it forward would suppress the
+check on the note where the counters are newly a day stale, which is exactly
+the note it exists for.
+
+Three tests added asserting the DEFAULT is "not dismissed" — absent flag and
+explicit `false` both fire, only an explicit `true` suppresses. The domain rule
+was always correct and tested; what was untested was that anyone called it with
+the right arguments.
+
+```
+1164 tests passed (was 1161)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-13.4`
+
+**Catatan: the toolbar follows the page, and note tabs reorder by dragging.**
+
+### Sticky toolbar
+
+A reference note runs to several screens and the formatting controls sat at the
+top of it — so bolding something two screens down meant selecting the text,
+scrolling back up, and losing the selection on the way. That is the same
+selection loss fixed in `2026-09-13.2`, arriving through the scroll instead of
+through the `<select>`.
+
+Sticky to the page's own scroller, so the shelf tabs and note tabs above still
+scroll away: they are navigation, and you have finished with them by the time
+you are formatting.
+
+Opaque background and `z-10`, not a translucent bar. Body text scrolls
+underneath this, and a translucent toolbar makes both unreadable at exactly the
+moment you are aiming at a small button.
+
+### Note tabs reorder by dragging
+
+Drag a tab onto another and the shelf reorders. Order is the stored array
+order, so a move rewrites `notes`.
+
+**The dangerous part is not the splice.** The tabs show one shelf at a time
+with archived notes hidden, so the order the user sees is a SUBSET — and
+rebuilding the stored array from that subset drops everything the filter hides.
+That failure is silent and total: a shelf of archived notes disappears and the
+only feedback is a successful save.
+
+`reorderWithinVisible` therefore walks the FULL list and hands each visible slot
+its new occupant in turn; every hidden item keeps its exact index. Extracted to
+`domain/reorder.ts` and tested for precisely that — a test asserts the two
+hidden jaga notes are still at indices 1 and 3 after a move among the umum
+notes.
+
+Native HTML drag rather than the pointer-based drag the board uses: this is a
+row of small tabs, and the native API gives the drop target for free. The board
+needed pointer events because it needed positions; this needs an order.
+
+```
+1161 tests passed (was 1156 — 5 added on the filtered reorder)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-13.3`
+
+**Two new checker rules; "Format bangsal" moved where it can be found, with an
+AI fallback behind it.**
+
+### A consult has answered but is not in the DPJP list
+
+**49 entries** in the 2026-09-11 export are in exactly this state: a `TS Pulmo`
+block with an answer in it, and a DPJP header that never names Pulmo.
+
+It matters because the header is who the report is addressed FROM. A service
+co-managing the patient and missing from that list does not get the note, and
+nobody finds out until they ask why they were not told.
+
+Matched on the first few letters of the service, because the two lines rarely
+spell it the same — `TS Pulmo` in the block, `DPJP Pulmonologi` in the header.
+
+### An electrolyte back in range, still written as the deficit
+
+> K sudah 4.1 (dalam rentang) — tambahkan "perbaikan" di diagnosisnya?
+
+**It runs only where you have supplied a range**, and that is the whole design.
+Plano ships no reference ranges; a range belongs to the laboratory that printed
+the result, and a number baked into an app is one nobody can correct when the
+lab changes its assay. So there is a new **Pengaturan → Rentang rujukan lab**
+(Na, K, Cl), empty by default, and this check is simply silent until it is
+filled in. Guessing a normal range to make the reminder work would be
+hardcoding one by another route.
+
+It also stops once the line already says `perbaikan` — the reminder is for a
+line nobody has revisited, not a nag about one that has been.
+
+### "Format bangsal" was hiding in the status row
+
+It was a small underlined link among the faint grey microcopy that says whether
+the note is saved — text you read once and then stop seeing. A transform that
+rewrites the whole note is not a footnote.
+
+It now sits beside Lab and Pembuka in the header, which are the other things
+you do TO a note, and drops into the ⋯ sheet on a phone with them.
+
+### AI fallback for the reformatter
+
+`cvcuToBangsal` stays the default and stays first. It moves blocks whole, never
+looks inside one, and produces the same output every time — which is what makes
+it safe to apply without reading every line. The model has none of those
+properties, so it is offered only **after** the real transform has run, under
+"Hasilnya masih belum rapi?", for the case it exists to serve: a CVCU note with
+headings the transform has never seen.
+
+It is handed the **deterministic result, not the original**. Fixing what is
+left is a smaller and far more checkable job than redoing the conversion. A
+character delta is shown beside it, computed without a model, because a large
+change in length is the signal that content was dropped or invented — the
+failure a reader skims past. "Kembali ke hasil otomatis" is always one press
+away.
+
+```
+1156 tests passed (was 1149 — 7 added on the two new rules)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Still open:** the floating toolbar in Catatan and drag-reordering of notes.
+
+---
+
+## `2026-09-13.2`
+
+**Text size in Catatan fixed; the AI button is back in the checker panel and
+still never fires by itself.**
+
+### Why the text size "sometimes didn't apply"
+
+Two separate causes, both real, and the second explains why it looked
+intermittent rather than broken.
+
+**1. The selection was gone by the time the command ran.** The size control is
+a native `<select>`, and opening one MUST take focus away from the
+contenteditable — at which point the browser is free to drop the document
+selection. `apply()` then called `focus()` and `execCommand('fontSize')`
+against a caret rather than a range, and the size was applied to nothing.
+
+The last range made inside the note is now recorded from `selectionchange` and
+restored before any `execCommand`. Recorded from that event rather than from a
+click, because a selection can be made with the keyboard too, or extended after
+the mouse is released. Restored with `focus({ preventScroll: true })`, so a
+long note does not jump away from what is being read.
+
+**This is exactly why it got worse as the note grew.** `focus()` scrolls the
+caret into view; on a document that scrolls, that is a different position from
+the one the user had selected, so the odds of the range surviving fall as the
+note gets longer. On a short note it usually survived — which is why it
+"sometimes" worked.
+
+**2. The same size twice did nothing.** The `<select>` kept its value, and
+`onChange` does not fire when the value has not changed — so applying "Besar"
+to a second paragraph was silently a no-op. It now shows a neutral `Ukuran`
+label and resets after each use: a command, not a state.
+
+### The AI button is back in the panel
+
+Where it sits was never the point — what happens without it is. Enabling the
+feature in Settings says the app MAY call the API; it does not say now. The
+button is back inside "Periksa lagi", and nothing reaches the network until it
+is pressed. The duplicate entry in the ⋯ sheet is gone; one trigger, not two.
+
+```
+1149 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-13.1`
+
+**Three real defects, all found by testing against the export: the checker read
+the wrong number, the lab parser could not read its own output, and the AI
+button sat where nobody asked for it.**
+
+### The checker called an osmolality a sodium
+
+```
+- Moderate Hyponatremia (131 -> 129 -> 136) Hipoosmolal (265)
+```
+
+It reported *"diagnosis menyebut Na 265, lab terbaru 136"* about a note that
+was entirely correct. `quotedValue` took the last number on the LINE, which
+works until the line carries a second value — and this format, diagnosis then
+osmolality, is everywhere in the corpus.
+
+Now scoped to the analyte's OWN bracket: `[^\n(]*` before the group stops at
+the first `(`, so `Hipoosmolal (265)` is a different group and invisible to it.
+The arrow chain inside the right bracket still resolves to `136`.
+
+This was wrong in the most damaging way a checker can be — plausibly. A rule
+that fires confidently on a correct note costs more than the five it gets
+right.
+
+### The lab parser could not read the format it writes
+
+`splitGrouped` required a colon: `Na/K/Cl : 136/3.6/103`. Plano's own output
+uses a space. So re-parsing a lab block this app had already formatted dropped
+**every grouped row** — Na/K/Cl, Ur/Cr, GOT/GPT, MCV/MCH/MCHC, NEUT/LYMPH,
+APTT/INR/PT — and the failure was invisible, because the remaining rows still
+parsed and the result still looked like a lab block.
+
+Measured on 200 lab blocks from the export:
+
+```
+before   0 / 200 round-tripped     769 / 1407 lines recognised
+after  200 / 200 round-tripped    1022 / 1407 lines recognised
+```
+
+The first attempt at the fix was itself wrong and is worth recording: simply
+making the colon optional left `[A-Za-z0-9\s]+` in the name, which greedily
+ate the start of the value — `Na/K/Cl 134/3.4/103` split as name `Na/K/Cl 13`,
+value `4/3.4/103`, failed the alias check, and dropped the row exactly as
+before. Name segments now exclude spaces and the value must be a slash-joined
+run beginning with a digit. Every grouped label in this corpus is one word per
+segment; the multi-word ones (`Anti HCV`) are never grouped.
+
+**The canonical format is confirmed unchanged** and matches the export exactly:
+`WBC · RBC · HGB · HCT · MCV/MCH/MCHC · PLT · NEUT/LYMPH · LED · APTT/INR/PT ·
+GDS · Ur/Cr · Albumin · GOT/GPT · Na/K/Cl · Ca/Mg · CRP · Troponin · D-Dimer ·
+HBsAg · Anti HCV · Anti HIV`, each group printed only if something in it was
+found.
+
+### The AI never runs on its own
+
+The "Periksa dengan AI" button was inside the checker panel — and that panel
+appears **by itself**. A button that appears by itself, spends the user's quota
+and sends the note off the device is not the same thing as a feature the user
+enabled. Enabling it in Settings says the app MAY do that; it does not say
+"now".
+
+The trigger moved to the ⋯ sheet, where every other deliberate act on a note
+already lives. The panel is back to appearing only when a rule actually fires —
+or when AI findings exist, since they have to land somewhere — and the AI
+results still sit below the rules, tagged `(AI)`.
+
+```
+1149 tests passed (was 1141 — 8 added across the two parsers)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not in this release:** the floating toolbar and font-size bug in Catatan,
+drag-reordering of notes, and the CVCU → Bangsal reformatter. The last one is
+not a rename of the existing "Rapikan SOAP" — it is a different feature and
+needs both formats pinned down first.
+
+---
+
+## `2026-09-12.11`
+
+**The API key field could be silently overwritten by a password manager.
+Fixed.**
+
+### What the dots in the field actually were
+
+The field was `type="password"`. That type is exactly what a password
+manager watches for, and `autocomplete="off"` does not stop it — every major
+manager documents that they ignore it for this purpose, because the whole
+point of a manager is to fill logins the page would rather it not touch.
+
+The dangerous part is that the field is CONTROLLED: `value={key}`, updated
+`onChange`. A manager offering (or auto-filling) an unrelated saved password
+into this field fires that same `onChange`, and the component wrote whatever
+arrived straight to storage as the Anthropic key — no typing, no Save button,
+nothing to notice until a call failed with a 401 that made no sense. If dots
+were showing without anyone having pasted a key, this is almost certainly
+what happened, and the value is somebody's unrelated saved password, not a
+key at all.
+
+### The fix
+
+- `type="text"`, never `"password"`. Masking is done with CSS
+  (`-webkit-text-security`) instead, which gives the same dotted look without
+  the type managers watch for.
+- `data-1p-ignore`, `data-lpignore`, `data-bwignore` — the documented opt-outs
+  for 1Password, LastPass and Bitwarden, the three that ignore
+  `autocomplete="off"` outright.
+- A format check: Anthropic keys start `sk-ant-`. Anything stored that
+  doesn't is now flagged in place — "tidak seperti API key Anthropic … periksa
+  dengan Lihat, lalu hapus jika bukan milik Anda" — as the safety net for
+  whatever a manager may have already written before this shipped.
+
+**Anyone who saw dots in this field before today should open it, press
+"Lihat", and check the value is actually their key.**
+
+```
+1141 tests passed (was 1139 — 2 added on the format check)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-12.10`
+
+**Settings grouped; ⋯ sheet stops repeating the header; sodium-for-glucose
+calculator; optional AI pass on the SOAP checker.**
+
+### Section aliases — checked, and two were missing
+
+Scanned every heading-shaped line in the export against the alias list. The
+list is current for the headings that define BOUNDARIES; what came back
+unmatched was almost entirely sub-headings *inside* a block — `Conclusion`,
+`Cardiac Valves`, `Kesan`, `Saran` — which is the boundary-based design working
+as intended: they ride along inside the study they belong to, and aliasing them
+would split one echo report into five sections.
+
+Two were genuine top-level headings and are now aliases:
+
+- **`Lung Ultrasound`** (75 uses) and **`Echo Hemodinamik`** → Penunjang. They
+  head their own block, so without an alias they rode along inside whatever
+  came before — and "O + Penunjang" could miss an entire study.
+- **`Plan Terapi`** → Plan. `Plan Monitoring` and `Plan Diagnostik` were
+  already there; this one travels with them, and a note using it had its plan
+  split across two sections.
+
+`Selesai:` was left alone deliberately. It rides inside Terapi, which is where
+a reader wants discontinued drugs — beside the active ones, not in a section of
+their own.
+
+### Settings, grouped
+
+Twenty-three sections in one flat list, with the four newest stranded below
+"Tentang". Now under six headings: **Tampilan & catatan · Privasi & data ·
+Akun · Pemeliharaan · Tentang**, with the maintenance tools (Perbarui kartu,
+Periksa hasil salin, Riwayat sesi, Setel ulang) collected rather than scattered.
+
+### The ⋯ sheet stops repeating the header
+
+Format lab, Pembuka and Bandingkan hari were added to the sheet at every width
+on 10 September, reasoning that a control existing at one screen size and not
+another is one nobody learns. In practice it read as clutter: on a desktop the
+sheet repeated three buttons sitting two centimetres above it, which makes the
+list longer to scan for the things that are ONLY in there.
+
+They now appear only where the header has dropped them — same `sm` breakpoint,
+read once rather than guessed at, since two sources for one breakpoint is how
+they drift.
+
+`Sematkan di papan` → **`Pin di dashboard`**.
+
+### Koreksi natrium pada hiperglikemia
+
+A real card, not a link out — and the distinction is why it is allowed here
+when the sodium and potassium REPLACEMENT calculators were removed. Those
+produce a dose, which has to match a protocol only the ward owns. This produces
+a reading: what the sodium would be at a normal glucose. It prescribes nothing.
+
+**Both published factors, never one.** Katz 1.6 (NEJM 1973, theoretical) and
+Hillier 2.4 (Am J Med 1999, experimental) disagree, and at glucose 600 they
+differ by 4 mmol/L — the gap between calling the same sample hyponatraemic and
+calling it normal. Showing one would present a contested number as settled. The
+divergence note appears only when it is real.
+
+**No downward correction below glucose 100.** The formula is linear and would
+happily return a sodium lower than the lab measured at a glucose of 70 — which
+is meaningless, since the dilution being corrected for is caused by the excess
+glucose and there is none.
+
+### Where the SOAP checker lives, and the optional AI pass
+
+It is **not a button** — it is the "Periksa lagi" panel above the editor, which
+appears by itself when a rule fires and is silent otherwise. That is deliberate
+for the deterministic rules: they cost nothing and run as you type.
+
+The new AI pass is the opposite and is therefore **on demand**. A network call,
+the user's quota, and the note leaving the device may not happen because
+somebody opened a chart. So: a third switch (`Periksa SOAP dengan AI`), and a
+button inside the panel.
+
+Its findings are listed **after** the rules and tagged `(AI)`. They are a
+different kind of claim — the rules found a mismatch between two numbers
+written in the note; this one has an opinion — and mixing them would let the
+weaker sort borrow the stronger sort's credibility. The rules always run; the
+AI never replaces them, because a checker whose findings vary between identical
+runs stops being trusted.
+
+```
+1139 tests passed (was 1133 — 6 added on the sodium correction)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-12.9`
+
+**The two AI features, both optional, both on the user's own key.**
+
+### Lab assist — before the parser, not instead of it
+
+A "Rapikan dengan AI" button in the lab sheet, visible only when a key exists
+AND the lab switch is on.
+
+It rewrites the **raw** box, not the output. `parseLab` is the thing that
+produces the line that goes into the record, and it stays the only thing that
+does — the model's job is to make messy OCR legible to the parser, not to write
+the result. The preview underneath is still the parser's work, and the assist
+can be wrong without being dangerous: a bad rewrite is visible in the raw box,
+editable, and one "Urungkan AI" away.
+
+The prompt forbids changing any number, adding any test, calculating anything,
+or guessing at an unreadable value.
+
+### Rapikan SOAP — a suggestion, side by side
+
+In the ⋯ sheet, again only with a key and the switch on. It shows the current
+note and the suggestion beside each other and **changes nothing** until
+"Terapkan usulan" is pressed; applying goes through the normal revision trail,
+so it can be rolled back.
+
+**Why this is the only shape this feature may take.** The dangerous failure is
+not a bad suggestion — that is obvious on sight. It is a good-looking one: a
+sentence quietly improved into something the author did not write, in a record
+somebody else acts on. Nothing but the author reading it prevents that, so the
+reading is built into the flow rather than offered as an option.
+
+Two things are computed **without** a model to make that reading faster:
+
+- **Character delta.** A large change in length is the signal that something
+  was dropped or invented — the one failure a reader skims past, because a
+  shorter note still reads correctly.
+- **Non-ASCII count.** For the reason recorded on `toPlain`: those reach SIMGOS
+  as `?`.
+
+Shown side by side rather than as a diff. A diff of a reordered note is almost
+entirely red and green, which hides the one line that changed meaning — the
+thing being looked for.
+
+The prompt permits reordering, numbering and whitespace only, and forbids
+changing any word, number, dose or unit. That is a request, not a guarantee,
+which is exactly why the human step above it is not optional.
+
+### Both are absent, not greyed out, when off
+
+A disabled button for a feature nobody enabled is an advertisement — and this
+one would be an advertisement for sending a patient's note off the device.
+
+```
+1133 tests passed (was 1126 — 7 added on the key store and the fail-closed switches)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+The switches fail closed by construction: anything in storage that is not
+exactly `true` reads as off, including a half-written or hand-edited value, and
+a corrupt flags blob reads as both off rather than throwing. The key is stored
+under its own localStorage entry and reaches nothing that syncs.
+
+---
+
+## `2026-09-12.8`
+
+**SOAP checker; bring-your-own-key AI settings (features wired next).**
+
+### "Periksa lagi" — what the note looks like it forgot
+
+A panel above the editor, from six rules read out of the 2026-09-11 export:
+
+| Finding | Rule |
+|---|---|
+| TTV sama persis | The whole vitals block matches yesterday's, ≥3 values |
+| Tidak ada TTV | No vitals anywhere in the note |
+| Hitungan hari belum berubah | A `H-`/`hari ke-` counter identical to yesterday's |
+| Lab sudah ada hasilnya tapi masih di Plan | A lab both planned and resulted in one note |
+| Diagnosis menyebut K 2.9, lab terbaru 3.7 | A quoted electrolyte value the lab has moved past |
+| Anemia tanpa Hb | `anemia` in the note with no haemoglobin anywhere |
+
+**Deterministic, not a model.** Every finding is a comparison of two numbers
+both written in the note. A model could do it and would also occasionally
+invent a discrepancy or miss an obvious one — and a checker stops being read
+the first time it is wrong twice. These fire on an exact mismatch and are
+silent otherwise.
+
+**It never edits.** Each of these has a legitimate reason to be exactly as it
+is: vitals that really were identical, a diagnosis deliberately quoting the
+admission value, a lab ordered again the same day. A checker that corrected
+would be wrong about a patient roughly once a week; one that asks is only ever
+ignorable.
+
+Calibrated against the real corpus:
+
+- **The whole block, not one vital.** 5 of 94 consecutive-day pairs in the
+  export have an identical vitals block — a rare, real signal. Flagging a
+  single repeated temperature would fire constantly.
+- **The arrow form is current.** `Hypokalemia (2.9 --> 3.7)` is how a
+  correction in progress is written; the value that counts is the right-hand
+  one. Comparing the admission number would flag every improving patient every
+  day.
+- **0.05 tolerance**, so `3.60` and `3.6` are the same result.
+- Runs on the debounced body, suppressed on a locked day, and silent on an
+  empty one — a blank day is a day not started, not a day with five problems.
+
+### AI: bring your own key
+
+**Pengaturan → Fitur AI (opsional).** Off by default, per device.
+
+Plano is shared, so a key in the build is a key every user spends — and a key
+in a GitHub Pages bundle is one anybody can read out of it, since a static site
+has no server to hide a secret behind. Each user brings their own or the
+features are simply not there for them.
+
+The key lives in localStorage and **nowhere else**: not Firestore, not the
+profile, not the export. Those sync, and a credential that syncs is a
+credential on every device that ever signed in. It is lost when browser data is
+cleared, which is correct for a secret.
+
+**Two conditions, not one**, before a byte of a note leaves the device: a key
+is present, and that feature's switch is on. They answer different questions —
+"can this app call the API" and "should it call it with my patient's note".
+The panel says plainly that the text goes to Anthropic and that this is a
+hospital-policy question.
+
+```
+1126 tests passed (was 1106 — 20 added on the checker)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not done this release:** the two AI features themselves. `lib/ai.ts` has the
+client, the key store and the flags, and Settings has the switches, but nothing
+calls `askClaude` yet — the lab assist and the SOAP tidy are the next build.
+Shipping the switches first means the policy decision can be made before any
+patient text is anywhere near the network.
+
+---
+
+## `2026-09-12.7`
+
+**Wrong-PDF contingency for the Helper import; the identity band's blank row
+fixed.**
+
+### The 44 px of nothing between the name and the location
+
+The eye button was the last child of the wrapping header row with `ml-auto`.
+On a narrow card the name and its badges fill that row, so the eye **wrapped
+onto a line of its own** — and being a 44 px tap target, that line was 44 px of
+nothing, at exactly the widths where space matters most.
+
+A control cannot share a wrapping row with content. The band is now two
+columns: everything that wraps on the left, the eye fixed on the right, outside
+the wrap entirely. The left column wraps as much as it likes and the eye stays
+top-right at every width.
+
+### Uploading the wrong PDF
+
+There are three file pickers side by side, which is three chances to drop the
+right file in the wrong slot — and the failure was quiet. The DPJP roster fed
+to the jaga parser finds no `HARI` column and produces zero shifts, which the
+UI reported as "tidak ada baris jaga terbaca": a message describing the FILE as
+broken when it was the SLOT that was wrong. On the evening before a jaga that
+is somebody re-downloading a PDF that was never the problem.
+
+`identifyJagaPdf` now runs **before** parsing, from marks only each document
+carries, and a mismatch names both sides:
+
+> Ini sepertinya Jadwal DPJP, bukan Jadwal Jaga PPDS. Impor di kotak Jadwal
+> DPJP.
+
+Refusing rather than trying anyway is the point: the alternative replaces a
+good roster with a parse of a different document.
+
+Two details that matter:
+
+**Order of tests.** The DPJP file is titled "JADWAL JAGA DPJP UTAMA DAN PRIMARY
+PCI", so checking for "jadwal jaga" first reads every DPJP file as a resident
+roster. Its own marker is tested first.
+
+**Identified by content, not filename.** These arrive over WhatsApp where names
+are mangled, and a renamed file is not a different document.
+
+An unrecognised file says so plainly rather than being guessed at — including
+the likely cause, a scanned PDF with no text layer, which nothing here can
+parse.
+
+```
+1106 tests passed (was 1100 — 6 added on document identification)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-12.6`
+
+**One resolved name per post, shared by the Formasi and the confirmation list,
+and correctable.** Still WIP.
+
+### The Formasi names exactly who you confirmed
+
+`ResolvedPost.display` is computed once, in `resolveShift`, and both the
+Formasi and the confirmation row render that same string. They previously
+derived it with the same expression in two places — which is one refactor away
+from drifting, and the failure that produces is a report naming somebody the
+user never messaged.
+
+Order of preference, every step deliberate:
+
+1. **what the user typed** — the only deliberate source in this feature
+2. the **Jarkom nickname** — how the person is actually addressed
+3. the **roster's full name** — never Jarkom's spelling of it
+4. the **initials as printed** — honest, and readable by anyone on the rota
+
+There is no step that produces nothing. A post with a person on it always names
+them somehow, because a blank in a Formasi reads as "unstaffed" and that one is
+not.
+
+### The name is editable, and the correction sticks to the person
+
+Matching the roster legend to the Jarkom sheet is fuzzy by necessity — two
+documents, two typists, disagreeing by a letter on real colleagues — and 14 of
+the 104 legend names have no Jarkom row at all. That residue does not go away
+by tuning the matcher, and the cost of one wrong name is a report to a
+consultant naming the wrong colleague.
+
+So the name in the confirmation list is an input. Type over it and it is
+remembered **against the INITIALS, not the date**: `AV` is the same person in
+every shift they appear in, so fixing them once fixes every Formasi they will
+ever be in. An override always wins over both documents — it is the only value
+here a person entered deliberately, and a parser has no standing to overrule
+it. Clearing the field removes the override rather than storing a blank.
+
+The roster's full name still shows underneath whenever it differs from what is
+being printed, so a bad match stays visible.
+
+```
+1100 tests passed (was 1096 — 4 added on the resolved display name)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-12.5`
+
+**Konfirmasi Jaga: tick-off state, and the name sources made explicit.**
+Still WIP.
+
+### `(belum konfirmasi)`
+
+A checkbox per senior in the confirmation list, persisted per **date AND
+shift** — a weekend has two teams, and confirming the Pagi chief says nothing
+about the Malam one, so a single per-date set would mark half the board done as
+soon as the first shift was.
+
+The Formasi prints the mark on every staffed post that has not been ticked:
+
+```
+Chief PJT : Ellen
+Chief Konsul : Jauhar (belum konfirmasi)
+Pediatri : 
+```
+
+Two decisions worth stating:
+
+**The set holds the CONFIRMED, not the outstanding.** The default state of a
+name nobody has ticked is "not yet confirmed" — a store that has to be seeded
+with every post before it means anything is one that reports a full team the
+day somebody forgets to seed it.
+
+**An unstaffed post is never marked outstanding.** Paediatrics keeps its own
+roster, so its column is empty in every row and there is nobody to confirm.
+Marking it would put a permanent false alarm in every Formasi, and a warning
+that is always there stops being read — taking the real ones with it.
+
+Counts in the header: `3 belum konfirmasi`, or `9 dari 9 terkonfirmasi`.
+
+### Where each name comes from
+
+Made explicit, because the two documents disagree on spelling and only one of
+them decides who is on:
+
+| Field | Source |
+|---|---|
+| Full name | **Roster legend** — always |
+| Nickname (panggilan) | Jarkom |
+| Agama (greeting) | Jarkom |
+
+Jarkom's spelling of a name is used nowhere. `dr. Grafiek Fogar Filen` is what
+the roster prints and what Plano shows; `dr. Greafiek Fogar Filen Nando` is
+only ever matched against, to reach that row's `Ve` and `Muslim`.
+
+The confirmation list now shows the roster name in small text under the
+nickname, so a wrong match is visible — if the nickname above it does not
+belong to that person, that line is where you see it.
+
+```
+1096 tests passed (was 1092 — 4 added on the confirmation mark)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Still not done:** no editing a parsed roster after import; confirmation state
+is per device; no reminder for the ones still outstanding.
+
+---
+
+## `2026-09-12.4`
+
+**Helper tab — Konfirmasi Jaga. Marked WORK IN PROGRESS in the rail.**
+
+A new tool tab that imports the three rosters from PDF and builds the Formasi
+Jaga and the per-senior confirmation messages from them. Kept entirely
+separate from the patient side: nothing in `domain/jaga/` imports from
+`patients/` or `entries/`, and nothing there imports from here. The only shared
+code is the greeting/time expander and the clipboard helper — if this ever
+becomes its own app, that boundary is where it cuts.
+
+### PDF import works because of positions, not text
+
+Read as prose, these PDFs are unusable — pdf.js emits fragments in draw order,
+so the jaga roster comes out with the shift table interleaved with the legend
+beside it and no way to tell which column a two-letter initial came from. Each
+fragment also carries an x/y, and with those the tables reconstruct exactly.
+`lib/pdfItems.ts` exposes that; `lib/pdfText.ts` is unchanged.
+
+Measured against the real files:
+
+```
+Jadwal Jaga PPDS   61 shifts, 16 Aug – 30 Sep, 104 initials in the legend
+Jadwal DPJP        30 days, both columns
+Daftar Jarkom      90 residents with agama and panggilan
+name matching      90 of 104 legend names resolved to a Jarkom row
+```
+
+Three things that had to be got right:
+
+**Weekend shifts are four points apart.** `Minggu Pagi` and `Minggu Malam` are
+different teams entirely, and a generous row tolerance merges them into one row
+of pairs. Two points, with the row anchored on its first fragment rather than a
+running average — an average drifts as fragments are added and swallows the
+next row.
+
+**The TANGGAL cell is merged across both weekend shifts** and pdf.js attaches
+it to the first. The `Malam` row inherits it; that is not a guess, it is
+literally the same cell.
+
+**The roster prints day numbers only** and spans a month boundary. The month
+comes from the title, and a day number smaller than the last one is the
+rollover — the only signal there is.
+
+### Name matching, and where it gives up
+
+The two documents are typed by different people: `dr. Grafiek Fogar Filen` in
+the roster is `dr. Greafiek Fogar Filen Nando` in Jarkom. Matching scores whole
+shared WORDS, allowing one edit on words of five letters or more — enough for
+*Marylin/Marilyn*, *Montong/Mantong*, *Siti/Sitti*, and too narrow to reach a
+different given name. Edit distance on the whole string was rejected: it treats
+`Muhammad Asrul` and `Muhammad Abdul` as near-identical, which is the exact
+confusion to avoid in a list of ninety colleagues who share given names.
+
+The 14 unmatched are mostly the PJ-Jarkom seniors, who appear in that sheet
+only as the PJ column and have no row of their own. They degrade to the full
+name and the neutral greeting, and the list **says so** — "agama tidak
+diketahui" — because silently sending the fallback is fine but silently hiding
+that it happened is what stops the sheet ever being updated.
+
+### The message
+
+- Greeting follows the hour it is written (`selamat pagi/siang/sore/malam`).
+- **Post-midnight DPJP is the NEXT CALENDAR DAY's row.** The consultant on call
+  changes at 00.00 WITA, which is a date boundary, not a second column of the
+  same row. Omitted entirely when tomorrow is not in the imported roster rather
+  than repeating today's pair — a wrong name there sends the night's reports to
+  someone who is not on.
+- **Pediatri prints as a blank line.** They keep their own roster that only
+  they see, so the column is empty in every row; a missing line reads as an
+  oversight, a blank one reads as "not ours to report".
+- Per-senior confirmation greets by **agama**, with the neutral form where it
+  is unknown — never the commoner one, which is wrong for a quarter of the
+  list.
+
+No WhatsApp integration, per instruction. Copy buttons only.
+
+Rosters are stored in localStorage, per device: they are published documents,
+replaced wholesale every month, and re-importable in ten seconds. Firestore
+would mean a schema, a sync path and a merge question for data that is already
+shared elsewhere.
+
+```
+1092 tests passed (was 1080 — 12 added on the message builders)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not done:** no tick-off state for who has replied; no editing of a parsed
+roster after import (a wrong cell means re-importing); the parsers are tuned to
+these three layouts and a redesigned PDF will need the column table adjusted.
+The verification harness that ran against the real PDFs was deleted after the
+run — no roster data is in the repo.
+
+---
+
+## `2026-09-12.3`
+
+**Identity band on the card; sidebar hint capped; the KJS badge finally
+appears — via a rebuild, because the cache was the problem.**
+
+### Why the KJS badge still did not show
+
+The rule was fixed in `2026-09-11.4`; the DATA was not. `kjs` is denormalised —
+computed from the note body and stored on the patient, so the board can render
+twelve cards without reading twelve bodies. That is the right trade, and its
+cost is that the cache is only ever rebuilt by a WRITE. Every existing patient
+still carries no role at all, and will until somebody types into their note.
+
+Same for `preview`: the limit went 240 → 1600, but the `…` was **saved**, not
+rendered, so no amount of resizing reveals text that was never stored.
+
+Waiting for each patient to be edited is, on an archive of a hundred, never. So
+**Pengaturan → Perbarui kartu pasien**: reads the latest entry of every
+active and archived patient, recomputes `preview` and `kjs`, writes them back.
+Note bodies are not touched.
+
+It reads only the latest entry per patient — the card shows one day, and
+reading every day of every patient would be hundreds of documents to rebuild a
+field that describes one. And it follows the write path's rule that **absence
+is not a correction**: a note naming nobody does not erase a role set from a
+note that did.
+
+Run it once after installing this build.
+
+### Identity band on the card
+
+Name, bed, location and badges were four stacked paragraphs in the same colour
+and weight as the diagnosis list under them, so finding a patient on a board of
+twelve was reading rather than glancing — the name had no edge, and the bed sat
+in the same visual layer as a sentence about their coronaries.
+
+They now sit in a tinted band with a hairline under it. Not a heavier border or
+a different hue: the card background already carries checklist progress, and a
+second colour on that surface is the collision recorded on the discharge wash.
+Same colour, different weight.
+
+### The sidebar hint was growing taller than the nav
+
+Nothing in that block had a height limit, so a long description, a two-clinic
+week and a wrapping ward name could make five rendered lines out of three
+facts, in a rail 180 px wide. It is ambient furniture and cannot out-size the
+navigation it sits under.
+
+Each line is now clipped to one line, with the full text on the panel's
+`title` — one hover away, and the rail keeps a predictable height whatever the
+roster says.
+
+```
+1080 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-12.2`
+
+**Resize now has measured ends, and the diagnosis text uses the room it is
+given.**
+
+### The two ends of the drag are measured, not guessed
+
+`MIN_CARD_H` was a flat 120 px and there was no maximum at all. Both numbers
+were wrong for the same reason: the useful range of a card depends on what is
+inside it, and a constant cannot know that.
+
+| | Was | Now |
+|---|---|---|
+| Minimum | 120 px, fixed | the card with its diagnosis list fully collapsed |
+| Maximum | none | the card with every line of the note shown |
+
+`minH` is the chrome the card cannot give up — name, bed, badges, progress
+strip, note. Below it those parts start overlapping each other, which is the
+first screenshot. `maxH` is chrome plus the full content height, so dragging
+further buys empty space and nothing else, which is the second.
+
+Both are measured by the card and reported up, because the canvas knows the box
+it drew and not what is in it. The middle block's `scrollHeight` is the full
+content height **whatever the card has been clamped to** — that independence is
+exactly what the removed uncap rule lacked, and it is why these can be measured
+while the card is already capped.
+
+The cap is still **not** dropped automatically at the top. Uncapping switches
+the card out of its fixed-height layout mid-gesture, which changes the very
+measurements the drag is clamped by — the shape of the flicker bug. Uncapping
+stays a double-click on the grip, where nothing is moving.
+
+### `- Hypertensive Heart Di…` on a card with room to spare
+
+The `…` was **baked into the stored string**. `buildPreview` truncated at 240
+characters at WRITE time, where the card's size is unknowable, so no amount of
+dragging could reveal text that had never been saved.
+
+- `PREVIEW_LIMIT` raised 240 → 1600. It now exists only to stop a pathological
+  note from bloating the patient document.
+- `previewLines`' four-line cap is a prop. Four on the masonry board, where a
+  card grows to fit and a long note pushes everything below it off screen; 60
+  on the canvas, where the user set the height themselves.
+
+**Existing patients keep their 240-character preview until their note is next
+saved** — the cache is only rebuilt on write. Opening a patient and touching
+the note refreshes it.
+
+```
+1080 tests passed (was 1076 — 4 added on the measured bounds)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-12.1`
+
+**Card height now follows the pointer. The snap is gone because the rule that
+caused it is gone.**
+
+### Root cause: a rule whose input was determined by its own output
+
+The height grip used to remove the cap entirely when you dragged past the end
+of the content, rather than setting a very large one. The reasoning was sound —
+`hMax: 900` on a 400-tall card behaves like no cap until the note grows past
+900, and then silently clips something you believed you had uncapped.
+
+The implementation could not work. The number it compared against, `natural`,
+came from the card's `scrollHeight` — but a capped card is rendered with
+`fitHeight`, which makes it a flex column that **compresses to the height it is
+given**. It never overflows, so its `scrollHeight` is always exactly the cap.
+`natural === origin.hMax`, every time, and the test
+
+```
+target >= natural - 8      with target = origin.hMax + dy
+```
+
+reduced to `dy >= -8`. **Any downward movement uncapped the card** and it
+jumped to full height; eight pixels back up re-capped it. That is the flicker
+in the recording — not a snap to a grid, a binary flipping under the finger.
+
+No threshold tuning fixes a rule that measures its own effect. It is removed:
+
+```
+hMax = max(MIN_CARD_H, (origin.hMax || natural) + dy)
+```
+
+The cap is exactly where the pointer left it. Dragging taller than the content
+is a legitimate thing to ask for and the only consequence is empty space you
+can see and drag back. **"No cap" is now an explicit act — double-click the
+grip**, which already did exactly that.
+
+`natural` still seeds the first drag on an uncapped card, where `fitHeight` is
+off, nothing is compressed, and `scrollHeight` really is the content height.
+
+### Two consequences of that, fixed in the same pass
+
+**The middle of the card shrinks but no longer grows.** It was `flex-1`, which
+stretched it to fill whatever height the card was given — so a card dragged
+taller than its content spread the diagnosis list out and pushed the progress
+strip to the bottom of a field of nothing. Shrink-only keeps the content's
+shape; a cap larger than the content simply leaves space below it.
+
+**The fade is drawn only when the card is really clipping.** Nothing outside
+the middle block can tell: the card is rendered at a fixed height, so its
+`scrollHeight` is always that height and says nothing. Inside an
+`overflow-hidden` box whose content is unconstrained, `scrollHeight >
+clientHeight` is the real answer — so the check moved in there. A fade over
+text that is not cut off claims there is more below where there is not.
+
+```
+1076 tests passed (was 1075)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-11.4`
+
+**KJS detection rewritten against the real export; canvas stops rearranging
+itself on resize; header badges hug the name; Salin bagian verified on 190
+real notes.**
+
+### KJS — the old rule was wrong in both directions, and looking at the wrong text
+
+Two separate defects, found by running the 2026-09-11 export through the
+parser.
+
+**1. It read `preview`, which does not contain the DPJP lines.** `preview` is
+the card's display excerpt, and on almost every patient that is the diagnosis
+block. `searchBlob` is worse — built from name, MRN, bed, ward and diagnoses,
+it never holds a word of the note body. So the badge fired only on the handful
+of patients whose preview happened to begin at the note header, and Ny.
+Nurhayati — a KJS patient in every note she has — showed nothing at all.
+
+`kjs` is now derived at WRITE time from the whole body, beside `dpjpId`, and
+stored on the patient. The preview remains a fallback for patients not re-saved
+since.
+
+**2. "Has a `DPJP Kardio` line" was not the discriminator.** 19 entries in the
+export carry that line while cardiology is the PRIMARY service —
+`_DPJP Kardio (Utama): dr. Zaenab Djafar_`, or a solitary `_DPJP Kardio : …_`
+on an ordinary patient. Calling those "another service's patient" is the
+expensive mistake: it says the plan is only a recommendation and the discharge
+is not ours, about a patient who is entirely ours.
+
+What actually separates them is **who is marked `Utama`**:
+
+| Note | Role |
+|---|---|
+| `_DPJP BTKV (Utama)_` + `_DPJP Kardio_` | `kardio` — we are consulted |
+| `_DPJP Kardio (Utama)_` + `_DPJP Orthopedi_` | ours — no consult badge |
+| `_DPJP Utama: <cardiologist>_` + `_DPJP KJS Anestesi_` | `ts` — ours, joint care |
+| several DPJP lines, no KJS anywhere | `null` |
+
+A patient with several DPJP lines and no KJS is not promoted to joint care:
+multi-service is ordinary here, and inventing a badge for it would mark half
+the board. Tests now use the actual notes — Ny. Sutini, Tn. Muh Ikhsan, Tn.
+Iwan, Ny. St. Sarifah, Ny. Nurhayati — rather than invented ones.
+
+### Resizing made the other cards jump
+
+`placeAll` auto-places cards with no stored position and skips slots occupied
+by cards that have one. So the moment one card was committed it joined the
+occupancy map, every other card's auto-placement was recomputed against a map
+that had changed, and cards nobody had touched moved. Resizing one card
+rearranged its neighbours; a second attempt "worked" only because by then
+everything was placed.
+
+A commit now writes the **resolved layout of the whole board**, so the
+arrangement on screen is the arrangement on disk. Nothing moves because of
+something done to a different card, and auto-placement is left to the one job
+it is good at — finding a slot for a patient who has just arrived.
+
+The grips also stay visible while a gesture runs, not only while hovered: the
+pointer leaves the card the instant a resize starts (it is captured, not
+tracked), so a hover-only grip vanished mid-drag and the gesture read as
+dropped.
+
+### The gap between the name and the H-1 badge
+
+The name was `flex-1` with a `min-w-[55%]` floor, which did two things wrong at
+once: it took every spare pixel, so the eye button sat at the far edge with a
+hand's width of nothing between it and a short name; and the floor pushed any
+badge that would not fit in the remainder onto its own line, even with room to
+spare.
+
+The name now sizes to its content and the badges follow it immediately,
+wrapping with it as words in a sentence do. Only the eye keeps `ml-auto` — it
+is a control, not a label, and a control that moves with the length of a name
+is one you have to look for every time.
+
+### Salin bagian — verified, not assumed
+
+Ran the section parser over all **190 entries with a body** in the export:
+
+```
+lossless (regions rebuild the note from the first boundary)   PASS
+no gaps, no overlaps, no backwards regions                    PASS
+every slice is a verbatim substring of the note               PASS
+a single-group copy contains nothing from another group       PASS
+
+182/190 notes had at least one boundary
+boundaries found: S 180 · O 180 · A 194 · Terapi 318 · Plan 222
+```
+
+Terapi outnumbers the notes because each `TS …` consult heading opens its own
+Terapi region — that is the behaviour that stops copying Plan from pasting the
+anaesthetist's plan as if it were ours.
+
+The 8 notes with no boundary are the ones with no S/O/A/P headings at all
+(unfilled templates and one-line IGD entries); Salin bagian correctly offers
+nothing there rather than guessing.
+
+The verification harness read a file of real patient data and was **deleted
+after the run** — it is not in the repo and no fixture from it was committed.
+
+```
+1075 tests passed (was 1072)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-11.3`
+
+**Today-only ECG mark that expires by itself; the card header no longer eats
+the patient's name.**
+
+### `EKG hari ini` — a date, not a boolean
+
+New `patient.ekgFor`, set from the ⋯ sheet, shown as an `EKG hari ini` badge.
+
+**Stored as the clinical date it applies to**, because the mark has to expire
+on its own. A boolean would need something to clear it, and the only thing that
+reliably runs in this app is the user — a flag nobody reset says "EKG today" on
+a Thursday because it was set on Monday, which is how a marker stops being read
+at all. A date makes expiry a comparison rather than a chore: nothing runs at
+midnight, the card simply stops matching.
+
+Separate from `ekgHarian` because they answer different questions — "this
+patient always needs one" versus "this patient needs one today". One toggle for
+both would mean marking a one-off tracing quietly promises a daily one. Where
+both are set the standing order wins the label; "hari ini" on a daily patient
+understates it.
+
+### The wrapped name on Tn. Arfa's card
+
+Two causes, and the first is the one that did the damage.
+
+**`overflow-wrap: anywhere` was collapsing the name's min-content width.** Both
+`anywhere` and `break-word` allow a break inside a word, but `anywhere` also
+lets those break points count toward the element's **min-content** size — which
+takes it to roughly one character. In a flex row that is a licence for every
+`shrink-0` badge beside it to take what it likes, and the name is left with a
+five-letter column: *Tn. Arfa / Anugra / h Dicky*. Changed to `break-words`,
+whose min-content width is the longest word, so a name breaks mid-word only
+when a single word genuinely cannot fit.
+
+It was added in `2026-09-10.4` for the pathological single-long-token name and
+went unnoticed until a card had enough badges to make the row tight. The new
+`EKG/hari` badge was the third — it exposed this, it did not cause it.
+
+**And the header row now wraps.** Its fixed cost grows every time a badge is
+added (eye, EKG, discharge) and the name was the only flexible member, so each
+new badge was paid for out of the patient's name — the same failure as the
+truncation this row replaced, arriving through a different door. The name now
+has a `min-w-[55%]` floor and the row is `flex-wrap`: the badge cluster drops
+to its own line before it squeezes the name, and stays in the top-right corner
+whenever there is room, which on a full-width card is always.
+
+```
+1072 tests passed (was 1067 — 5 added on the ECG marks, including the expiry)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-11.2`
+
+**Daily-ECG marker; DPJP delivery restructured into routes; new patients land
+in the list you are on; bulk archive.**
+
+### EKG/hari marker
+
+`patient.ekgHarian`, a flag like `pemantauan`, shown as an `EKG/hari` badge in
+the card corner and toggled from the ⋯ sheet.
+
+**A flag, not a checklist item.** The daily checklist asks "EKG sesuai
+kebutuhan" precisely because most patients do not need one — a task you tick is
+finished, and this is true until somebody says otherwise.
+
+**Not derived from the diagnosis text.** "Arrhythmic" is a judgement, not a
+keyword: `VES lown grade II` in a diagnosis list does not by itself mean daily
+tracing, and `AF` in a past-history line means nothing for today. Guessing it
+in the safe direction spams the board with marks that get ignored; in the
+unsafe direction it quietly drops a tracing someone was relying on. Set by
+hand, once.
+
+### DPJP delivery is now a route, not a sentence
+
+`Dpjp.delivery` was free text, which let `Dikirim oleh chief, dengan PDF` and
+`Dikirim oleh chief` sit side by side and left the reader to notice that the
+difference is whether to build a PDF at all. It is now `{ route, pdf, channel,
+note }` with one formatter.
+
+| Route | Who | |
+|---|---|---|
+| `chief` + PDF | AFM, ZD, AFG | send PDF to chief; chief forwards to DPJP and grup prodi |
+| `chief`, no PDF | AHN (Az Hafid) | same route, **no PDF** — the exception that makes `pdf` a field |
+| `group` | KS (Khalid), PT (Pendrik), PK (Prof Peter), ARB (dr Rio), MZ (Prof MZ) | send yourself to their group |
+| `dm` | IM (Prof IM), MAA (dr Asrul) | wapri only, never a group |
+
+Prof MZ carries `note: 'ada slide tersendiri'`, because it changes what you
+prepare, not just where you send it. ZD keeps the verification-hour note from
+the earlier list.
+
+Tests assert the **route**, not the sentence — a test that breaks on a comma is
+one people learn to update without reading.
+
+**AHA (Alkatiri) was not in this list** and is left as `chief` with no PDF
+claim. Say if he belongs in the PDF group.
+
+### New patients land in the list you are looking at
+
+`createBlankPatient` takes `temporary`, and the board passes the current scope.
+No prompt: the choice is real but lopsided, and a modal on the most-pressed
+button of the day charges every admission for the rare case. You are on Titipan
+because you are dealing with a titipan patient.
+
+The choice is moved rather than hidden — the new patient's page shows **Masuk
+daftar: Pasien saya / Titipan** for as long as the note is blank, where it
+costs nothing to ignore and one tap to correct. It disappears once there is a
+note: after that the patient has a history, and moving them is a decision
+rather than a correction, which stays in the ⋯ sheet where it is harder to do
+by accident.
+
+### Bulk archive
+
+**Arsipkan** in the Pilih bar, beside Pindahkan ke sampah. It opens a reason
+row — Pulang / Pindah / Meninggal / Lainnya — and applies one reason to the
+batch.
+
+**The reason is asked, never defaulted.** It is what the archive is later
+browsed and filtered by, so a batch filed under a guess is worse than an
+unfiled one: wrong in a way nobody re-checks. Batching is honest here — the
+case this exists for is the end of a round where several patients went home the
+same day, which is one reason by construction. A row rather than a dialog, so
+the selection stays visible behind it.
+
+```
+1067 tests passed (was 1065)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-11.1`
+
+**KJS badge now says which side we are on; auth persistence race fixed and the
+spontaneous sign-out instrumented.**
+
+### KJS: the fact was there, the direction was not
+
+The badge said a second service is involved and left out the half that changes
+what you do. On a patient referred TO cardiology the primary DPJP is not ours,
+the plan is a recommendation rather than an order, and the discharge is someone
+else's call. Two patients on one board can both be "KJS" and need opposite
+handling.
+
+`BoardCard.kjs` is now `'kardio' | 'ts' | null`:
+
+| Badge | Meaning |
+|---|---|
+| `KJS · Kardio` | Another service's patient, we are the cardiology consultant |
+| `KJS · TS` | Our patient, co-managed with another service |
+
+**The discriminator is the `DPJP Kardio` line.** It appears in the consult
+template because that note has to name both the primary DPJP *and* ours; a note
+where we are primary has no reason to name a separate cardiology DPJP, so its
+absence is meaningful rather than merely unobserved. Read from the note rather
+than a new field, for the reason already recorded for the KJS flag: it is
+stated in the opening, and a second place to record it is a second place for it
+to be wrong.
+
+Anything mentioning KJS without that line falls back to `ts` — the safer
+direction, because understating our distance from a patient is a smaller error
+than overstating our authority over one.
+
+**No `\b` before `DPJP` in the matcher.** The line is written inside italics in
+every one of these notes (`_DPJP Kardio : dr. Y_`), `_` is a word character, so
+the boundary does not exist there and the match fails silently. Same trap that
+hid `hari ke-9` from the day-marker matcher.
+
+### The spontaneous sign-out
+
+**Fixed, a real race.** `setPersistence` was fire-and-forget while `initSession`
+subscribed to `onAuthStateChanged` on the next line. `setPersistence` swaps the
+store the SDK reads credentials from, and any auth state emitted mid-swap
+describes a store that is being replaced — which arrives at the listener as
+`null`, indistinguishable from a real sign-out. The subscription now waits for
+persistence to settle.
+
+**Persistence order changed to IndexedDB first**, localStorage only as
+fallback. localStorage was the weaker store in three ways: first evicted under
+pressure, targeted by "clear browsing data" and cleanup extensions, and watched
+for cross-tab changes by POLLING — so with several Plano tabs open, a read that
+comes back empty for a moment looks exactly like another tab signing out.
+IndexedDB is what the SDK prefers when left alone.
+
+**The stale error is cleared on every auth transition.** "Gagal memuat
+pengaturan." described the *previous* session; a sign-in page still showing it
+reads as a failure of the sign-in happening now, which is the screen that gets
+reported as the bug.
+
+**And it is now instrumented rather than guessed at further.** Pengaturan →
+**Riwayat sesi** keeps the last 20 session events — boot, sign-in, sign-out,
+profile error, redirect error — each with a timestamp, whether the browser was
+online, and the SDK's error code where there was one.
+
+The `?` in SIMGOS is the standing lesson: four releases of plausible causes,
+each shipped, each followed by another report. The candidates here — a token
+the server rejected, a network failure treated as a rejection, a credential
+read that came back empty for a moment — are indistinguishable afterwards
+unless something wrote it down at the time. The panel leads with the one
+reading that changes what to do: a sign-out **while offline** is a dropped
+token refresh on ward wifi; **while online** is the case worth chasing.
+
+No uid, no email, no token, no patient data in the log — it is meant to be
+screenshot-able without thinking about it.
+
+```
+1065 tests passed (was 1060 — 5 added on the KJS direction)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not claimed:** the race above is a real defect and was worth fixing on its
+own, but I cannot say it is the cause of what you saw — a sign-out that undoes
+itself on a hard reload has several explanations and I have no recording of
+which one fired. The log is there so the next occurrence answers that instead
+of me.
+
+---
+
+## `2026-09-10.8`
+
+**Canvas reclaims its vertical space; a capped card stays readable; echo
+full-study opening with a live date.**
+
+### The handle was costing 44 px on every card
+
+A drag strip in normal flow has to be tall enough to press, and 44 px times
+twelve cards is most of a screen spent on an affordance used a few times a
+week. Rapikan cost another full row above the board on top of that, and both
+pushed the cards down past space that was sitting empty.
+
+- The handle is now **overlaid in the gap above the card**, appearing on hover.
+  Zero layout cost — it sits in a gap that already exists.
+- **Rapikan and Urungkan portal into the board toolbar**, beside Format lab,
+  and their own row is gone. Portalled rather than lifted: the layout they act
+  on lives in `CanvasBoard`, and lifting the state to reach the toolbar would
+  give two components the ability to write the same arrangement.
+
+It stays a handle rather than the whole card. The card is a `<Link>` and a
+long-press target; a drag starting anywhere on it has to win a race against
+both, and losing it either opens a chart you did not ask for or moves a card
+you did not mean to move.
+
+### A short card now gives up its middle, not its bottom
+
+Previously a cap clipped whatever fell past it — usually the progress strip,
+so a shortened card lost the two things that make it useful on a board: which
+patient it is, and what is left to do. It became an anonymous card still
+sitting where you expect to find that patient.
+
+`PatientCard` gained `fitHeight`. Under it the card is a flex column:
+
+| Zone | Under a cap |
+|---|---|
+| Header — name, bed, discharge chip | always visible |
+| Middle — chief, diagnosis list, labels | **clipped from the bottom, with a fade** |
+| Progress strip + "Belum:" line | always visible |
+
+The container is given `height`, not `maxHeight` — a flex column can only
+distribute a height it has been given; under `maxHeight` it sizes to content
+and the browser clips the overflow, which is the old behaviour. `min-h-0` on
+the middle is what lets it shrink at all: a flex child defaults to
+`min-height: auto` and refuses to go below its content. The expand chevron
+moved to the corner, since a bar across the bottom would cover the strip that
+is now deliberately kept.
+
+### Echocardiography full-study opening
+
+Added to the openings list:
+
+> Tabe dokter, mohon izin mengirimkan list pasien echocardiography full study
+> dari *(Ruang), (hari), (tanggal)*
+
+and a combined greeting, `Assalamu'alaikum dokter dan selamat (waktu) dokter.`
+
+Tokens resolve when the sheet opens: `(waktu)` → pagi/siang/sore/malam,
+`(hari)` → the day name, `(tanggal)` → DD-MM-YYYY. So at 13:30 on a Friday the
+options read exactly as they will be inserted.
+
+**Tokens rather than more seed strings**, because the alternative is four
+copies of one greeting differing by a single word, which go out of step the
+first time one is edited alone — and a date cannot be a seed string at all.
+**Expanded for display, not only on apply**, because `suggestGreetingIndex`
+matches on the words *pagi/siang/sore/malam*: an unexpanded token would make
+the time-appropriate greeting invisible to the function whose only job is to
+surface it. Resolved **once per open** against a single timestamp, so a sheet
+left open across midnight cannot offer "selamat malam" beside tomorrow's date.
+
+`(Ruang)`, `(no)` and the rest are deliberately left alone. They mark something
+only the sender knows, and filling them with a guess turns a visible blank into
+an invisible wrong answer.
+
+```
+1060 tests passed (was 1055 — 5 added on token expansion)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not done:** the greeting is resolved from the clock, not from the note's
+clinical day — these lines are the message being sent, and a back-dated note
+still goes out today. If a list should ever carry the date of the *study* and
+not the date of sending, that is a different token and needs saying.
+
+---
+
+## `2026-09-10.7`
+
+**Free canvas, stage 3: Rapikan, with undo. The canvas feature is complete.**
+
+### Why the gap needed a button rather than a rule
+
+A free canvas cannot close its own gaps. Discharge a patient from the middle of
+an arranged board and the hole stays — and the alternative, cards sliding up on
+their own, is the board rearranging itself after a deliberate act, which is the
+exact behaviour `Urutan sendiri` exists to escape. So the hole is real by
+design, and the answer is a press at a moment the user chose.
+
+### It closes gaps in your arrangement rather than replacing it
+
+`tidy` sorts by **reading order** — top to bottom, left to right within a band
+— not by the underlying board order. Tidying by list order would throw the
+arrangement away and call it cleaning. The band tolerance (half a row step)
+exists because two cards side by side are never at exactly the same `y`, and
+sorting on raw `y` would interleave columns the eye reads as one row.
+
+Widths and height caps carry through untouched. They were set deliberately and
+are not what "tidy" means. A card too wide for the remaining space wraps to the
+next row before it is placed, not after, so nothing is left hanging off the
+right edge.
+
+### Undo, because there is no other copy
+
+Rapikan overwrites every position at once, and those positions are the only
+record of work done by hand — nothing reconstructs them. **Urungkan** restores
+the layout as it was before the press.
+
+Held in memory, not storage, and cleared on use: undo is for the ten seconds
+after the press. An "Urungkan" still sitting there tomorrow would be offering
+to revert an arrangement that has since been worked on.
+
+```
+1055 tests passed (was 1050 — 5 added on tidy)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+### Canvas, as shipped
+
+| Stage | |
+|---|---|
+| 1 (`.5`) | Drag anywhere; fractional x/w so a layout survives a resize; localStorage; auto-placement that never buries a new patient |
+| 2 (`.6`) | Width grip and height cap; over-drag removes the cap rather than setting a large one; fade only when actually clipped |
+| 3 (`.7`) | Rapikan + Urungkan |
+
+**Deliberately not done:** phones render the masonry board, not the canvas. A
+360 px canvas is one column, which makes "where you put it" a list with your
+desktop gaps preserved as dead space. Layouts remain per-device; swapping
+`readLayouts`/`writeLayouts` for Firestore is the only change if that turns out
+to be wrong.
+
+---
+
+## `2026-09-10.6`
+
+**Free canvas, stage 2: card width and height cap.**
+
+Two grips on every card in **Urutan sendiri**, visible on hover: a vertical
+strip on the right edge for width, a horizontal one on the bottom for the
+height cap. Double-click either to reset that axis.
+
+**Two grips, not one corner.** A corner handle changes both dimensions in one
+gesture, so setting a width you like also nudges a cap you had already set —
+and in a horizontal drag most of the vertical movement is unintentional. One
+axis per grip means the gesture cannot do something you did not ask for.
+
+**Dragging the bottom edge past the end of the content removes the cap** rather
+than setting a large one. `hMax: 900` on a card whose content is 400 tall
+behaves exactly like no cap — until the note grows past 900 and it silently
+starts clipping something you believed you had uncapped. The two states look
+identical the day they are set and differ a week later, so the ambiguity is
+resolved at the moment of the gesture instead of being left in the data.
+
+**The fade is drawn only when the card is actually clipped.** Natural height is
+measured with `scrollHeight` (a bounding rect reports the *clamped* height —
+the number being compared against). A permanent fade under every capped card
+would claim there is more below on cards where there is not, and a signal that
+is sometimes false stops being read. Tapping the fade expands that card
+temporarily; the expansion is **not** persisted, because "show me the rest of
+this now" is a different act from "this card should be this tall".
+
+**Minimum cap is 120 px** — roughly the header plus one line. Below that a card
+no longer says which patient it is, which is worse than no card, because it
+still occupies the place you expect to find them.
+
+**Gesture arithmetic moved to the domain** as `applyGesture`, and is now
+tested: the clamp that keeps a card on the canvas, the minimum width, the
+uncap threshold. None of that is visible in a screenshot — a card that ends up
+one pixel off-canvas looks fine until it is the card you needed.
+
+```
+1050 tests passed (was 1042 — 8 added on the gesture arithmetic)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Still not done:** no "Rapikan" — discharging a patient from the middle leaves
+a permanent hole, and closing it automatically would be the board rearranging
+itself after a deliberate act. That is stage 3. Phones still render masonry.
+
+---
+
+## `2026-09-10.5`
+
+**"Periksa hasil salin" diagnostic added; free canvas board, stage 1.**
+
+### The `?`: a second clean capture, so the guessing stops
+
+The text captured this session — copied from the SIMGOS preview box — was
+checked byte by byte: **5560 bytes, zero non-ASCII characters, zero `?`.** It
+also shows ` derajat ` where a `°` would have been, which proves `foldToAscii`
+ran on it. That is the second clean capture. Whatever introduces the `?` is
+downstream of Plano's clipboard output, and a fifth reasoned fix in here would
+be a fifth guess.
+
+So this ships an instrument instead: **Pengaturan → Periksa hasil salin.**
+
+- Box 1 audits what Plano produced: every non-ASCII character with its code
+  point and line:column, plus any literal `?`.
+- Box 2 takes the text pasted into SIMGOS *and copied back out*, and diffs the
+  two — newline conversion normalised, because Windows turns every `\n` into
+  `\r\n` and a diff that flagged that would flag every line.
+
+The `?` count is reported **separately** from the non-ASCII count, and that
+distinction is the diagnostic. A non-ASCII character is something Plano put on
+the clipboard and could fix. A `?` is already ASCII — nothing downstream turns
+it back — so finding one in box 1 means the substitution happened before the
+text arrived, and finding one only in box 2 means SIMGOS did it.
+
+### Free canvas, stage 1 — drag a card anywhere
+
+New: `canvasLayout.ts` (model + storage) and `CanvasBoard.tsx` (surface +
+gesture). Active only under **Urutan sendiri**, and only at `lg` and above.
+
+**Coordinates.** `x` and `w` are fractions of canvas width; `y` is pixels. A
+card remembered at `x: 640px` is in a different place on every screen — a
+fraction means "40% across", which is what the arrangement actually means and
+survives a window resize with nothing re-running. The vertical axis is not like
+that: the canvas scrolls, so there is no height to be a fraction of, and the
+distance between two stacked cards is a real distance rather than a proportion.
+
+**Storage is localStorage**, keyed by patient id — a change from what was
+proposed last session, and matching what `customIds` already does. An
+arrangement is a view preference, not a fact about the patient; keeping it out
+of Firestore means dragging writes nothing to the server and cannot conflict
+mid-round. The cost is that a layout built on one machine is not the layout on
+another — already true of `Urutan sendiri` today, so not a regression. Only
+`readLayouts`/`writeLayouts` change if that turns out to be the wrong trade.
+
+**Auto-placement, not persisted.** A card nobody has dragged flows into the
+default grid, skipping any slot that overlaps a hand-placed card — because an
+unplaced card is a patient admitted since the board was arranged, and landing
+underneath an existing card makes them invisible and reads as never having been
+created. Overlap between two cards the *user* placed is left alone: that is
+what a free canvas is.
+
+**Only handle-dragging.** The card is a `<Link>`; a drag starting anywhere on
+it races the navigation on every tap. A strip above the card means tapping
+still opens the patient.
+
+**Not done, and why:**
+- **Resize (width + height cap) is stage 2.** `hMax` is already in the stored
+  shape so that arriving does not migrate a layout somebody arranged by hand.
+- **Phones keep the masonry.** A canvas scaled to 360 px renders every card as
+  an unreadable thumbnail, and one column makes "where you put it" a list with
+  your desktop gaps preserved as dead space. This is where option B cannot be
+  honoured literally.
+- **No "Rapikan".** Discharging a patient from the middle leaves a permanent
+  hole; that is stage 3.
+- Canvas height is assumed from `ROW_STEP` rather than measured per card.
+  Generous padding covers it; measuring means every card reporting its height
+  on every content change.
+
+```
+1042 tests passed (was 1027 — 15 added across the inspector and the layout model)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-10.4`
+
+**Mobile header and board toolbar no longer overflow the right edge.**
+
+### Root cause: a row whose fixed cost grew with every feature
+
+Both rows had the same shape — one non-wrapping flex line, one flexible child,
+everything else `shrink-0`.
+
+*Patient header:* back, a `flex-1` title, then Lab + Pembuka + Salin + ⇄ + ⋯.
+On a 360 px phone those buttons and their gaps exceed 360 px **on their own**,
+before the title is given a pixel. The title had already shrunk to nothing, so
+there was nothing left to give and the row ran off the edge. Every feature
+added to this header made it worse, and nothing in the layout could ever push
+back.
+
+Fix: the header's action cost is now **fixed**, not a function of how many
+features exist. Below `sm` it keeps only what is irreducible — where am I
+(back, title), what this screen is for (Salin), and everything else (⋯). Lab,
+Pembuka and Bandingkan hari now appear in the ⋯ sheet **at every width**, not
+only on mobile: a control that exists at one screen size and not another is a
+control nobody learns. Nothing became unreachable.
+
+*Board toolbar:* four order chips, a rule, then Format lab + Pilih. The chips
+alone are wider than a phone, and because the actions sat last and were
+`shrink-0`, **the actions were what got pushed off** — the two controls that
+are always needed, while the chips (one of which is selected and already
+visible) kept their space.
+
+Fix: two boxes, because the halves overflow differently. The order chips are a
+list and can scroll; the actions are fixed and must not. The chip strip takes
+the leftover width with `overflow-x-auto`, the actions keep theirs at every
+size. `min-w-0` on the scroller is load-bearing — a flex child's default
+`min-width: auto` refuses to shrink below its content, which is how a nested
+scroller ends up never scrolling and widening the page instead.
+
+```
+1027 tests passed
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+**Not done:** the `?` fix shipped in `2026-09-10.3` does not cover the workflow
+described this session (selecting text inside the Salin preview box). See the
+notes for that release — the polarity change is still correct for every copy
+made outside the sheet, but it is not the cause of the reported `?`. No further
+guess has been made without the raw clipboard text.
+
+---
+
+## `2026-09-10.3`
+
+**Day-counter banner now points at the counters; ASCII folding no longer
+depends on which screen is open.**
+
+### The banner named the counters and hid where they were
+
+`findDayMarkers` returned `{ text, value }` and threw away `match.index`. With
+no position, the banner could only list what it found — `H-2, H-3, hari ke-9`
+— so it answered *how many* and left *where* to a manual scan of a forty-line
+carried-forward note, with the counters scattered through the italic opening
+and the therapy list and two of them reading the same.
+
+- `DayMarker` now carries `start`/`end`, plus `findDayMarker(body, text, n)`
+  and `countDayMarker(body, text)`.
+- Each counter in the banner is a **button**. Pressing it selects that counter
+  in the editor and scrolls it into view, so the number is highlighted and one
+  keystroke from being replaced.
+- Repeats cycle: a counter appearing three times shows `×3` and walks the
+  occurrences on repeated presses, wrapping rather than stopping at the last.
+- A counter that no longer appears in the note is struck through and inert. It
+  does **not** dismiss the banner — editing a number proves the user looked at
+  it, not that the new number is right. "Sudah" is still by hand.
+
+Positions are **not stored**. The stale list is captured at carry-forward and
+the note is edited afterwards, so every character typed above a counter moves
+it; a remembered offset points at the wrong text by the time anyone presses.
+The search runs against the live body at press time instead.
+
+`BodyEditor` gained one imperative method, `selectRange`, through an opt-in
+`handleRef`. It reuses the existing `revealCaret` — which measures the true
+wrapped position through the section mirror — rather than computing its own,
+because two opinions about where a line is disagree on exactly the long notes
+this is for.
+
+### The `?` in SIMGOS: folding was opt-in, so it was off almost everywhere
+
+Confirmed this session that the `?` appears **only after pasting into SIMGOS**,
+never in Plano's own preview. That rules out the formatters — `toPlain` cannot
+emit a `?`; it deletes non-ASCII — and points at the one copy path with no
+formatter on it.
+
+Root cause: `useSanitizedCopy` folds to ASCII only when `simgosPreview` is
+true, and the *only* thing that ever set that flag was the Salin sheet, open,
+on the plain tab. Every other copy in the app — selecting text in the note
+editor, in a document, on the board — reached the clipboard unfolded. So the
+guarantee held on one screen and silently did not hold anywhere else. The
+decision was bound to **which sheet was open**, not to where the text was
+going.
+
+The polarity is now inverted:
+
+| | Before | Now |
+|---|---|---|
+| Default for any manual copy | no fold | **fold to ASCII** |
+| Exception | folding, on the plain tab | not folding, while a WhatsApp/markdown preview is open |
+
+`simgosPreview` → `nonAsciiPreview`. The two mistakes are not symmetrical:
+folding text that did not need it costs `°C` becoming ` derajat C` in a
+WhatsApp message; not folding text that did costs a `?` in the medical record,
+invisible until someone else reads it. The safe direction is the default, and
+the exception has to be declared.
+
+**If a `?` still appears after this**, the remaining path is outside Plano: a
+copy taken from WhatsApp Web or Telegram Desktop on the ward PC and pasted from
+there, where the clipboard is theirs, not ours. That is distinguishable — it
+would happen only on notes that went through a chat app first.
+
+**Not done:** no toast or visible warning when a copy still contains non-ASCII.
+The app has no toast system and adding one for this is a bigger change than the
+fix. The `findNonAsciiChars` warning inside the Salin sheet is unchanged.
+
+```
+1027 tests passed (was 1022 — 5 added on the jump targets)
+typecheck / lint / check:version / check:contrast / check:a11y / build — clean
+```
+
+---
+
+## `2026-09-10.2`
+
+**Discharge marker moved to the card corner as a car chip; patient names no
+longer truncated.**
+
+### The name was being spent on badges
+
+`PatientCard`'s title row was one flex line in which every child except the
+`<h3>` was `shrink-0`, and the `<h3>` carried `truncate` — `white-space:
+nowrap` plus an ellipsis. So the width available to a patient's name was the
+card minus however many badges that patient happened to carry: DPJP initials,
+KJS, the discharge badge, the pin star. The rule that produced was exactly
+backwards — the patients with the most going on were the ones whose names you
+could not read. "Tn. Petrus Da…" was never a long name; it was a name standing
+next to two badges.
+
+Raising the truncation width would have moved the threshold, not removed it.
+The fix is structural, in two parts:
+
+- The name **wraps** (`break-words` + `overflow-wrap: anywhere`) instead of
+  truncating. A second line costs one row on the cards that need it, and the
+  board is masonry — the gap closes underneath. Truncation cost a name on
+  every badged card, permanently.
+- DPJP, KJS and the pin **moved off the title row** onto the location line.
+  They are reference marks, read after you have found the card, never in order
+  to find it. Only the preview button and the discharge chip stay on the title
+  row, because both must sit in the corner.
+
+### The discharge wash was painted on a channel that was already taken
+
+The full-card gradient introduced in `2026-09-10.1` is gone. It failed for a
+structural reason, not a stylistic one: the card's background is already
+domain data. `colorToken` encodes how far the checklist got, and the wash
+tinted it with a second, unrelated fact — worst on a finished patient going
+home today, where a green "selesai" background under a green "pulang hari ini"
+wash read as one flat green block and neither signal survived.
+
+That is the same failure as the 4px `borderLeftColor` before it (silently beat
+by the pemantauan edge) and the bare colour stripe before that: a mark placed
+on a channel something else owns. The corner is the one place on a card that
+nothing else claims, so that is where it now lives:
+
+- `DischargeChip` — car glyph + short label, tinted by stage (12% for
+  `planned` up to 32% for `today`/`overdue`, fill only; the label keeps the
+  card's own foreground colour, so the loudest chip is no harder to read than
+  the quietest). A solid fill was tried before and rejected for out-shouting
+  the patient's name.
+- `IconCar` added to `Icons.tsx` as an SVG rather than the 🚗 emoji: emoji
+  render as a different picture per OS, ignore `currentColor`, and vary enough
+  in metrics to shift the chip's baseline.
+- `STAGE_LABELS` now holds the full phrase ("Pulang hari ini") for `title` and
+  the accessible name; new `STAGE_SHORT` holds the chip form ("Hari ini"). The
+  word can shrink because the car already says *pulang*, and the width that
+  frees goes to the name.
+
+Colour is still never the only signal: the label always renders, and the full
+phrase is on `title` and in an `sr-only` span.
+
+**Not done, deliberately:** no card-wide discharge signal of any kind now
+exists — the chip is the whole treatment. If the corner turns out to be too
+quiet when scanning twenty cards from the end of the bed, the next thing to
+try is a tint on the card's *bottom* edge, below the progress strip, which is
+the only other unclaimed channel. Not built on a guess.
+
+```
+1022 tests passed
+check:version   OK
+check:contrast  OK
+check:a11y      OK
+build           clean
+```
+
+---
+
+## `2026-08-28.2`
+
+**Repo cleanup — no app behavior changed.**
+
+Deleted four stray top-level paths, all committed by earlier GitHub web-UI
+uploads that only add files and never delete them:
+
+- `/domain`, `/components`, `/data` — a pre-`src/` snapshot of the app,
+  missing `denah`, `dpjp`, `calc`, `checklists`, `DocumentPanel`,
+  `CompareSheet`, and others added since. Never built or tested — `tsconfig`
+  includes only `src`, `vitest.config.ts` includes only `src/**`, Vite walks
+  from `src/main.tsx` — but present in the tree for anyone reading it cold.
+- `/plano-changed/` — a changed-file bundle from `2026-08-23.2` that was
+  committed instead of unpacked into `src/`. Contained its own
+  `src/version.js` pinned to `2026-08-23.2`.
+
+**Why this needed a fix, not just a delete:** `scripts/check-version.sh`
+scoped its scan to `src/ public/ index.html` and excluded matches by
+*basename*, so `plano-changed/src/version.js` was invisible to it twice over
+— the check reported `OK` while a stale version string sat in the repo.
+Rewritten to scan the whole tree (minus `node_modules`, `.git`, `dist`,
+`package-lock.json`) and exclude by path, plus a second check asserting no
+source file exists outside `src/`, `public/`, `scripts/`, `.github/`. See
+`SPEC.md` for the standing rule this enforces.
+
+The orphaned `plano-changed/CHANGES.md` is folded in below as history; its
+figures (612 tests, `2026-08-23.2`) are stale and superseded by every count
+above this entry.
+
+```
+651 tests passed
+check:version   OK (path-scoped)
+check:contrast  OK
+check:a11y      OK
+build           clean
+```
+
+---
+
+## `2026-08-23.2` *(recovered from the orphaned bundle — historical, not current)*
+
+**15 changed files.** Includes `2026-08-23.1` if you have not uploaded it.
+Nothing to delete.
+
+### 1. The CVCU → bangsal reformatter, third attempt
+
+Your before/after pair was what it needed. The first version reordered by
+guesswork and broke notes; the second only unwrapped headers, which was safe
+and did too little — its output still read as a CVCU note.
+
+**What was missing: the vitals are buried mid-sentence.**
+
+```
+Circulation: TD 121/84 mmHg, nadi 80 x/menit reguler, BJ I/II murni reguler, ...
+```
+
+Unwrapping `Circulation:` leaves that whole sentence intact. It now splits on
+commas and classifies each fragment, so the vitals lift out and the
+examination findings stay behind:
+
+```
+*O:*
+Compos mentis
+Tekanan Darah : 121/84 mmHg
+Nadi : 80 x/menit reguler
+Pernapasan : 20 x/menit
+Suhu : 36.4°C
+SpO2 : 96% via room air
+
+JVP R+2 cmH₂O
+BJ I/II murni reguler
+Akral hangat
+...
+
+*EKG CVCU PJT (19-08-2026)*
+```
+
+Investigations move below and each gets a `*…*` heading. The bare `EKG`
+label that only introduced the block is dropped, since every block now
+carries its own.
+
+Values keep their qualifiers — `80 x/menit reguler` stays `reguler` —
+because the fragment is moved rather than rewritten.
+
+**Nothing is discarded.** Fragments matching nothing go under `Lain-lain:`
+and are counted in the preview, so a wrong guess is visible before you apply
+it.
+
+Two bugs caught by tests while building it: `SpO₂` never matched, because
+the subscript is not a word character so `\b` after it never holds; and the
+first draft dropped `akral hangat` into the wrong bucket.
+
+### 2. Two optional formatting actions
+
+Both on the toolbar, both **actions rather than automatic**. Applying either
+on paste would edit text the moment it arrives, and the one time it guessed
+wrong there would be no way to tell what the original said.
+
+- **`Aa*`** — restores `*bold*` on headings and `_italic_` on DPJP and
+  referral lines that a plain-text paste stripped. Never touches a line that
+  already has a marker, so running it twice changes nothing.
+- **`•→-`** — turns the iPhone bullet into a hyphen. Line starts only; a `•`
+  mid-sentence is never list syntax.
+
+### 3. From `2026-08-23.1`
+
+Templates: `Pasien baru (admisi)` and `Konsul rawat bersama` removed; KJS
+and poli replaced from your reports; `Pasien perpindahan` added; the
+primer/sekunder split confined to the AHN template, with a test asserting
+exactly one template carries it.
+
+Patient page opens the most recent day that **has** a note rather than a
+blank today. Lab extractor reachable from the board. `Ambil dari catatan
+hari ini` in the identity sheet. Scrollbars in the app's own colours.
+
+**Verification at the time:** 612 tests passed (+8), `check:version` OK,
+`check:contrast` all card colours ≥4.5:1, `check:a11y` 62 components, build
+clean.

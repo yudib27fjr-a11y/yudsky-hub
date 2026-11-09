@@ -1,0 +1,396 @@
+import { expandOpeningTokens, timeOfDayWord } from '@/domain/opening';
+
+import { jarkomFor } from './match';
+import { onsiteFor, type OnsiteSchedule } from './onsite';
+import { JAGA_POSTS, type JagaPostId } from './types';
+import type { DpjpDay, DpjpRoster, JagaRoster, JagaShift, JarkomDirectory, JarkomEntry } from './types';
+
+/**
+ * Do two nicknames refer to the same person, allowing one typo?
+ *
+ * The paediatrics sheet and the Jarkom sheet are typed by different people and
+ * disagree by a letter on real colleagues — `Fatur` against `Fathur`, `Auri`
+ * against `Aulia`. The same one-edit rule the full-name matcher uses, applied
+ * to the short name, which is the only string the paediatrics sheet carries.
+ */
+function sameNickname(left: string, right: string): boolean {
+  const a = left.trim().toLowerCase();
+  const b = right.trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  if (a.length < 4 || b.length < 4) return false;
+  // One insertion or one substitution, walked in a single pass.
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (a.length > b.length) i += 1;
+    else if (b.length > a.length) j += 1;
+    else {
+      i += 1;
+      j += 1;
+    }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+
+const DAY_NAMES = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+const MONTH_NAMES = [
+  'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+  'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+];
+
+/** `2026-07-13` → `Senin, 13 Juli 2026`. */
+export function longDate(date: string): string {
+  const [year, month, day] = date.split('-').map(Number);
+  if (!year || !month || !day) return date;
+  const at = new Date(year, month - 1, day);
+  return `${DAY_NAMES[at.getDay()]}, ${day} ${MONTH_NAMES[month - 1]} ${year}`;
+}
+
+/**
+ * The date as the team is named: `Sabtu Pagi, 5 September 2026` at the
+ * weekend, `Senin, 7 September 2026` on a weekday.
+ *
+ * Weekend days carry two teams of entirely different people, and a message
+ * that says only "Sabtu" asks a senior to confirm a day they may be on for
+ * half of. The word goes after the weekday, the way the roster prints its
+ * `hari` column (`Minggu Pagi`) and the way the group writes it.
+ *
+ * Built from the date and the shift kind rather than copied from `hari`:
+ * a weekend `Malam` row's cells are merged in the PDF, and the derived form
+ * cannot disagree with the date it sits beside.
+ */
+export function shiftDateLabel(date: string, shift: JagaShift['shift'] = 'penuh'): string {
+  const long = longDate(date);
+  if (shift === 'penuh') return long;
+  const comma = long.indexOf(',');
+  if (comma < 0) return long;
+  const word = shift === 'pagi' ? 'Pagi' : 'Malam';
+  return `${long.slice(0, comma)} ${word}${long.slice(comma)}`;
+}
+
+/** The day after `date`, as the same ISO string. */
+export function nextDate(date: string): string {
+  const [year, month, day] = date.split('-').map(Number);
+  if (!year || !month || !day) return date;
+  const at = new Date(year, month - 1, day + 1);
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+}
+
+export interface ResolvedPost {
+  id: JagaPostId;
+  label: string;
+  place: string;
+  /**
+   * The name to print — the SAME string the confirmation row shows.
+   *
+   * Resolved once, here, so the Formasi and the list it is confirmed against
+   * cannot disagree. They were computed with the same expression in two
+   * places, which is one refactor away from drifting; a report naming someone
+   * the user never messaged is the failure that would produce.
+   */
+  display: string;
+  /** As printed in the roster, or empty where the post is unstaffed. */
+  initials: string;
+  /** Full name from the legend, or null when the initials are unknown. */
+  name: string | null;
+  /** Nickname from Jarkom — what the Formasi prints. */
+  panggilan: string | null;
+  muslim: boolean | null;
+  /** Set by hand for this date — a tukar jaga, or a post no roster covers. */
+  swapped: boolean;
+  /** Whoever is actually on, for keying a religion correction. May be empty. */
+  personInitials: string;
+  /** A PPDS BTKV on alongside them. Printed, never confirmed. */
+  companion?: string;
+  /** The Jarkom row was picked by hand for these initials. */
+  jarkomLinked: boolean;
+  /** Rows the legend name fits equally well; empty unless undecidable. */
+  jarkomAmbiguous: JarkomEntry[];
+}
+
+/**
+ * Turn one shift's initials into people.
+ *
+ * Every post is returned, including the unstaffed ones. Paediatrics keeps its
+ * own roster that only they see, so its column is blank in every row — the
+ * Formasi prints the line with nothing after it, because a missing line reads
+ * as an oversight and a blank one reads as "not ours to report".
+ *
+ * A name that resolves from the legend but not from Jarkom keeps the full
+ * name and loses only the nickname and the greeting. That degrades in the
+ * right direction: a slightly formal message beats no message.
+ */
+export function resolveShift(
+  shift: JagaShift,
+  roster: JagaRoster,
+  jarkom: JarkomDirectory | null,
+  /** Manual corrections by initials; see `store.setNameOverride`. */
+  overrides: Readonly<Record<string, string>> = {},
+  /**
+   * Who is on this post on THIS DATE — a tukar jaga, or the paediatrics name
+   * that no roster carries. Wins over everything, including the roster itself,
+   * because it is the only value here that describes the day rather than the
+   * schedule.
+   */
+  posts: Readonly<Record<string, { name: string; initials?: string; muslim?: boolean }>> = {},
+  /** Religion corrected by hand, by initials. See `store.setReligion`. */
+  religion: Readonly<Record<string, boolean>> = {},
+  /**
+   * The paediatrics entry for this date and shift, from its own roster.
+   *
+   * Paediatrics is the one post the main roster leaves blank, and this is the
+   * only place its name can come from other than by hand — so it slots in
+   * BELOW a manual swap and ABOVE everything else.
+   */
+  pediatri?: { name: string; btkv?: string } | null,
+  /** Jarkom rows picked by hand, by initials. See `store.setJarkomLink`. */
+  links: Readonly<Record<string, string>> = {},
+): ResolvedPost[] {
+  return JAGA_POSTS.map((post) => {
+    const initials = shift.posts[post.id] ?? '';
+    const legendName = initials ? (roster.initials[initials] ?? null) : null;
+    const found = jarkomFor(initials, legendName, jarkom, links);
+    const entry = found.entry;
+    /*
+      The legend's spelling, except when the user has LINKED this person to a
+      Jarkom row: that link is a statement of who the initials are, made
+      because the legend's spelling was wrong or matched two people, so the
+      row they picked supplies the name too.
+    */
+    const name = found.linked && entry ? entry.name : legendName;
+    const override = initials ? overrides[initials] : undefined;
+    const swap = posts[post.id];
+    const pedi = post.id === 'pedi' && !swap ? (pediatri ?? null) : null;
+
+    /*
+      The paediatrics sheet gives a nickname and nothing else, so the agama has
+      to be looked up by that nickname — `Suci`, `Ken`, `Dira`. Matched
+      tolerantly because the two documents disagree by a letter on real people
+      (`Fatur` on the roster, `Fathur` in Jarkom), which is the same one-edit
+      rule the name matcher already uses.
+    */
+    const pediEntry =
+      pedi && jarkom
+        ? (jarkom.entries.find((candidate) => sameNickname(candidate.panggilan, pedi.name)) ??
+          null)
+        : null;
+
+    /*
+      Religion follows the person who is actually on, not the post.
+
+      Order: a hand correction for whoever is on > the swapped resident's own
+      agama > the rostered resident's. Getting this wrong sends a colleague the
+      wrong greeting, which is the single thing the Jarkom import exists to
+      prevent.
+    */
+    const who = swap?.initials ?? initials;
+    const corrected = who ? religion[who] : undefined;
+    const muslim =
+      corrected ??
+      swap?.muslim ??
+      (swap ? null : (pediEntry?.muslim ?? (pedi ? null : entry ? entry.muslim : null))) ??
+      null;
+
+    return {
+      id: post.id,
+      label: post.label,
+      place: post.place,
+      initials,
+      name,
+      panggilan: entry?.panggilan ?? null,
+      muslim,
+      /*
+        Order of preference, and every step of it is deliberate:
+
+          1. what the user typed        — the only deliberate source here
+          2. the Jarkom nickname        — how the person is actually addressed
+          3. the ROSTER's full name     — never Jarkom's spelling of it
+          4. the initials as printed    — honest, and still readable by anyone
+             on the rota
+
+        There is no step that produces nothing. A post with a person on it
+        always names them somehow, because a blank in a Formasi reads as
+        "unstaffed" and this one is not.
+      */
+      display: swap?.name ?? pedi?.name ?? override ?? entry?.panggilan ?? name ?? initials,
+      /*
+        The BTKV resident on with them, printed and never confirmed.
+
+        The message asks whether somebody is on a cardiology post; a BTKV
+        resident cannot answer that, and confirmation for them goes through
+        Kardio anyway. So they appear in the Formasi line and get no row of
+        their own.
+      */
+      ...(pedi?.btkv ? { companion: pedi.btkv } : {}),
+      /** True when this date's name came from a swap rather than the roster. */
+      swapped: swap !== undefined,
+      /** Initials of whoever is actually on, for keying a religion fix. */
+      personInitials: swap?.initials ?? initials,
+      jarkomLinked: found.linked,
+      jarkomAmbiguous: found.ambiguous,
+    };
+  });
+}
+
+/**
+ * The Formasi Jaga message.
+ *
+ * The post-midnight DPJP block is the NEXT CALENDAR DAY's row, not a second
+ * column of the same one — the consultant on call changes at 00.00 WITA, which
+ * is a date boundary. Omitted entirely when tomorrow is not in the imported
+ * roster, rather than repeating today's pair: a wrong name there sends the
+ * night's reports to someone who is not on.
+ */
+export function buildFormasi(
+  shift: JagaShift,
+  posts: readonly ResolvedPost[],
+  dpjp: DpjpRoster | null,
+  at: Date,
+  /**
+   * Posts whose senior has replied. Anything staffed and absent from this set
+   * is printed `(belum konfirmasi)`.
+   *
+   * A set of the CONFIRMED rather than of the outstanding: the default state
+   * of a name nobody has ticked is "not yet confirmed", and a store that has
+   * to be seeded with every post before it means anything is one that reports
+   * a full team the day somebody forgets to seed it.
+   */
+  confirmed: ReadonlySet<JagaPostId> = new Set(),
+  /** Consultant swaps, by date. See `store.setDpjpEdit`. */
+  edits?: Readonly<Record<string, { utama?: string; tindakan?: string }>>,
+  /** The account's onsite schedule (`onsiteSchedule(settings.onsiteIgd)`); default if absent. */
+  onsite?: OnsiteSchedule,
+): string {
+  /*
+    Consultants swap too, and the published roster is a month old by the time
+    it is used. An edit for a date replaces whichever field it names and leaves
+    the other alone — a swapped DPJP Utama does not imply a swapped Tindakan.
+
+    Applied by date rather than by position, so an edit made tonight against
+    "tomorrow" is the same edit read tomorrow as "today".
+  */
+  const apply = (day: DpjpDay | null, date: string): DpjpDay | null => {
+    const edit = edits?.[date];
+    if (!edit) return day;
+    const base = day ?? { date, utama: '', tindakan: '' };
+    const merged = {
+      ...base,
+      ...(edit.utama ? { utama: edit.utama } : {}),
+      ...(edit.tindakan ? { tindakan: edit.tindakan } : {}),
+    };
+    // A pair with neither side filled is still nothing to print.
+    return merged.utama || merged.tindakan ? merged : null;
+  };
+
+  const today = apply(dpjp?.days.find((day) => day.date === shift.date) ?? null, shift.date);
+  /*
+    A PAGI team hands over in the evening, hours before the consultant changes
+    at 00.00, so the post-midnight pair is nobody on that team's business —
+    printing it put tomorrow's names in front of a senior who will never call
+    them. A weekday team and the MALAM team are on across midnight and keep it.
+  */
+  const tomorrow =
+    shift.shift === 'pagi'
+      ? null
+      : apply(
+          dpjp?.days.find((day) => day.date === nextDate(shift.date)) ?? null,
+          nextDate(shift.date),
+        );
+
+  const lines: string[] = [
+    expandOpeningTokens('Assalamualaikum dokter, selamat (waktu) dokter', at),
+    'Tabe dokter, mohon izin melaporkan tim jaga: ',
+    '',
+  ];
+
+  if (today) {
+    // One line when one consultant holds both (Avi's format, 2026-10-12).
+    const same = today.utama.trim().toLowerCase() === today.tindakan.trim().toLowerCase();
+    if (same) lines.push(`_DPJP Utama dan Tindakan: ${today.utama}_`);
+    else lines.push(`_DPJP Utama : ${today.utama}_`, `_DPJP Tindakan : ${today.tindakan}_`);
+  }
+  /*
+    DPJP Onsite IGD 14.00–21.00, from the account's weekday schedule
+    (`onsite.ts`). A MALAM team gets it only on a day flagged for it —
+    Saturday by default (Avi, 2026-10-12).
+  */
+  const onsiteDpjp = onsiteFor(shift.date, shift.shift, onsite);
+  if (onsiteDpjp) lines.push(`_DPJP Onsite: ${onsiteDpjp.name}_`);
+  if (today || onsiteDpjp) lines.push('');
+
+  lines.push(`*Hari/Tanggal : ${shiftDateLabel(shift.date, shift.shift)}*`, '');
+
+  for (const post of posts) {
+    /*
+      An unstaffed post is blank, never "(belum konfirmasi)".
+
+      Paediatrics keeps its own roster and its column is empty in every row.
+      There is nobody to confirm, so marking it outstanding would put a
+      permanent false alarm in every Formasi — and a warning that is always
+      there is one that stops being read, taking the real ones with it.
+    */
+    // `Raden (BTKV)/ Ken`, the form the paediatrics group uses.
+    const who = post.companion ? `${post.companion} (BTKV)/ ${post.display}` : post.display;
+    /*
+      A post filled in by hand is a real post and is confirmed like any other.
+      Keying this on `initials` alone would leave the paediatrics resident —
+      who can only ever be entered by hand — permanently unconfirmable.
+    */
+    const staffed = Boolean(post.initials || post.swapped || post.companion || post.display);
+    const pending = staffed && !confirmed.has(post.id) ? ' (belum konfirmasi)' : '';
+    lines.push(`${post.label} : ${who}${pending}`);
+  }
+
+  // The post-midnight pair comes BEFORE the closing (Avi's format, 2026-10-12).
+  if (tomorrow) {
+    lines.push(
+      '',
+      '*DPJP Utama dan Tindakan setelah Pk. 00.00 WITA*',
+      `_DPJP Utama : ${tomorrow.utama}_`,
+      `_DPJP Tindakan : ${tomorrow.tindakan}_`,
+    );
+  }
+
+  lines.push('', 'Mohon arahannya dokter. Terima kasih dokter.');
+
+  return lines.join('\n');
+}
+
+/**
+ * The message sent to one senior to confirm they are on.
+ *
+ * The greeting follows their AGAMA, which is the only reason the Jarkom sheet
+ * is imported at all. Where it is unknown the neutral form is used — the one
+ * that is never wrong for anybody, rather than the commoner one that is wrong
+ * for a quarter of the list.
+ */
+export function buildKonfirmasi(
+  post: ResolvedPost,
+  options: {
+    senderName: string;
+    senderPlace: string;
+    date: string;
+    /** Which team on that date; the weekend's two are different people. */
+    shift?: JagaShift['shift'];
+  },
+  at: Date,
+): string {
+  const waktu = timeOfDayWord(at.getHours());
+  const greeting =
+    post.muslim === true ? 'Assalamualaikum tabe dokter,' : `Selamat ${waktu} dokter, tabe dok,`;
+
+  return [
+    greeting,
+    `Mohon maaf mengganggu. Saya ${options.senderName}, yang bertugas jaga di ${options.senderPlace} pada _${shiftDateLabel(options.date, options.shift)}_. Saya ingin mengonfirmasi apakah dokter bertugas sebagai *${post.place}* pada hari tersebut. Mohon arahan dan bimbingannya. Terima kasih, dokter.`,
+  ].join('\n');
+}

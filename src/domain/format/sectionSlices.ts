@@ -1,0 +1,222 @@
+import { parseSections } from '../sections/parseSections';
+import type { SectionAlias, SectionId } from '../types';
+import type { CopyGroupId } from './copyGroups';
+
+/**
+ * "Salin bagian", by BOUNDARY rather than by recognition.
+ *
+ * WHAT WAS WRONG WITH RECOGNITION
+ *
+ * The previous approach asked, of every heading in the note, "which of the five
+ * groups does this one belong to?" — by id, then by keyword, then by what it
+ * sat under, then by a positional override for Terapi, then by a reset rule for
+ * TS blocks. Each of those was added to fix a real note, and each was correct
+ * about the note that prompted it.
+ *
+ * It cannot be made right, because it is answering the wrong question. A note
+ * contains headings nobody has seen before — `Pulsasi:`, `Status vaskuler
+ * ekstremitas inferior:`, `6P:`, `Laporan Arteriografi (02-09-2026)` — and any
+ * rule that must NAME a heading to place it will meet one it cannot name and
+ * guess. When it guessed wrong, the vascular findings were copied under
+ * `*Diagnosis:*` in a document going to a consultant.
+ *
+ * WHAT REPLACES IT
+ *
+ * A section is the text BETWEEN two boundaries. To copy O, take everything from
+ * the `*O:*` heading down to the next boundary — and never mind what is in
+ * between, because whatever it is, the author put it under O and that is where
+ * it belongs.
+ *
+ * Nothing has to be recognised except the boundaries themselves, and those are
+ * the handful of headings every note in the corpus has. An unfamiliar heading
+ * needs no rule at all: it is carried along inside whichever block contains it,
+ * which is the same thing a reader does.
+ *
+ * The text is also CONTIGUOUS and taken from the original, so what is copied is
+ * what was written — same order, same spacing, same wording. The old path
+ * reassembled the note from parsed pieces, sorted them by a canonical section
+ * order and dropped what did not match, which is how content moved and went
+ * missing.
+ */
+
+/**
+ * The headings that end one block and begin the next.
+ *
+ * Ordered as a note is ordered, but the order is documentation — the boundaries
+ * are found in the sequence the note actually uses, because a note that puts
+ * Terapi before A is unusual, not wrong.
+ */
+const BOUNDARY_GROUP: Partial<Record<SectionId, CopyGroupId>> = {
+  s: 's',
+  o: 'o',
+  a: 'a',
+  terapi: 'terapi',
+  p: 'plan',
+};
+
+/**
+ * `ttv` and `penunjang` are NOT boundaries.
+ *
+ * They are objective findings — vitals, labs, EKGs, imaging, procedure reports
+ * — and they belong inside O, which is where the note puts them and where they
+ * are read. Treating a `*Laboratorium PJT (05-09-2026)*` heading as a boundary
+ * would cut the objective block into a dozen fragments and force each one to be
+ * placed by name again, which is the problem this exists to remove.
+ */
+const CONSULT_HEADING = /^\s*[*_]*\s*TS\b/i;
+
+/**
+ * Inside a TS block, the cardiology headings are the only ones that end it.
+ *
+ * ROOT CAUSE (2026-10-10, Avi: the TS plans vanished from "Terapi + TS"). A
+ * consultant's reply carries its own A/, Th/, P/, "Plan Diagnostik", "Plan
+ * Monitoring", "Planning :". Each of those parsed as a boundary, so the TS
+ * block was cut at its first plan heading and the rest of it opened a PLAN
+ * region: the GEH's ascites tap and the HOM's bone-marrow plan were copied as
+ * OUR plan and were missing from "Terapi + TS". It surfaced when 10.1 brought
+ * "Plan Diagnostik" into Plan for older accounts; before that it already
+ * happened for "Planning :" and "Plan:" written inside a TS reply.
+ *
+ * A TS block now runs to the next TS heading or the end, and is ended early
+ * only by the forms the ward writes for its OWN sections — "Mohon izin kami
+ * assess / terapi …" — which a consultant's reply never uses.
+ */
+const OWN_HEADING = /^\s*[*_]*\s*mohon\s+i[zj]i?n\b/i;
+
+/**
+ * Our Plan after a KJS discharge-therapy list (2026-11-03, Avi).
+ *
+ * ROOT CAUSE: the ward lists a co-managing team's discharge therapy under our
+ * Terapi as a bare `TS Pulmo` + drug bullets, then goes straight on to our
+ * `*Plan:*`. Only "Mohon izin …" ended a TS block, so our Plan was copied
+ * under "Terapi + TS" and "Plan" came out empty (5 entries, 4 patients in the
+ * 27 Oct export). A consultant's REPLY always carries its own assessment
+ * (A/, Assessment, Diagnosis) before its Plan; in that export every TS block
+ * without one was followed by OUR plan. So a heading that is exactly "Plan"
+ * ends a TS block that has no assessment yet. "Planning" and "Plan
+ * Diagnostik" never do: in the export those were the consultants'.
+ */
+const PLAN_ONLY = /^\s*[*_]*\s*plan\s*[*_]*\s*:?\s*[*_]*\s*$/i;
+const CONSULT_ASSESSMENT = /^\s*[*_]*\s*(?:A\s*\/|asses|diagnos)/im;
+
+export interface Region {
+  group: CopyGroupId;
+  start: number;
+  end: number;
+  /**
+   * Where the block's content starts without its heading: after the heading
+   * when the heading owns its line, else `start` (`S: Sesak berkurang` is its
+   * own content, a TS block's name is the consultant, the kardiologi
+   * conclusion sentence is the assessment).
+   */
+  textStart: number;
+}
+
+/**
+ * Cut the body into labelled regions.
+ *
+ * Everything before the first boundary is the OPENING — greeting, reporting
+ * sentence, identity line, DPJP lines — and belongs to no group, so a section
+ * subset never carries it. That falls out of the shape rather than needing a
+ * rule: the opening is simply the text before the note starts.
+ */
+export function regionsOf(
+  body: string,
+  aliases: readonly SectionAlias[],
+): Region[] {
+  const sections = parseSections(body, aliases);
+  const starts: Array<{ group: CopyGroupId; start: number; textStart: number }> = [];
+  let inConsult = false;
+  let consultStart = 0;
+
+  for (const section of sections) {
+    if (section.headerLine === null) continue;
+
+    /**
+     * A `TS …` heading is a boundary, and it belongs with Terapi.
+     *
+     * It has to be one: the consulting services write at the END of the note,
+     * after `*Plan:*`, so without a boundary there the Plan block would run to
+     * the bottom and copying Plan would paste the anaesthetist's plan and the
+     * endocrinologist's insulin orders as if they were ours.
+     *
+     * Grouped with Terapi because a reply is an instruction about management
+     * and is read beside the drugs — unchanged from before.
+     */
+    if (CONSULT_HEADING.test(section.headerLine)) {
+      starts.push({ group: 'terapi', start: section.start, textStart: section.start });
+      inConsult = true;
+      consultStart = section.start;
+      continue;
+    }
+
+    // The consultant's own A/, Th/, P/, Plan Diagnostik… stay in their block.
+    const ourPlanAfterKjs =
+      section.sectionId === 'p' &&
+      section.ownsLine &&
+      PLAN_ONLY.test(section.headerLine) &&
+      !CONSULT_ASSESSMENT.test(body.slice(consultStart, section.start));
+    if (inConsult && !OWN_HEADING.test(section.headerLine) && !ourPlanAfterKjs) continue;
+
+    /**
+     * A boundary heading opens a block whether or not it owns its line.
+     *
+     * `S: Sesak berkurang` is as much the start of the subjective block as a
+     * bare `*S:*` on its own line, and both shapes are in the corpus.
+     *
+     * There is no need to exclude fields here: only the five boundary ids can
+     * open a block, and `Tekanan Darah : 135/76` parses as a custom section,
+     * not as one of them. Requiring `ownsLine` would only have dropped the
+     * inline form.
+     */
+    const group = BOUNDARY_GROUP[section.sectionId];
+    if (group) {
+      // The parser already knows whether the heading owns its line; a colon-
+      // matching regex here missed `*Mohon izin kami assest dengan*`, `Plan`, `T/`.
+      const textStart = section.ownsLine && !section.carriesContent ? section.textStart : section.start;
+      starts.push({ group, start: section.start, textStart });
+      inConsult = false;
+    }
+  }
+
+  return starts.map((entry, index) => ({
+    group: entry.group,
+    start: entry.start,
+    end: starts[index + 1]?.start ?? body.length,
+    textStart: entry.textStart,
+  }));
+}
+
+/**
+ * The chosen groups, as one contiguous piece of the original note.
+ *
+ * Regions stay in DOCUMENT order rather than being sorted into a canonical
+ * S-O-A-P sequence. If the author wrote Terapi above A, copying both should
+ * hand back what they wrote — reordering it silently asserts that the note was
+ * wrong, in a message they are about to send.
+ */
+export function sliceGroups(
+  body: string,
+  aliases: readonly SectionAlias[],
+  groups: readonly CopyGroupId[],
+  options: { dropHeaders?: boolean | undefined } = {},
+): string {
+  const wanted = new Set(groups);
+  const chosen = regionsOf(body, aliases).filter((region) => wanted.has(region.group));
+
+  return chosen
+    .map((region) => regionText(body, region, options.dropHeaders === true))
+    .filter((chunk) => chunk.trim().length > 0)
+    .join('\n\n')
+    .trim();
+}
+
+/**
+ * A region's text, optionally without its heading (28 Oct 2026, Avi: copying
+ * only "A" should be able to leave out "Mohon izin kami assess dengan:").
+ * Only the heading that opens the block goes; sub-headings inside it stay.
+ */
+export function regionText(body: string, region: Region, dropHeader: boolean): string {
+  const text = body.slice(dropHeader ? region.textStart : region.start, region.end).trimEnd();
+  return dropHeader ? text.replace(/^\s*\n/, '').trimStart() : text;
+}

@@ -1,0 +1,3084 @@
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useSlowWait } from '@/lib/loadTiming';
+import { useClipboardNote } from '@/store/useClipboardNote';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+
+import { BodyEditor, type BodyEditorHandle } from '@/components/patient/BodyEditor';
+import { FloatingCalculator } from '@/components/calc/FloatingCalculator';
+import { insertIntoTerapi } from '@/domain/format/insertTerapi';
+import { IconBack } from '@/components/common/Icons';
+import { Sheet, memoWhileClosed } from '@/components/common/Sheet';
+import { PatientHeaderActions } from '@/components/patient/PatientHeaderActions';
+import { CopySheet } from '@/components/copy/CopySheet';
+import { VisiteView } from '@/components/patient/VisiteView';
+import { ChecklistPills } from '@/components/patient/ChecklistPills';
+import { CompareSheet } from '@/components/patient/CompareSheet';
+import { IdentitySheet } from '@/components/patient/IdentitySheet';
+import { PatientActionsSheet } from '@/components/patient/PatientActionsSheet';
+import { ReformatSheet } from '@/components/patient/ReformatSheet';
+import { IdentityBar } from '@/components/patient/IdentityBar';
+import { JumpBar } from '@/components/patient/JumpBar';
+import { ShiftNoteEditor } from '@/components/patient/ShiftNoteEditor';
+import { LabSheet } from '@/components/patient/LabSheet';
+import { JagaAddButtons, JagaBar } from '@/components/patient/JagaBar';
+import {
+  JAGA_TEMPLATE,
+  JAGA_TEMPLATE_CARET,
+  defaultVersionTitle,
+  isVersion,
+  noteLabel,
+} from '@/domain/shiftNotes';
+import {
+  CarryPendingPanel,
+  NewVersionSheet,
+  type CarrySource,
+} from '@/components/patient/NewVersionSheet';
+import type { CarryChange } from '@/domain/versionCarry';
+import { PatientNotes, usePatientNotes } from '@/components/patient/PatientNotes';
+import { PatientTodos } from '@/components/patient/PatientTodos';
+import { SidePanel } from '@/components/patient/SidePanel';
+import { RailPanels, TabPanels, type PanelContent } from '@/components/patient/SidePanelLists';
+import { tickTodo } from '@/components/patient/tickTodo';
+import { previewTodos, todoViews } from '@/domain/patientTodos';
+import { DocumentPanel } from '@/components/patient/DocumentPanel';
+import { ScrollToTop } from '@/components/patient/ScrollToTop';
+import { OpeningSheet } from '@/components/patient/OpeningSheet';
+import { HistorySummarySheet } from '@/components/patient/HistorySummarySheet';
+import { SoapTidySheet } from '@/components/patient/SoapTidySheet';
+import { TemplatePicker } from '@/components/patient/TemplatePicker';
+import { ConflictDialog } from '@/components/patient/ConflictDialog';
+import { DateRail } from '@/components/patient/DateRail';
+import { RevisionTrail } from '@/components/patient/RevisionTrail';
+import { deleteVersion, fetchEntryBody, saveVersion } from '@/data/repositories/entries.repo';
+import { AppShell } from '@/components/common/AppShell';
+import { Button, Segmented } from '@/components/common/ui';
+import { useGoUp } from '@/lib/useGoUp';
+import { clearEntry, fetchEntryBodies, setEntryLocked } from '@/data/repositories/entries.repo';
+import { updateArchiveNote, updatePatient } from '@/data/repositories/patients.repo';
+import { archiveSummary } from '@/domain/archive';
+import { fillPatientFromNote, healCardPreview, writeCheckCount } from '@/data/repositories/patients.repo';
+import { parsePatientFacts } from '@/domain/parsePatient';
+import { carryForward, carryForwardSummary } from '@/domain/carryForward';
+import { checkSoap, type SoapFinding } from '@/domain/format/soapCheck';
+import { migrateLegacyDischarge } from '@/domain/discharge';
+import { readReferenceRanges } from '@/components/settings/ReferenceRanges';
+import { AiError, aiEnabled, askClaudeStructured } from '@/lib/ai';
+import {
+  SOAP_REVIEW_TOOL,
+  parseSoapReview,
+  soapReviewPrompt,
+  soapReviewSystem,
+  type AiFinding,
+} from '@/domain/ai/soapReview';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
+import {
+  bumpDayMarkerAt,
+  countDayMarker,
+  daysBetween as dayGap,
+  findDayMarker,
+  findDayMarkers,
+  locateDayMarker,
+} from '@/domain/dayMarkers';
+import { formatLocation } from '@/domain/identity';
+import { DOCX_MIME, buildSoapDocx, soapDocxFileName, soapPrintHtml } from '@/domain/format/soapDocx';
+import { deliverFile } from '@/lib/download';
+import { printDocument } from '@/lib/printPage';
+import { isIgdEntry, stayStart } from '@/domain/clinicalDate';
+import { describeLabPlacement, insertLabBlock, labPlacement } from '@/domain/lab/insertLab';
+import {
+  REPORT_FORMAT_LABELS,
+  describeConfig,
+  describeDelivery,
+  dpjpById,
+  isTrioDpjp,
+  primaryDpjp,
+  shortDelivery,
+} from '@/domain/dpjp';
+import { SCHEDULE_PERIOD, upcomingPoli, weekdayName } from '@/domain/poli/schedule';
+import { Banner, DpjpSideCard, FindingTag, MarkerChips } from '@/components/patient/PatientPageParts';
+import {
+  daysBetween,
+  formatShortDate,
+  formatShortDateNoWeekday,
+  formatDayHeader,
+  formatDayHeaderShort,
+  previousDay,
+  shouldAutoLock,
+  yesterdayHint,
+} from '@/domain/clinicalDate';
+import { useBodyEditor } from '@/hooks/useBodyEditor';
+import { useLineBookmarks } from '@/hooks/useLineBookmarks';
+import { useClinicalToday } from '@/hooks/useClinicalToday';
+import { useChecklist } from '@/hooks/useChecklist';
+import { useShiftNotes } from '@/hooks/useShiftNotes';
+import { useEntry, useEntryDates } from '@/hooks/useEntry';
+import { usePatient } from '@/hooks/usePatient';
+import { otherDeviceEditing, usePresenceHeartbeat } from '@/hooks/usePresence';
+import { useRevisions } from '@/hooks/useRevisions';
+import { useSession } from '@/store/useSession';
+import { useUI } from '@/store/useUI';
+import type { ClinicalDate } from '@/domain/types';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { itemsForPatientDay } from '@/domain/checklistDay';
+
+/**
+ * This page re-renders on every keystroke (the draft lives in its hooks), and
+ * these sheets are mounted all the time. Closed, they skip those renders.
+ */
+const ReformatSheetWhenOpen = memoWhileClosed(ReformatSheet);
+const CompareSheetWhenOpen = memoWhileClosed(CompareSheet);
+const IdentitySheetWhenOpen = memoWhileClosed(IdentitySheet);
+const HistorySummarySheetWhenOpen = memoWhileClosed(HistorySummarySheet);
+const SoapTidySheetWhenOpen = memoWhileClosed(SoapTidySheet);
+const PatientActionsSheetWhenOpen = memoWhileClosed(PatientActionsSheet);
+const LabSheetWhenOpen = memoWhileClosed(LabSheet);
+const OpeningSheetWhenOpen = memoWhileClosed(OpeningSheet);
+const NewVersionSheetWhenOpen = memoWhileClosed(NewVersionSheet);
+const CopySheetWhenOpen = memoWhileClosed(CopySheet);
+const RevisionTrailWhenOpen = memoWhileClosed(RevisionTrail);
+
+/** Minimum window the rail offers, so a patient admitted today can still scroll. */
+
+export default function PatientPage(): JSX.Element {
+  const { patientId, date: routeDate } = useParams<{ patientId: string; date?: string }>();
+  const navigate = useNavigate();
+  const goUp = useGoUp('/');
+  const today = useClinicalToday();
+  const settings = useSession((state) => state.settings());
+
+  /**
+   * Without a date in the URL, open TODAY.
+   *
+   * It opened the most recent written day for a while, so a patient not yet
+   * seen this morning showed yesterday's note instead of a blank page. That
+   * turned out to be the wrong trade: the note you are about to write is
+   * today's, and landing on yesterday's means every round starts by changing
+   * the date — and risks writing into the wrong day when it is not noticed.
+   *
+   * Yesterday stays one tap away on the rail, and "salin dari hari sebelumnya"
+   * still offers its content on an empty day.
+   */
+  const { patient, loading, error } = usePatient(patientId);
+  const entryDates = useEntryDates(patientId);
+  /*
+    An ARCHIVED patient opens on its last written day, not today
+    (2026-10-10). Today is right for a patient on the round; for one who has
+    gone home, today is an empty page nobody will write, and a stray keystroke
+    there starts a note dated after discharge.
+  */
+  const archivedDay =
+    !routeDate && patient?.status === 'archived'
+      ? ([...entryDates.datesWithBody].filter((date) => !isIgdEntry(date)).sort().at(-1) ??
+        patient.lastEntryDate ??
+        null)
+      : null;
+  const selected: ClinicalDate = routeDate ?? archivedDay ?? today;
+
+  /** Tells the clipboard note which patient is open, so a mismatch shows. */
+  const setOpenPatient = useClipboardNote((state) => state.setOpenPatient);
+  useEffect(() => {
+    setOpenPatient(patientId ?? null);
+    return () => setOpenPatient(null);
+  }, [patientId, setOpenPatient]);
+  const { entry, exists, loading: entryLoading, hasPendingWrites } = useEntry(patientId, selected);
+  // Both "Memuat…" gates on this page, timed (lib/loadTiming).
+  useSlowWait('membuka pasien', loading);
+  useSlowWait('memuat catatan', entryLoading);
+  /** The note on screen now, for async actions to check they still apply. */
+  const currentNoteKey = useRef('');
+  currentNoteKey.current = `${patientId ?? ''}|${selected}`;
+  const previous = useEntry(patientId, previousDay(selected));
+
+  const [hintDismissed, setHintDismissed] = useState(false);
+  const [carrySummary, setCarrySummary] = useState<string | null>(null);
+  /**
+   * Day counters carried in from an older note, listed for checking.
+   *
+   * Its own banner rather than a sentence appended to the copy summary. The
+   * summary is an acknowledgement — it says what happened and is read once;
+   * this is an outstanding task, and it stays until dismissed. Folding a task
+   * into an acknowledgement is how it gets skimmed past, which is the exact
+   * failure being addressed.
+   *
+   * Nothing here touches the note. The counters do not all measure the same
+   * thing — an antibiotic H- stops when the course does, a post-procedure one
+   * runs indefinitely — so which of them should move is a clinical judgement,
+   * not an arithmetic one.
+   */
+  const [staleMarkers, setStaleMarkers] = useState<string[] | null>(null);
+
+  /**
+   * Has the user actually said the day counters are dealt with?
+   *
+   * Tracked separately from `staleMarkers`, and that separation is the fix for
+   * a bug that silently disabled the H- rule from the day the checker shipped.
+   *
+   * `staleMarkers === null` was being read as "dismissed". It is null in three
+   * situations and only one of them is a dismissal:
+   *
+   *   1. nothing has happened yet — the ordinary case, every note you open
+   *   2. carry-forward ran and found no counters
+   *   3. the user pressed "Sudah"
+   *
+   * So the rule was suppressed on essentially every note, and the only window
+   * where it could fire was the moment right after a carry-forward — when the
+   * dedicated banner is already showing the same thing. It therefore never
+   * contributed anything at all, and did so quietly, because a check that
+   * finds nothing looks exactly like a check that is switched off.
+   */
+  const [dayMarkersDismissed, setDayMarkersDismissed] = useState(false);
+
+  /*
+    Cleared when the day or the patient changes.
+
+    A dismissal means "these counters, on this note, are dealt with" — it is
+    not a preference. Carrying it to the next day would suppress the check on
+    the note where the counters are newly a day stale, which is precisely the
+    note it exists for.
+  */
+  useEffect(() => {
+    setDayMarkersDismissed(false);
+    // The carry-forward summary and its counter list describe the note they
+    // were made on; they used to follow you to other days and patients.
+    setCarrySummary(null);
+    setStaleMarkers(null);
+  }, [patientId, selected]);
+
+  /**
+   * The editor, for the one thing the banner cannot do through props: put the
+   * caret on a counter and scroll it into view.
+   */
+  const editorHandle = useRef<BodyEditorHandle | null>(null);
+
+  /**
+   * Which occurrence of each counter the next press should go to.
+   *
+   * A ref, not state: pressing the chip must not re-render the page it is
+   * scrolling, and nothing on screen reads this — the chip shows how many
+   * there are, never which one you are on. Numbering them would ask the user
+   * to track a position they did not choose.
+   */
+  const markerCursor = useRef<Record<string, number>>({});
+  const [trailOpen, setTrailOpen] = useState(false);
+  /** Which revision the trail should open expanded, when reached from a chip. */
+  const [trailFocus, setTrailFocus] = useState<string | null>(null);
+  /**
+   * The label being typed for a version, or null when the field is closed.
+   *
+   * A label rather than a bare "save": `Pagi` and `Post op` are the whole
+   * point, and two entries reading only `rev 14` and `rev 19` would need
+   * opening to tell apart — at which point the version has not saved anybody
+   * anything.
+   */
+  const [versionLabel, setVersionLabel] = useState<string | null>(null);
+
+  const [copyOpen, setCopyOpen] = useState(false);
+  /** Visite mode: the editor slot shows the bedside cheat sheet instead (read-only). */
+  const [visiteOn, setVisiteOn] = useState(false);
+  /** The floating calculator: non-modal, so it can stay open while writing. */
+  const [calcOpen, setCalcOpen] = useState(false);
+  /**
+   * Phone only: which of the patient's standing panels is open as a sheet.
+   * See the chip row above the note for why they are sheets there.
+   */
+  const [phoneSheet, setPhoneSheet] = useState<null | 'notes' | 'checklist' | 'checker'>(null);
+  /**
+   * Run an editor jump, closing the phone sheet first when one is open.
+   *
+   * Radix hands focus back to the sheet's trigger as it unmounts; a selection
+   * made before that is undone by it. So the jump waits for the close.
+   */
+  const afterPhoneSheet = (jump: () => void): void => {
+    if (phoneSheet === null) {
+      jump();
+      return;
+    }
+    setPhoneSheet(null);
+    window.setTimeout(jump, 120);
+  };
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [openingOpen, setOpeningOpen] = useState(false);
+  const [tidyOpen, setTidyOpen] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+
+  /**
+   * Is the header showing Lab / Pembuka / Bandingkan hari already?
+   *
+   * They were added to the ⋯ sheet at every width on 10 September, on the
+   * reasoning that a control which exists at one screen size and not another
+   * is one nobody learns. In practice it read as clutter: on a desktop the
+   * sheet repeated three buttons sitting two centimetres above it, which makes
+   * the list longer to scan for the things that are ONLY in there.
+   *
+   * So they appear in the sheet only where the header has dropped them. Same
+   * `sm` breakpoint as the header itself, read once here rather than guessed
+   * at — two sources for one breakpoint is how they drift.
+   */
+  const headerHasTools = useMediaQuery('(min-width: 640px)');
+  const [labOpen, setLabOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [versionSheetOpen, setVersionSheetOpen] = useState(false);
+  /**
+   * The DPJP details (route, format, 6MWT, clinic days, diagnoses) folded to
+   * one line by default; remembered per device, like the archive folds.
+   */
+  const [dpjpInfoOpen, setDpjpInfoOpen] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('plano.dpjpInfoOpen') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleDpjpInfo = (): void => {
+    setDpjpInfoOpen((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem('plano.dpjpInfoOpen', next ? '1' : '0');
+      } catch {
+        // Not remembered; the toggle still works on this page.
+      }
+      return next;
+    });
+  };
+  const [reformatOpen, setReformatOpen] = useState(false);
+  /**
+   * Confirmation before clearing a day, because there is no undo on the rail.
+   *
+   * The text is recoverable from Riwayat perubahan afterwards, but only by
+   * someone who knows to look — so the confirmation names the day being
+   * cleared rather than asking a generic "are you sure".
+   */
+  const [clearDate, setClearDate] = useState<ClinicalDate | null>(null);
+
+  // Local draft, like every other field bound to a Firestore document.
+  const [archiveNote, setArchiveNote] = useState('');
+  useEffect(() => {
+    setArchiveNote(patient?.archive?.note ?? '');
+  }, [patient?.id, patient?.archive?.note]);
+  /** What the context pane is showing: the patient's own panels, or documents. */
+  const [paneView, setPaneView] = useState<'pasien' | 'dokumen'>('pasien');
+  const paneOpen = useUI((state) => state.contextPaneOpen);
+  const togglePane = useUI((state) => state.toggleContextPane);
+  const syncKind = useUI((state) => state.sync.kind);
+
+  /*
+    When the stay began (2026-10-11). `admittedAt` defaults to the day the
+    patient was ADDED to Plano, not admitted to hospital, and is only right
+    if someone corrects it in Identitas. A patient added today with a note
+    already written yesterday was therefore "day 1", and the checker asked to
+    change "follow up" to "pasien baru" on a patient days into the stay (Ny.
+    B, moved from CVCU). A written day can never come before the stay, so the
+    earliest written day is a floor the record cannot argue with.
+  */
+  const stayBegan = useMemo(
+    () => (patient ? stayStart(patient.admittedAt, entryDates.datesWithBody) : null),
+    [patient, entryDates.datesWithBody],
+  );
+  // The admission note has no hari rawat — it precedes the stay.
+  const hariRawat = stayBegan && !isIgdEntry(selected) ? daysBetween(stayBegan, selected) + 1 : 0;
+
+  /**
+   * SPEC F4 — past entries auto-lock after 48 h.
+   *
+   * Derived from the calendar rather than stored by a job, so it is correct on
+   * a device that was offline for a week. An explicit `locked: false` means the
+   * user unlocked it, and that decision outranks the derived value.
+   */
+  const autoLocked = shouldAutoLock(
+    selected,
+    new Date(),
+    settings.timezone,
+    settings.dayRolloverHour,
+  );
+  /**
+   * Locked while the entry is still loading.
+   *
+   * This is the bug that wiped a day's note after a mobile sign-in. Until the
+   * snapshot arrives, `entry` is null, so the editor's `serverText` is '' — an
+   * empty, WRITABLE document standing in for one that may be full. A redirect
+   * sign-in reloads the whole page and lands you straight back on the note, so
+   * that window is exactly when a keystroke or a force-flush would land, and
+   * the write would replace the real body with what was typed into the blank.
+   *
+   * An editor that does not yet know what it is editing must not be editable.
+   */
+  const locked =
+    entryLoading || entry?.locked === true || (autoLocked && entry?.locked !== false);
+
+  const editor = useBodyEditor({
+    patientId: patientId ?? '',
+    date: selected,
+    entry,
+    exists,
+    hariRawat,
+    locked,
+    serverPending: hasPendingWrites,
+  });
+
+  /**
+   * Shift notes live on the same entry as the body but in their own field, so
+   * a bedside edit on the phone cannot collide with the body on the laptop.
+   *
+   * HERE, beside the other entry hooks, and above the `loading` / `!patient`
+   * early returns further down. It was originally placed after them, next to
+   * the JSX that uses it, which reads naturally and crashes every time: the
+   * first render of a patient IS the loading render, so the hook was skipped,
+   * and the render after it was called — React counts hooks per render and
+   * throws when the count changes.
+   *
+   * `patientId ?? ''` rather than `patient.id`, for the same reason
+   * `useBodyEditor` above does it: `patient` is not narrowed to non-null until
+   * after those early returns, and reaching for it here is what pulled the
+   * call down past them in the first place.
+   */
+  const shiftNotes = useShiftNotes(patientId ?? '', selected, entry, hariRawat, locked);
+
+  /**
+   * Which jaga note the main editor is showing, or null for the day's SOAP.
+   *
+   * Cleared whenever the day changes: a note id is only meaningful within its
+   * own day, and leaving it set across a date change would show an editor for
+   * a note that is not in the list any more.
+   */
+  const [selectedShiftNoteId, setSelectedShiftNoteId] = useState<string | null>(null);
+  /** The jaga note just made here, so its editor opens with the caret placed. */
+  const [justCreatedJaga, setJustCreatedJaga] = useState<string | null>(null);
+  const activeShiftNote =
+    selectedShiftNoteId === null
+      ? null
+      : (shiftNotes.notes.find((note) => note.id === selectedShiftNoteId) ?? null);
+
+  /**
+   * Line bookmarks on the day's SOAP. Off while the entry loads (the body is
+   * a placeholder '' then, and following an "edit" from '' to the real note
+   * would be nonsense) and while a jaga note fills the editor.
+   */
+  const lineBookmarks = useLineBookmarks({
+    patientId: patientId ?? null,
+    stored: patient?.bookmarks,
+    body: editor.value,
+    date: selected,
+    enabled: !entryLoading && !activeShiftNote,
+  });
+
+  /**
+   * The open note split by what it is. A VERSION is the day's SOAP in another
+   * shape, so everything that takes "the SOAP" (Salin's shapes, Ringkas,
+   * Konsul) takes the version; a JAGA note keeps its own Salin shape.
+   */
+  const activeVersion = activeShiftNote && isVersion(activeShiftNote) ? activeShiftNote : null;
+  const activeJaga = activeShiftNote && !isVersion(activeShiftNote) ? activeShiftNote : null;
+
+  /**
+   * The newest earlier day with a version, so today's can carry on from it.
+   * Not necessarily yesterday: after a weekend with no version, Friday's
+   * version and Friday's SOAP are the right pair.
+   */
+  const carryDayVersions = useMemo(() => {
+    const days = Object.keys(entryDates.shiftNotesByDate)
+      .filter((date) => !isIgdEntry(date) && date < selected)
+      .sort();
+    for (let k = days.length - 1; k >= 0; k--) {
+      const date = days[k]!;
+      const versions = (entryDates.shiftNotesByDate[date] ?? [])
+        .filter((note) => isVersion(note) && note.clearedAt === null && note.body.trim())
+        .map((note) => ({ id: note.id, title: noteLabel(note), body: note.body }));
+      if (versions.length > 0) return { date, versions };
+    }
+    return null;
+  }, [entryDates.shiftNotesByDate, selected]);
+
+  /** That day's SOAP, read once per opening of the sheet (one document). */
+  const [carryBase, setCarryBase] = useState<string | null | undefined>(undefined);
+  const carryDate = carryDayVersions?.date ?? null;
+  useEffect(() => {
+    if (!versionSheetOpen || !patientId || !carryDate) return;
+    let live = true;
+    setCarryBase(undefined);
+    fetchEntryBody(patientId, carryDate).then(
+      (body) => live && setCarryBase(body),
+      () => live && setCarryBase(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [versionSheetOpen, patientId, carryDate]);
+  const carrySource = useMemo<CarrySource | null>(
+    () => (carryDayVersions ? { ...carryDayVersions, base: carryBase } : null),
+    [carryDayVersions, carryBase],
+  );
+
+  /** What carrying on could not place, shown above that version until dismissed. */
+  const [carryPending, setCarryPending] = useState<{ id: string; changes: CarryChange[] } | null>(
+    null,
+  );
+
+  /** A version is a copy of the SOAP on screen, made in `NewVersionSheet`. */
+  const createVersion = ({
+    title,
+    body,
+    pending,
+  }: {
+    title: string;
+    body: string;
+    pending: CarryChange[];
+  }): void => {
+    editor.flush();
+    shiftNotes.flush();
+    const id = shiftNotes.add(body, { kind: 'versi', title });
+    setVersionSheetOpen(false);
+    if (!id) return;
+    setCarryPending(pending.length > 0 ? { id, changes: pending } : null);
+    setJustCreatedJaga(null);
+    setSelectedShiftNoteId(id);
+  };
+
+  /**
+   * One tap: a jaga note with the jaga scaffold, stamped now (editable in its
+   * header), opened with the caret on the complaint.
+   */
+  const addJagaNote = (): void => {
+    shiftNotes.flush();
+    const id = shiftNotes.add(JAGA_TEMPLATE);
+    if (!id) return;
+    setJustCreatedJaga(id);
+    setSelectedShiftNoteId(id);
+  };
+
+  /**
+   * A settled copy of the note, for everything derived from it.
+   *
+   * `primaryDpjp` and `parsePatientFacts` each walk the whole body, and both
+   * were running on every keystroke — on a note carrying three days of EKG and
+   * a full plan, that is thousands of characters re-parsed per character typed.
+   * That is where the lag came from.
+   *
+   * None of these consumers needs to be current to the keystroke: the DPJP
+   * reminder and the identity fill are both fine a moment late. The editor
+   * itself still updates instantly, because it reads `editor.value` directly.
+   */
+  const settledBody = useDebouncedValue(editor.value, 400);
+
+  /**
+   * Identity read from the note is SUGGESTED, never written silently.
+   *
+   * It used to fill blank fields by itself. When it was right that was
+   * invisible, and when it was wrong it was also invisible — a wrong name or a
+   * wrong record number appeared in the chart with nothing to say where it came
+   * from or that anyone should look at it.
+   *
+   * A parser working on free text will be wrong sometimes; that is not a bug to
+   * be finished, it is a property. So the fix is not a better guess, it is
+   * showing the guess. One tap accepts it, and it can be dismissed.
+   */
+  const suggestion = useMemo(() => {
+    if (!patient) return null;
+
+    const facts = parsePatientFacts(settledBody);
+    const missing: Array<[string, string]> = [];
+
+    if (!patient.name?.trim() && facts.name) missing.push(['Nama', facts.name]);
+    if (!patient.mrn?.trim() && facts.mrn) missing.push(['RM', facts.mrn]);
+    if (patient.age === undefined && facts.age !== undefined) {
+      missing.push(['Umur', `${facts.age} th`]);
+    }
+    if (!patient.ward?.trim() && facts.ward) missing.push(['Ruang', facts.ward]);
+    if (!patient.room?.trim() && facts.room) missing.push(['Kamar', facts.room]);
+    if (!patient.bed?.trim() && facts.bed) missing.push(['Bed', facts.bed]);
+
+    return missing.length > 0 ? { facts, missing } : null;
+  }, [patient, settledBody]);
+
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+
+  // SPEC 7.5 — announce presence only while the day is actually editable.
+  usePresenceHeartbeat(patientId, selected, !locked, editor.dirty);
+  const otherDevice = otherDeviceEditing(entry);
+  /**
+   * Subscribed always, not only while the trail sheet is open.
+   *
+   * Saved versions are surfaced on the page itself, so they have to be known
+   * before anybody opens anything — a version you must go looking for through
+   * a history sheet is no easier to reach than the history sheet was.
+   */
+  // The 30 recent snapshots only while the trail is open (22 Oct 2026, quota); saved versions always.
+  const revisions = useRevisions(patientId, selected, trailOpen);
+  const savedVersions = revisions.filter((revision) => revision.reason === 'version');
+  /** Steps that apply to this patient on this day (no Order obat on the discharge day). */
+  const dischargePlannedFor = patient?.dischargePlannedFor;
+  const legacyDischarge = patient?.discharge;
+  const dayItems = useMemo(
+    () =>
+      itemsForPatientDay(
+        settings.checklistItems,
+        { dischargePlannedFor, discharge: legacyDischarge },
+        selected,
+        today,
+      ),
+    [settings.checklistItems, dischargePlannedFor, legacyDischarge, selected, today],
+  );
+  const checklist = useChecklist(patientId, selected, dayItems);
+  const notesSync = usePatientNotes(patient ?? null);
+
+  /**
+   * Read from the note, not from a field. The DPJP line is already there, and
+   * a second place to record the same fact is a second place for it to be
+   * wrong.
+   */
+  /**
+   * Today's note first, the patient's stored consultant second.
+   *
+   * A day that has not been written yet names nobody, and "no DPJP" on a blank
+   * page is not a fact about the patient — it is a fact about the page. The
+   * stored value comes from the last day that did name someone, which is the
+   * answer the user actually wants at 6am before rounds.
+   */
+  const dpjp = useMemo(
+    () => primaryDpjp(settledBody) ?? (patient?.dpjpId ? dpjpById(patient.dpjpId) : null),
+    [settledBody, patient?.dpjpId],
+  );
+  const dpjpFormat = dpjp ? settings.dpjpFormats[dpjp.id] : undefined;
+
+  /**
+   * The consultant's next two outpatient clinics, from the signed roster.
+   *
+   * Two rather than one because the next clinic alone does not answer the
+   * question the line is read for. When it is today or tomorrow, what decides
+   * whether a referral that misses it can still be seen this week is the one
+   * after it — and looking that up meant opening the printed roster, which is
+   * the retyping this app exists to remove.
+   */
+  const poliUpcoming = useMemo(
+    () => (dpjp ? upcomingPoli(dpjp.id, today, 2) : []),
+    [dpjp, today],
+  );
+  const poli = poliUpcoming[0] ?? null;
+
+  const commitVersion = useCallback(async () => {
+    const body = editor.value;
+    if (!patient || !body.trim()) return;
+    const label = (versionLabel ?? '').trim() || defaultVersionLabel();
+    setVersionLabel(null);
+    try {
+      /*
+       * The version is written from `editor.value`, and `editor.value` is
+       * flushed FIRST.
+       *
+       * Freezing text that has not reached the server yet would produce a
+       * version the entry itself has never held — and `rev` on the snapshot
+       * would point at a revision that never existed, so the diff against
+       * "sekarang" would be nonsense.
+       */
+      editor.flush();
+      await saveVersion(patient.id, selected, body, entry?.rev ?? 0, label);
+      setCarrySummary(`Versi "${label}" disimpan. Catatan hari ini tetap bisa diedit.`);
+    } catch (error) {
+      console.error('[versions] save failed', error);
+    }
+  }, [patient, editor, versionLabel, selected, entry?.rev]);
+
+  const poliAfter = poliUpcoming[1] ?? null;
+
+
+  const railDates = useMemo(
+    () =>
+      buildRail(
+        patient?.admittedAt ?? today,
+        today,
+        entryDates.dates.filter((date) => !isIgdEntry(date)),
+      ),
+    [patient?.admittedAt, today, entryDates.dates],
+  );
+  // The admission entry is rendered on its own above the rail, so it must not
+  // also be sorted in among the days — it would land wherever `igd` falls
+  // alphabetically, which is nowhere meaningful.
+  //
+  // `datesWithBody`, not `dates`: this drives the dot that means "a note is
+  // written here", and `dates` now also includes days whose only content is a
+  // jaga note. Using it here would put a written-note dot on a day with no
+  // note in it.
+  const datesWithContent = useMemo(
+    () => new Set(entryDates.datesWithBody),
+    [entryDates.datesWithBody],
+  );
+
+  /**
+   * Opening the LATEST written day puts it on the board card, if the card
+   * says anything else. Cards heal by being looked at, instead of by running
+   * "Perbarui kartu pasien" over every patient.
+   */
+  const latestWritten = useMemo(
+    () => [...entryDates.datesWithBody].filter((date) => !isIgdEntry(date)).sort().at(-1) ?? null,
+    [entryDates.datesWithBody],
+  );
+  const storedBody = entry?.body ?? '';
+  const previousBody = previous.entry?.body ?? '';
+  useEffect(() => {
+    if (!patient || entryLoading || selected !== latestWritten) return;
+    void healCardPreview(patient, selected, storedBody, {
+      date: previousDay(selected),
+      body: previousBody,
+    })?.catch((error: unknown) => console.warn('[card] heal failed', error));
+  }, [patient, entryLoading, selected, latestWritten, storedBody, previousBody]);
+
+  const hint = useMemo(
+    () =>
+      hintDismissed
+        ? null
+        : yesterdayHint({
+            now: new Date(),
+            tz: settings.timezone,
+            rolloverHour: settings.dayRolloverHour,
+            selectedDate: selected,
+            hasYesterdayEntry: previous.exists,
+          }),
+    [hintDismissed, settings.timezone, settings.dayRolloverHour, selected, previous.exists],
+  );
+
+  const goToDate = (next: ClinicalDate): void => {
+    editor.flush();
+    // Any unflushed jaga text goes with it. Switching days used to be the one
+    // navigation that could not lose work; a second editor on the page must
+    // not change that.
+    shiftNotes.flush();
+    // A note id means nothing outside its own day.
+    setSelectedShiftNoteId(null);
+    // Another day of the same patient is not a level down: back still goes
+    // to where the patient was opened from, not through every day viewed.
+    navigate(`/p/${patientId}/${next}`, { replace: true });
+  };
+
+  /**
+   * Copy the previous note forward.
+   *
+   * Sources from the newest earlier day that actually HAS content, not strictly
+   * from yesterday. A patient admitted Friday and reviewed Monday has two empty
+   * days in between, and "yesterday was empty so there is nothing to copy" is
+   * wrong in exactly the situation where retyping hurts most.
+   */
+  /**
+   * How many times each listed counter still appears, in the note as it is now.
+   *
+   * Computed from the DEBOUNCED body, not `editor.value`: this runs a regex
+   * over the whole note, and running it on every keystroke is the mobile lag
+   * this app has fought before. Four hundred milliseconds late is invisible
+   * for a badge that only has to be right by the time you look at it.
+   */
+  /**
+   * Findings for the note on screen.
+   *
+   * `staleMarkers` already carries its own banner for day counters, so the
+   * checker's version is suppressed once that has been dismissed — one
+   * dismissal, not two, for the same fact.
+   */
+  /**
+   * What the checker compares the note with (2026-10-08): the day of the stay
+   * (new patient or follow-up), where the patient is registered, and, for the
+   * trio, how far the planned discharge is from this note's day.
+   */
+  const plannedDischarge = patient ? migrateLegacyDischarge(patient, today) : undefined;
+  const checkContext = useMemo(
+    () => ({
+      hariRawat,
+      place: { ward: patient?.ward, room: patient?.room, bed: patient?.bed },
+      trio: isTrioDpjp(dpjp?.id) ? (dpjp?.initials ?? null) : null,
+      dpjpIsProf: dpjp ? /^prof\b/i.test(dpjp.name) : null,
+      dischargeInDays: plannedDischarge ? daysBetween(selected, plannedDischarge) : null,
+      date: selected,
+      // The board's EKG chip, ticked for THIS day (ticks are kept per day).
+      ekgDone: patient?.reminderDone?.date === selected && patient.reminderDone.ids.includes('ekg'),
+    }),
+    [hariRawat, patient?.ward, patient?.room, patient?.bed, patient?.reminderDone, dpjp, plannedDischarge, selected],
+  );
+  /** Per finding with several places: which one "Tampilkan" goes to next. */
+  const [occurrenceStep, setOccurrenceStep] = useState<Record<string, number>>({});
+  const soapFindings = useMemo(
+    () =>
+      checkSoap({
+        body: settledBody,
+        previous: previous.entry?.body,
+        dayMarkersDismissed,
+        // Read per run rather than held in state: it changes in Settings, on
+        // another screen, and a stale copy would silence a check the user just
+        // enabled.
+        ranges: readReferenceRanges(),
+        aliases: settings.sectionAliases,
+        context: checkContext,
+      }),
+    [settledBody, previous.entry?.body, dayMarkersDismissed, settings.sectionAliases, checkContext],
+  );
+
+  /**
+   * "Periksa lagi" on the board card (2026-10-10): the count of the latest
+   * written day, stored on the patient so the board never runs the checker
+   * over every note. Written after the note has been still for a moment, and
+   * only when it changed, so typing costs no writes.
+   */
+  const checkCountNow = soapFindings.length;
+  useEffect(() => {
+    if (!patient || entryLoading || selected !== latestWritten) return;
+    if (patient.checkCount === checkCountNow && patient.checkDate === selected) return;
+    const timer = window.setTimeout(() => {
+      void writeCheckCount(patient.id, selected, checkCountNow).catch((error: unknown) =>
+        console.warn('[card] check count failed', error),
+      );
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [patient, entryLoading, selected, latestWritten, checkCountNow]);
+
+  /**
+   * The optional AI pass, ON DEMAND.
+   *
+   * A button, never automatic. The deterministic rules cost nothing and run as
+   * you type; this costs a network call, the user's quota, and sends the note
+   * off the device — none of which may happen because somebody opened a chart.
+   *
+   * Its findings are listed AFTER the rules and labelled, because they are a
+   * different kind of claim: the rules found a mismatch between two numbers in
+   * the note, this one has an opinion.
+   */
+  const [aiFindings, setAiFindings] = useState<AiFinding[]>([]);
+  const [aiDropped, setAiDropped] = useState(0);
+  /** The note text the AI looked at, so findings can say when they are out of date. */
+  const [aiCheckedText, setAiCheckedText] = useState<string | null>(null);
+  const [aiCheckState, setAiCheckState] = useState<'idle' | 'running'>('idle');
+  const [aiCheckError, setAiCheckError] = useState<string | null>(null);
+
+  // A different day is a different note: its findings do not carry over.
+  useEffect(() => {
+    setAiFindings([]);
+    setAiDropped(0);
+    setAiCheckedText(null);
+    setAiCheckError(null);
+  }, [selected, patientId]);
+
+  const runAiCheck = async (): Promise<void> => {
+    setAiCheckState('running');
+    setAiCheckError(null);
+    const body = editor.value;
+    try {
+      const { input } = await askClaudeStructured({
+        system: soapReviewSystem({
+          today: selected,
+          previousDate: previous.entry?.body ? previousDay(selected) : null,
+          ruleFindings: soapFindings,
+        }),
+        tool: SOAP_REVIEW_TOOL,
+        prompt: soapReviewPrompt(body, previous.entry?.body),
+        maxTokens: 1200,
+      });
+      // Only what can be found in the note survives: see `parseSoapReview`.
+      const result = parseSoapReview(input, body);
+      setAiFindings(result.findings);
+      setAiDropped(result.dropped);
+      setAiCheckedText(body);
+    } catch (error) {
+      setAiCheckError(error instanceof AiError ? error.message : 'Gagal memanggil AI.');
+    } finally {
+      setAiCheckState('idle');
+    }
+  };
+  const aiStale = aiCheckedText !== null && aiCheckedText !== editor.value;
+
+  const markerCounts = useMemo<Record<string, number>>(() => {
+    if (!staleMarkers) return {};
+    return Object.fromEntries(
+      staleMarkers.map((text) => [text, countDayMarker(settledBody, text)]),
+    );
+  }, [staleMarkers, settledBody]);
+
+  /**
+   * Go to a counter, searching the LIVE body rather than a stored position.
+   *
+   * The stale list is made at carry-forward and the note is edited afterwards,
+   * so any offset captured then points somewhere else by now — every character
+   * typed above a counter moves it. Searching by text at press time cannot go
+   * stale, and costs one regex pass on a deliberate tap.
+   */
+  const jumpToMarker = (text: string): void => {
+    const cursor = markerCursor.current[text] ?? 0;
+    const hit = findDayMarker(editor.value, text, cursor);
+    // Gone since the list was made. The chip for it is already struck through;
+    // doing nothing is right, and doing something would mean guessing which
+    // other counter was meant.
+    if (!hit) return;
+    markerCursor.current[text] = cursor + 1;
+    editorHandle.current?.selectRange(hit.start, hit.end);
+  };
+
+  const applyCarryForward = (): void => {
+    if (!patientId) return;
+    // The note this was pressed on. The read below can take seconds on ward
+    // signal; if the day or patient changed meanwhile, nothing is applied.
+    const target = `${patientId}|${selected}`;
+
+    void fetchEntryBodies(patientId)
+      .then((days) => {
+        if (currentNoteKey.current !== target) return;
+        const source = days
+          .filter((day) => day.date < selected && day.body.trim().length > 0)
+          .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+
+        if (!source) {
+          setCarrySummary('Tidak ada catatan sebelumnya untuk disalin.');
+          return;
+        }
+
+        const result = carryForward(
+          source.body,
+          settings.carryForwardClearSections,
+          settings.sectionAliases,
+        );
+
+        /**
+         * Day counters are REPORTED, never rewritten.
+         *
+         * An earlier version advanced them automatically by the gap between the
+         * two dates. It was wrong, and the reason is worth keeping: the counters
+         * in a note do not all measure the same thing. `H-3` on an antibiotic
+         * counts doses given and stops when the course does; `post PPM H-2`
+         * counts days since a procedure and runs forever; one written for a
+         * drug that was stopped yesterday should not move at all.
+         *
+         * Advancing all of them uniformly is right only when every counter is
+         * still running, and nothing in the note says which are. Getting that
+         * wrong produces a number that is confidently, invisibly false — which
+         * is worse than the stale number it replaced, because a stale one is at
+         * least the number the author last checked.
+         *
+         * So this lists what it found and leaves the note alone. The list is
+         * the point: naming `H-2, H-3, hari ke-9` is a different act from
+         * saying "check your counters", because it says how many there are and
+         * where to look.
+         */
+        const gap = dayGap(source.date, selected);
+        const markers = gap !== null && gap > 0 ? findDayMarkers(result.body) : [];
+
+        // One undo step, not one per line the carry-forward produced.
+        editor.markNextChange('transform');
+        editor.setValue(result.body);
+        /**
+         * Written immediately, not left to the 800 ms idle debounce.
+         *
+         * Carry-forward is a single deliberate action that produces a whole
+         * day's note at once, and the user's next move is usually to start
+         * editing or to leave. Waiting for an idle gap keeps a full note
+         * unsaved for the one moment it is most likely to be navigated away
+         * from — and any snapshot arriving in that window has an empty server
+         * body to offer against it.
+         */
+        editor.flush();
+        setCarrySummary(
+          `${carryForwardSummary(result)} (dari ${formatShortDate(source.date)})`,
+        );
+        setStaleMarkers(
+          markers.length > 0
+            ? // Deduplicated: three lines all reading `H-3` is one thing to
+              // check, and listing it three times reads as three.
+              [...new Set(markers.map((marker) => marker.text.trim()))]
+            : null,
+        );
+      })
+      .catch((error: unknown) => console.error('[patient] carry-forward failed', error));
+  };
+
+  /**
+   * THE note on screen: the jaga note when one is open, else the day's SOAP.
+   *
+   * Every transform (reformat, opening, tidy, lab insert) reads and writes
+   * through this, so none can read one note and write another. The lab
+   * insert did exactly that: with a jaga note open at 03:00 the results
+   * went, unseen, into the morning SOAP.
+   */
+  const activeNote = {
+    body: activeShiftNote ? activeShiftNote.body : editor.value,
+    apply: (next: string): void => {
+      if (activeShiftNote) {
+        shiftNotes.setBody(activeShiftNote.id, next);
+        return;
+      }
+      editor.markNextChange('transform');
+      editor.setValue(next);
+    },
+  };
+
+  if (loading) {
+    return (
+      <AppShell title="Pasien">
+        <p className="px-4 py-10 text-center text-sm text-fg-muted">Memuat…</p>
+      </AppShell>
+    );
+  }
+
+  if (error || !patient) {
+    return (
+      <AppShell title="Pasien">
+        <div className="px-6 py-12 text-center">
+          <p className="text-sm text-fg-muted">{error ?? 'Pasien tidak ditemukan.'}</p>
+          <Link to="/" className="mt-3 inline-block text-sm text-accent underline">
+            Kembali ke papan
+          </Link>
+        </div>
+      </AppShell>
+    );
+  }
+
+  /*
+    "Dari catatan: RM … · Isi identitas" used to be a banner row of its own
+    between the date strip and the note. It is a prompt about the identity
+    row, so it sits IN that row now (2026-10-31): no height of its own, and
+    right next to what it fills. The values stay readable on the button's
+    label (one fact) or its accessible name (several).
+  */
+  const showSuggestion = Boolean(suggestion && !suggestionDismissed && !locked);
+  const fillFromNote = suggestion ? (
+    <span className="flex items-center">
+      <button
+        type="button"
+        onClick={() => {
+          const written = fillPatientFromNote(patient, settledBody);
+          if (written) {
+            void written.catch((error: unknown) =>
+              console.error('[patient] could not fill from note', error),
+            );
+          }
+          setSuggestionDismissed(true);
+        }}
+        aria-label={`Isi identitas dari catatan: ${suggestion.missing.map(([label, value]) => `${label} ${value}`).join(', ')}`}
+        className="min-h-tap max-w-[11rem] truncate rounded-lg border border-accent bg-surface px-2 text-xs font-medium text-accent"
+      >
+        Isi{' '}
+        {suggestion.missing.length === 1
+          ? `${suggestion.missing[0]?.[0] ?? ''} ${suggestion.missing[0]?.[1] ?? ''}`
+          : suggestion.missing.map(([label]) => label).join(', ')}
+      </button>
+      <button
+        type="button"
+        onClick={() => setSuggestionDismissed(true)}
+        aria-label="Abaikan usulan identitas"
+        className="flex min-h-tap min-w-9 items-center justify-center text-fg-muted"
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </span>
+  ) : null;
+
+  const identity = [
+    patient.name?.trim() || null,
+    patient.age ? `${patient.age}th` : null,
+    patient.sex,
+    patient.mrn ? `RM ${patient.mrn}` : null,
+    formatLocation(patient) || null,
+    patient.dpjp ? `DPJP: ${patient.dpjp}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  // Any empty day qualifies. The old `!exists` condition meant the offer
+  // vanished the moment the document was materialised — which happens on the
+  // first keystroke, or when a template is inserted and then cleared.
+  /**
+   * Not offered for an archived patient.
+   *
+   * The patient page stays fully editable after discharge — discharge
+   * summaries are written there, and the copy engine has to keep working. But
+   * "Hari ini masih kosong. Salin dari hari sebelumnya" is a prompt to start
+   * today's round on someone who has gone home, and every empty day from here
+   * on will be empty for the same good reason.
+   */
+  const canCarryForward =
+    !locked && patient?.status === 'active' && editor.value.trim().length === 0;
+
+  /**
+   * The date list, built once and rendered by whichever layout is on.
+   *
+   * Extracted rather than written twice: two copies of a component with
+   * fourteen props is two places for a fix to be applied to one of them.
+   */
+  const dateRail = (
+    <DateRail
+      dates={railDates}
+      onClear={setClearDate}
+      selected={selected}
+      today={today}
+      datesWithContent={datesWithContent}
+      onSelect={goToDate}
+      shiftNotesByDate={entryDates.shiftNotesByDate}
+      selectedShiftNoteId={selectedShiftNoteId}
+      onSelectShiftNote={(date, id) => {
+        // Selecting a jaga note also selects its DAY, so the editor
+        // below is always reading the entry the note belongs to. The
+        // two cannot drift apart and leave the note being edited
+        // against a different day's document.
+        if (date !== selected) goToDate(date);
+        setSelectedShiftNoteId(id);
+      }}
+      onClearShiftNote={(date, id) => {
+        // Only the day on screen can be edited — `useShiftNotes` is
+        // bound to `selected`. Switching first keeps the write going
+        // to the entry the note actually belongs to rather than
+        // silently clearing the same array index on today's document.
+        if (date !== selected) {
+          goToDate(date);
+          return;
+        }
+        shiftNotes.clear(id);
+        if (selectedShiftNoteId === id) setSelectedShiftNoteId(null);
+      }}
+      orientation="vertical"
+    />
+  );
+
+  const layout = settings.soapLayout ?? 'klasik';
+
+  const activeChecklistItems = dayItems.filter((item) => item.active);
+  const checklistDone =
+    checklist.progress.total > 0 && checklist.progress.doneCount === checklist.progress.total;
+
+  /** Header summaries for the panel layout: the answer, not a label. */
+  const notesSummary = notesSync.value.trim().length > 0 ? 'ada' : 'kosong';
+  const todoViewsForSummary = todoViews(patient?.todos ?? [], patient?.todoTicks, selected);
+  const todoDone = todoViewsForSummary.filter((view) => view.done).length;
+  const todoSummary = {
+    text: `${todoDone}/${todoViewsForSummary.length}`,
+    tone:
+      todoViewsForSummary.length > 0 && todoDone === todoViewsForSummary.length
+        ? ('done' as const)
+        : ('plain' as const),
+  };
+
+  /**
+   * Whether the sidebar is showing the patient panels in the panel layout,
+   * and so hosts the checker and the DPJP card (from 1280 px, where it is
+   * visible). Otherwise both stay above the note, as before.
+   */
+  const optionalSide = layout === 'tab' || layout === 'rail';
+  const sideHosts = layout !== 'klasik' && paneOpen && paneView === 'pasien';
+
+  const renderChecker = (where: 'main' | 'side' | 'sheet'): JSX.Element => (
+    <>
+        {!locked &&
+        soapFindings.length === 0 &&
+        aiFindings.length === 0 &&
+        !aiCheckError &&
+        (aiEnabled('check') || where !== 'main') ? (
+          <div
+            className={
+              where !== 'main'
+                ? 'flex shrink-0 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1 text-xs text-fg-muted'
+                : 'mx-4 mt-1 flex items-center gap-2 text-xs text-fg-faint'
+            }
+          >
+            <span className="min-w-0 flex-1 truncate">
+              <span aria-hidden="true" className="text-accent">✓</span>{' '}
+              {optionalSide && where === 'side' ? 'Aturan: tidak ada temuan' : 'Tidak ada yang janggal dari aturan biasa'}
+            </span>
+            {aiEnabled('check') ? (
+            <button
+              type="button"
+              onClick={() => void runAiCheck()}
+              disabled={aiCheckState === 'running' || editor.value.trim().length === 0}
+              className="min-h-tap shrink-0 rounded-lg px-2 font-medium text-accent hover:bg-bg-subtle disabled:opacity-50 [@media(pointer:fine)]:min-h-7"
+            >
+              {aiCheckState === 'running'
+                ? 'Memeriksa…'
+                : aiCheckedText !== null && !aiStale
+                  ? 'AI: tidak ada temuan · Periksa ulang'
+                  : 'Periksa dengan AI'}
+            </button>
+            ) : null}
+          </div>
+        ) : null}
+        {!locked && (soapFindings.length > 0 || aiFindings.length > 0 || aiCheckError) ? (
+          <div
+            className={
+              where === 'side'
+                ? 'shrink-0 rounded-xl border border-[var(--warn-strong)] bg-surface px-3 py-2 text-xs'
+                : where === 'sheet'
+                  ? 'text-sm'
+                  : 'mx-4 mt-2 rounded-xl border border-border px-3 py-2 text-xs'
+            }
+          >
+            {/* In the phone sheet the sheet's own title already says "Periksa
+                lagi"; only the AI button is left of this row. */}
+            <div className={`flex items-center gap-2 ${where === 'sheet' && !aiEnabled('check') ? 'hidden' : ''}`}>
+              <p className={`flex flex-1 items-center gap-1.5 font-semibold ${where === 'sheet' ? 'invisible' : ''}`}>
+                Periksa lagi
+                {soapFindings.length > 0 ? (
+                  <span className="rounded-full bg-[var(--warn-soft)] px-1.5 text-[11px] font-semibold text-[var(--warn-strong)]">
+                    {soapFindings.length}
+                  </span>
+                ) : null}
+              </p>
+              {aiEnabled('check') ? (
+                <button
+                  type="button"
+                  onClick={() => void runAiCheck()}
+                  disabled={aiCheckState === 'running' || editor.value.trim().length === 0}
+                  className="min-h-tap shrink-0 rounded-lg px-2 text-xs font-medium text-accent hover:bg-bg-subtle disabled:opacity-50 [@media(pointer:fine)]:min-h-7"
+                >
+                  {aiCheckState === 'running'
+                    ? 'Memeriksa…'
+                    : aiCheckedText !== null
+                      ? 'Periksa ulang dengan AI'
+                      : 'Periksa dengan AI'}
+                </button>
+              ) : null}
+            </div>
+            {/*
+              Ordered by urgency, and tagged with it, so the list reads top-down
+              as "fill these in, then update what was copied, then check".
+            */}
+            {(() => {
+              const row = (finding: SoapFinding) => (
+                <li key={finding.kind + finding.message} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <FindingTag level={finding.level} />
+                  <span className="min-w-0 flex-1 text-fg">{finding.message}</span>
+                  {finding.occurrences && finding.occurrences.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        /*
+                          Several places (2026-10-12): each press goes to the
+                          next one, and the press after the last goes back to
+                          the top; the round then starts again.
+                        */
+                        const key = finding.kind + finding.message;
+                        const places = finding.occurrences!;
+                        const step = occurrenceStep[key] ?? 0;
+                        setOccurrenceStep((current) => ({ ...current, [key]: (step + 1) % (places.length + 1) }));
+                        afterPhoneSheet(() => {
+                          if (step >= places.length) {
+                            editorHandle.current?.scrollToTop();
+                            return;
+                          }
+                          const place = places[step]!;
+                          const exact = editor.value.slice(place.at, place.at + place.text.length) === place.text;
+                          const at = exact ? place.at : editor.value.indexOf(place.text, step > 0 ? (places[step - 1]?.at ?? 0) + 1 : 0);
+                          if (at >= 0) editorHandle.current?.selectRange(at, at + place.text.length);
+                        });
+                      }}
+                      className="min-h-tap shrink-0 text-accent underline decoration-dotted [@media(pointer:fine)]:min-h-0"
+                    >
+                      {(() => {
+                        const step = occurrenceStep[finding.kind + finding.message] ?? 0;
+                        const count = finding.occurrences.length;
+                        return step === 0 ? `Tampilkan (${count})` : step < count ? `Berikutnya (${step + 1}/${count})` : 'Ke atas';
+                      })()}
+                    </button>
+                  ) : finding.anchor ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        /*
+                          The exact position first: `- ` or a heading occurs
+                          many times, and a text search finds the wrong one.
+                          Checked against the live text, because the check
+                          ran on a copy up to 400 ms old; if it moved, search.
+                        */
+                        const anchor = finding.anchor!;
+                        const exact =
+                          finding.at !== undefined &&
+                          editor.value.slice(finding.at, finding.at + anchor.length).toLowerCase() ===
+                            anchor.toLowerCase();
+                        const at = exact
+                          ? finding.at!
+                          : editor.value.toLowerCase().indexOf(anchor.toLowerCase());
+                        // The sheet closes either way: "Tampilkan" promises the
+                        // note, and a press that leaves the sheet up reads as broken.
+                        afterPhoneSheet(() => {
+                          if (at >= 0) editorHandle.current?.selectRange(at, at + anchor.length);
+                        });
+                      }}
+                      className="min-h-tap shrink-0 text-accent underline decoration-dotted [@media(pointer:fine)]:min-h-0"
+                    >
+                      Tampilkan
+                    </button>
+                  ) : null}
+                  {finding.markers && finding.markers.length > 0 ? (
+                    <MarkerChips
+                      markers={finding.markers}
+                      onJump={(marker, index) => {
+                        const found = locateDayMarker(editor.value, marker, index);
+                        afterPhoneSheet(() => {
+                          if (found) editorHandle.current?.selectRange(found.start, found.end);
+                        });
+                      }}
+                      onBump={(marker, index) => {
+                        const found = locateDayMarker(editor.value, marker, index);
+                        if (!found) return;
+                        editor.markNextChange('transform');
+                        editor.setValue(bumpDayMarkerAt(editor.value, found));
+                        editorHandle.current?.selectRange(found.start, found.end + 1);
+                      }}
+                    />
+                  ) : null}
+                </li>
+              );
+              // Typos get their own collapsed list (2026-11-05): there can be
+              // many, and they would bury the findings that need a decision.
+              const typos = soapFindings.filter((finding) => finding.kind === 'typo');
+              const rules = soapFindings.filter((finding) => finding.kind !== 'typo');
+              const listClass = where === 'sheet' ? 'space-y-3' : 'mt-1 space-y-1';
+              return (
+                <>
+                  {rules.length > 0 ? <ul className={listClass}>{rules.map(row)}</ul> : null}
+                  {typos.length > 0 ? (
+                    <details className="mt-1">
+                      <summary className="min-h-tap cursor-pointer font-medium text-accent [@media(pointer:fine)]:min-h-0">
+                        Kemungkinan salah ketik ({typos.length})
+                      </summary>
+                      <ul className={listClass}>{typos.map(row)}</ul>
+                    </details>
+                  ) : null}
+                </>
+              );
+            })()}
+
+            {/*
+              The AI trigger lives here, and it is a PRESS — never automatic.
+
+              The distinction that matters is not where the button sits but
+              what happens without it: enabling the feature in Settings says
+              the app MAY call the API, and nothing calls it until this is
+              pressed. Each press spends the user's quota and sends the note
+              off the device, so the app deciding on its own that now is a good
+              moment is the one behaviour that must not exist.
+
+              Findings land below the rules and are tagged, because they are a
+              different kind of claim — the rules found a mismatch between two
+              numbers written in the note; this one has an opinion — and mixing
+              them would let the weaker sort borrow the stronger sort's
+              credibility.
+            */}
+            {aiEnabled('check') && (aiFindings.length > 0 || aiCheckError || aiStale || aiDropped > 0) ? (
+              <div className="mt-2 border-t border-border pt-2">
+                {aiFindings.length > 0 ? (
+                  <ul className={['mb-2 space-y-1', aiStale ? 'opacity-60' : ''].join(' ')}>
+                    {aiFindings.map((finding) => (
+                      <li key={finding.message} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <FindingTag level={finding.level} />
+                        <span className="min-w-0 flex-1 text-fg">
+                          {finding.message} <span className="text-fg-faint">(AI)</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // The quote was verified against the note the AI saw;
+                            // after an edit, search for it instead.
+                            const exact =
+                              editor.value.slice(finding.at, finding.at + finding.anchor.length) === finding.anchor;
+                            const at = exact
+                              ? finding.at
+                              : editor.value.toLowerCase().indexOf(finding.anchor.toLowerCase());
+                            if (at >= 0) editorHandle.current?.selectRange(at, at + finding.anchor.length);
+                          }}
+                          className="min-h-tap shrink-0 text-accent underline decoration-dotted [@media(pointer:fine)]:min-h-0"
+                        >
+                          Tampilkan
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : aiCheckedText !== null && !aiStale && !aiCheckError ? (
+                  <p className="mb-2 text-fg-muted">AI tidak menemukan ketidakcocokan lain.</p>
+                ) : null}
+                {aiDropped > 0 && !aiStale ? (
+                  <p className="mb-2 text-xs text-fg-faint">
+                    {aiDropped} temuan AI dibuang karena kutipannya tidak ada di catatan.
+                  </p>
+                ) : null}
+                {aiStale ? (
+                  <p className="mb-1 text-xs text-fg-faint">Catatan sudah diubah sejak diperiksa AI.</p>
+                ) : null}
+                {aiCheckError ? <p className="mb-1 text-danger">{aiCheckError}</p> : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+    </>
+  );
+
+  /** Periksa lagi has something to say (or an AI button to offer). */
+  const checkerFindings = soapFindings.length + aiFindings.length;
+  const checkerVisible = !locked && (checkerFindings > 0 || aiCheckError !== null || aiEnabled('check'));
+  const phoneChecklistDone = checklist.progress.doneCount + todoDone;
+  const phoneChecklistTotal = checklist.progress.total + todoViewsForSummary.length;
+
+  const renderPhoneChips = (): JSX.Element => {
+    const chip = (tone: 'plain' | 'done' | 'warn'): string =>
+      [
+        'flex min-h-tap shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-medium',
+        tone === 'warn'
+          ? 'border-[var(--warn-strong)] bg-[var(--warn-soft)] text-fg'
+          : tone === 'done'
+            ? 'border-transparent bg-[var(--card-done-bg)] text-[var(--card-done-fg)]'
+            : 'border-border text-fg',
+      ].join(' ');
+    const notesFilled = notesSync.value.trim().length > 0;
+    return (
+      <>
+        <div className="flex gap-2 overflow-x-auto border-b border-border px-4 py-2 [scrollbar-width:none] sm:hidden [&::-webkit-scrollbar]:hidden">
+          <button type="button" onClick={() => setPhoneSheet('notes')} className={chip('plain')}>
+            Catatan
+            <span
+              aria-label={notesFilled ? 'ada isi' : 'kosong'}
+              className={`h-1.5 w-1.5 rounded-full ${notesFilled ? 'bg-accent' : 'bg-border-strong'}`}
+            />
+          </button>
+          {phoneChecklistTotal > 0 ? (
+            <button
+              type="button"
+              onClick={() => setPhoneSheet('checklist')}
+              className={chip(phoneChecklistDone === phoneChecklistTotal ? 'done' : 'plain')}
+            >
+              Checklist
+              <span className="tabular-nums text-fg-muted">
+                {phoneChecklistDone}/{phoneChecklistTotal}
+              </span>
+            </button>
+          ) : null}
+          {checkerVisible ? (
+            <button
+              type="button"
+              onClick={() => setPhoneSheet('checker')}
+              className={chip(checkerFindings > 0 || aiCheckError ? 'warn' : 'plain')}
+            >
+              {checkerFindings > 0 ? (
+                <>
+                  Periksa lagi
+                  {/* Dark-on-light, not white-on-amber: white on the amber is about
+                      3:1, under the 4.5:1 a 10 px number needs. */}
+                  <span className="rounded-full bg-fg px-1.5 text-[11px] font-semibold leading-4 text-bg">
+                    {checkerFindings}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span aria-hidden="true" className="text-accent">✓</span> Periksa
+                </>
+              )}
+            </button>
+          ) : null}
+          {dpjpHasInfo ? (
+            // Last, so Catatan, Checklist and Periksa lagi (the findings chip) keep the positions they
+            // had and stay on screen at 412 px. Who, and the one time-sensitive fact (a clinic today
+            // or tomorrow); where the report goes, the format and the other clinics are under this row.
+            <button
+              type="button"
+              aria-expanded={dpjpInfoOpen}
+              aria-label={dpjp ? `Info DPJP ${dpjp.initials}` : 'Info pasien'}
+              onClick={toggleDpjpInfo}
+              className={chip('plain')}
+            >
+              <span className="font-semibold">{dpjp ? dpjp.initials : 'Info'}</span>
+              {poli && poli.inDays <= 1 ? (
+                <span className="text-fg-muted">{poli.inDays === 0 ? 'Poli hari ini' : 'Poli besok'}</span>
+              ) : null}
+              {isTrioDpjp(dpjp?.id) ? <span className="font-medium text-accent">6MWT</span> : null}
+              <span aria-hidden="true" className="text-fg-faint">
+                {dpjpInfoOpen ? '▴' : '▾'}
+              </span>
+            </button>
+          ) : null}
+        </div>
+
+        {dpjpHasInfo && dpjpInfoOpen ? (
+          <div className="space-y-0.5 border-b border-border px-4 py-2 sm:hidden">{renderDpjpDetails()}</div>
+        ) : null}
+
+        <Sheet
+          open={phoneSheet === 'notes'}
+          onOpenChange={(open) => setPhoneSheet(open ? 'notes' : null)}
+          title="Catatan pasien"
+          description="Berlaku untuk seluruh hari rawat dan tidak ikut tersalin ke laporan."
+        >
+          <PatientNotes sync={notesSync} bare />
+        </Sheet>
+        <Sheet
+          open={phoneSheet === 'checklist'}
+          onOpenChange={(open) => setPhoneSheet(open ? 'checklist' : null)}
+          title="Checklist"
+          description={`${formatShortDate(selected)} · ${checklist.progress.doneCount}/${checklist.progress.total} harian · ${todoSummary.text} custom`}
+        >
+          <div className="space-y-5">
+            <ChecklistPills
+              items={dayItems}
+              states={checklist.states}
+              progress={checklist.progress}
+              onToggle={checklist.toggle}
+              disabled={locked}
+              orientation="vertical"
+            />
+            <section>
+              <h3 className="mb-1.5 text-xs font-semibold text-fg-muted">Custom Checklist</h3>
+              <PatientTodos patient={patient} date={selected} compact />
+            </section>
+          </div>
+        </Sheet>
+        <Sheet
+          open={phoneSheet === 'checker'}
+          onOpenChange={(open) => setPhoneSheet(open ? 'checker' : null)}
+          title="Periksa lagi"
+          description="Yang tampak terlupa di catatan ini. Tidak ada yang diubah otomatis."
+        >
+          <div className="flex flex-col gap-2">{renderChecker('sheet')}</div>
+        </Sheet>
+      </>
+    );
+  };
+
+  /** Something to say about the consultant: the same condition that decides whether the DPJP row exists. */
+  const dpjpHasInfo = Boolean(
+    dpjpFormat || poli || (dpjp && !poli) || dpjp?.delivery || isTrioDpjp(dpjp?.id) || patient.diagnoses.length > 0,
+  );
+
+  /** The full sentences behind the DPJP line (and, on a phone, behind its chip). */
+  const renderDpjpDetails = (): JSX.Element => (
+    <div className="space-y-0.5 pb-1">
+            {/*
+              A standing instruction, shown for the three consultants whose
+              patients get one — not a checklist item.
+              
+              A checklist item has to be ticked or it nags, and this is a thing
+              that is true of the patient rather than a task with a completion.
+              Sitting beside the report format is right: both are "what this
+              consultant expects", read once on arrival at the patient.
+            */}
+            {/*
+              Where the report goes, for the consultants who have a route.
+              
+              Above the format line on purpose: the format is what the note
+              looks like, this is whether you send it at all. A resident who
+              reads only one of the two is better served by this one.
+            */}
+            {dpjp?.delivery ? (
+              <p className="text-xs text-fg-muted">
+                {dpjp.initials} — {describeDelivery(dpjp.delivery)}
+              </p>
+            ) : null}
+            {isTrioDpjp(dpjp?.id) ? (
+              <p className="truncate text-xs font-medium text-accent">
+                {dpjp?.initials} — rencanakan 6MWT (6 minute walk test)
+              </p>
+            ) : null}
+            {dpjpFormat ? (
+              <p className="truncate text-xs text-fg-faint">
+                {dpjp?.initials} — {describeConfig(dpjpFormat)}
+              </p>
+            ) : null}
+            {/*
+              When a consultant is recognised but has no clinic, say so.
+              Rendering nothing made two different situations look identical —
+              "not on the roster" and "the line is broken again" — and I could
+              not tell them apart from a screenshot either.
+            */}
+            {dpjp && !poli ? (
+              <p className="truncate text-xs text-fg-faint">
+                {dpjp.initials} tidak ada di jadwal poli {SCHEDULE_PERIOD}
+              </p>
+            ) : null}
+            {poli ? (
+              <p className="truncate text-xs text-fg-faint">
+                Poli {dpjp?.initials} {weekdayName(poli.weekday)}
+                {poli.inDays === 0 ? ' (hari ini)' : poli.inDays === 1 ? ' (besok)' : ''} ·{' '}
+                {poli.slot.clinic} · {poli.slot.time}
+              </p>
+            ) : null}
+            {/*
+              The clinic after next.
+
+              Prefixed `Lalu` rather than repeating `Poli <initials>`, so the
+              two lines cannot be misread as two different consultants — which
+              is the mistake that matters here, since a referral sent to the
+              wrong clinic comes back a week later.
+            */}
+            {poliAfter ? (
+              <p className="truncate text-xs text-fg-faint">
+                Lalu {weekdayName(poliAfter.weekday)}, {poliAfter.date} ·{' '}
+                {poliAfter.slot.clinic} · {poliAfter.slot.time}
+              </p>
+            ) : null}
+            {patient.diagnoses.length > 0 ? (
+              <p className="truncate text-xs text-fg-faint">
+                {patient.diagnoses.join(', ')}
+              </p>
+            ) : null}
+    </div>
+  );
+
+  /*
+    Below `sm` the DPJP summary row is gone: its information became one chip in
+    the tool-chip row (`renderPhoneChips`), and its sentences open under that
+    row. Two stacked rows (DPJP line, then chips) were 114 px of a phone screen
+    before the note (2026-11-03, "so crowded"). From `sm` up nothing changed.
+  */
+  const renderDpjpLine = (): JSX.Element =>
+    !headerHasTools ? (
+      <></>
+    ) : (
+    <>
+        {dpjpFormat ||
+        poli ||
+        (dpjp && !poli) ||
+        dpjp?.delivery ||
+        isTrioDpjp(dpjp?.id) ||
+        patient.diagnoses.length > 0 ? (
+          <div className="space-y-0.5 border-b border-border px-4 py-1">
+            {/*
+              DECLUTTER (2026-10-05). Five or six grey lines above every note,
+              read once on arrival and then scrolled past forty times. Folded
+              to ONE line — who, where the report goes, the shape, 6MWT, the
+              next clinic — with the full sentences a tap away. 6MWT keeps its
+              accent in the summary: it is the one standing instruction.
+            */}
+            <button
+              type="button"
+              aria-expanded={dpjpInfoOpen}
+              onClick={toggleDpjpInfo}
+              className="flex min-h-tap w-full items-center gap-2 text-left text-xs text-fg-muted [@media(pointer:fine)]:min-h-7"
+            >
+              {dpjp ? (
+                <span className="shrink-0 rounded border border-border px-1 font-semibold text-fg">
+                  {dpjp.initials}
+                </span>
+              ) : null}
+              <span className="min-w-0 flex-1 truncate">
+                {[
+                  dpjp?.delivery ? shortDelivery(dpjp.delivery) : null,
+                  dpjpFormat ? REPORT_FORMAT_LABELS[dpjpFormat.format] : null,
+                  poli
+                    ? `Poli ${weekdayName(poli.weekday)}${poli.inDays === 0 ? ' (hari ini)' : poli.inDays === 1 ? ' (besok)' : ''}`
+                    : null,
+                  !dpjp && patient.diagnoses.length > 0 ? patient.diagnoses.join(', ') : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+                {isTrioDpjp(dpjp?.id) ? (
+                  <span className="font-medium text-accent"> · rencanakan 6MWT</span>
+                ) : null}
+              </span>
+              <span aria-hidden="true" className="shrink-0 text-fg-faint">
+                {dpjpInfoOpen ? '▴' : '▾'}
+              </span>
+            </button>
+            {dpjpInfoOpen ? renderDpjpDetails() : null}
+          </div>
+        ) : null}
+
+    </>
+  );
+
+  /**
+   * The DPJP card in the panel sidebar: the same facts as the folded line above
+   * the note, written out, since the sidebar has the room the note column
+   * does not. Who the report goes to, in what shape, the standing 6MWT, and
+   * the next two clinics.
+   */
+  const renderDpjpSide = (variant: 'card' | 'quiet' | 'bare' = 'card'): JSX.Element | null => {
+    if (!dpjp && patient.diagnoses.length === 0) return null;
+    return (
+      <DpjpSideCard
+        variant={variant}
+        dpjp={dpjp ? { id: dpjp.id, initials: dpjp.initials, name: dpjp.name } : null}
+        rows={[
+          ...(dpjp?.delivery ? [{ label: 'Kirim', value: describeDelivery(dpjp.delivery) }] : []),
+          ...(dpjpFormat ? [{ label: 'Format', value: describeConfig(dpjpFormat) }] : []),
+          ...(isTrioDpjp(dpjp?.id) ? [{ label: 'Rencana', value: 'Rencanakan 6MWT (6 minute walk test)', strong: true }] : []),
+          ...(patient.diagnoses.length > 0 ? [{ label: 'Diagnosis', value: patient.diagnoses.join(', ') }] : []),
+        ]}
+        today={today}
+      />
+    );
+  };
+
+  /**
+   * The note on screen — the day's SOAP, or the jaga note or version that is
+   * open — as a Word file for printing (`domain/format/soapDocx`), then the
+   * same sheet on the print page so the printer is one click away.
+   */
+  const exportWord = (): void => {
+    const label = activeShiftNote ? noteLabel(activeShiftNote) : undefined;
+    const input = {
+      body: activeNote.body,
+      patientName: patient.name?.trim() || 'Tanpa nama',
+      mrn: patient.mrn ? `RM ${patient.mrn}` : undefined,
+      location: formatLocation(patient),
+      dayLabel: formatDayHeader(selected, patient.admittedAt, settings.showHariRawat),
+      noteLabel: label,
+    };
+    void deliverFile(
+      new Blob([buildSoapDocx(input)], { type: DOCX_MIME }),
+      soapDocxFileName(patient.name ?? '', isIgdEntry(selected) ? 'SOAP Awal' : selected, label),
+    ).then(() => printDocument(soapPrintHtml(input)));
+  };
+
+  return (
+    <AppShell title={patient.name} topBar={false}>
+      {/*
+        Two columns from 1280 px, one below it.
+
+        Capping everything at max-w-3xl and centring it was still a phone layout
+        — it just had margins. On a laptop the note deserves the width it has,
+        and the things you consult WHILE writing (which day, what is still
+        outstanding) belong beside it rather than stacked above it, where every
+        one of them pushed the text further down the screen.
+
+        The note column keeps a readable measure; the rail and checklist move
+        into a sidebar that does not move when the note grows.
+
+        `overflow-x-clip`, NOT `overflow-hidden`: `overflow: hidden` makes this
+        element the scroll container for anything `position: sticky` inside it,
+        which is why the identity bar sat still at the top of the note instead
+        of following the scroll. `clip` contains the same horizontal overflow
+        without creating a scroll container.
+      */}
+      <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-x-clip xl:max-w-none xl:flex-row xl:gap-6 xl:pr-4">
+        {/*
+          `min-w-0` is load-bearing, not decoration.
+
+          A flex item defaults to `min-width: auto`, which means it refuses to
+          shrink below the intrinsic width of its content. A long unbroken line
+          in the note therefore pushed this column wider than the row, the fixed
+          sidebar was shoved past the viewport edge, and the whole page grew a
+          horizontal scrollbar. `min-w-0` lets the column shrink and the text
+          wrap instead.
+        */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/*
+          One row, not three.
+
+          The date heading and the action buttons were on separate lines with an
+          empty slot between them where the identity line used to be, so the
+          header spent three rows and a gap saying what fits on one.
+        */}
+        {/*
+          Sticky, above the identity bar.
+          
+          The date says which day you are writing into and Salin is the thing
+          you reach for after reading to the bottom — both were scrolling out of
+          view exactly when they were needed. The identity bar sits below it, so
+          the two stack rather than overlap.
+        */}
+        {/*
+          ONE sticky bar, not two.
+          
+          The date header and the identity bar were both sticky, so they stacked
+          and covered a third of a phone screen — and the identity bar's own
+          text was hidden behind the header above it.
+          
+          The identity now lives inside this bar as its second line, which is
+          also where it reads best: name and record number directly under the
+          day they belong to.
+        */}
+        <header id="patient-sticky-header" className="sticky top-0 z-30 border-b border-border bg-surface pt-[env(safe-area-inset-top)] lg:pt-0">
+        <div className="flex items-center gap-2 px-4 py-d-row">
+          {/* Browser back exists, but on an installed PWA there is no chrome to
+              show it, and on desktop the note fills the window. */}
+          <Button size="icon" variant="quiet" onClick={goUp} aria-label="Kembali" className="-ml-2 shrink-0">
+            <IconBack width={20} height={20} />
+          </Button>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-semibold">
+              {/* Short below lg: on a tablet the header also carries Lab,
+                  Format bangsal and Pembuka, and the long date truncated there. */}
+              <span className="lg:hidden">
+                {formatDayHeaderShort(selected, patient.admittedAt, settings.showHariRawat)}
+              </span>
+              <span className="hidden lg:inline">
+                {formatDayHeader(selected, patient.admittedAt, settings.showHariRawat)}
+              </span>
+            </h2>
+            {!identity ? (
+              // Identity is optional metadata, not a precondition. The note is
+              // already usable; this is an offer, not a prompt.
+              <button
+                type="button"
+                onClick={() => setIdentityOpen(true)}
+                className="relative text-left text-xs text-accent underline after:absolute after:inset-x-0 after:-inset-y-3.5 after:content-['']"
+              >
+                Tambah identitas pasien
+              </button>
+            ) : null}
+            {/*
+              DPJP format, poli and diagnoses USED TO BE HERE, and identity did
+              not exist on screen at all once the note scrolled.
+
+              The previous pass removed `sticky` from `IdentityBar` — correctly,
+              two sticky bars covered a third of a phone screen — and recorded
+              that "the identity now lives inside this bar as its second line".
+              It never did. This slot went to optional metadata instead, so the
+              one fact that must never scroll away (which chart am I in) was the
+              one that did, while a consultant's report preference stayed
+              pinned.
+
+              Identity is now the second row of this header, below, and the
+              optional metadata has moved into the non-sticky column where
+              consult-once information belongs.
+            */}
+          </div>
+
+          <PatientHeaderActions
+            locked={locked}
+            noteEmpty={editor.value.trim().length === 0}
+            calcOpen={calcOpen}
+            paneOpen={paneOpen}
+            visiteOn={visiteOn && !activeShiftNote}
+            onToggleVisite={() => {
+              editor.flush();
+              setVisiteOn((current) => !current);
+            }}
+            onLab={() => setLabOpen(true)}
+            onReformat={() => setReformatOpen(true)}
+            onOpening={() => setOpeningOpen(true)}
+            onToggleCalc={() => setCalcOpen((current) => !current)}
+            onCopy={() => setCopyOpen(true)}
+            onTogglePane={togglePane}
+            onCompare={() => setCompareOpen(true)}
+            onActions={() => setActionsOpen(true)}
+          />
+        </div>
+
+        {/*
+          Row two of the SAME sticky bar — not a second sticky element.
+
+          This is the line that answers "am I writing into the right chart",
+          which is the one mistake this app exists to make hard. It has to be
+          on screen at the moment the mistake would be made: mid-note, scrolled
+          past the opening block, tab-switching to SIMGOS. Until now it was in
+          a bar that scrolled away.
+
+          Rendered inside `<header>` rather than as its own `sticky` element
+          because two sticky bars stack — the earlier version of that cost a
+          third of a phone screen and hid the identity text behind the header
+          above it.
+        */}
+        {identity || showSuggestion ? (
+          <IdentityBar
+            patient={patient}
+            showInitialsOnly={settings.privacy.boardShowInitialsOnly}
+            onEdit={() => setIdentityOpen(true)}
+            action={showSuggestion ? fillFromNote : undefined}
+          />
+        ) : null}
+
+        {/*
+          Row three, and the reason it is inside the sticky header rather than
+          above the note: an index you have to scroll back up to reach is not an
+          index. It is only useful at the moment you are lost in the middle of a
+          long note.
+
+          Below the identity row, not above it: identity answers "right chart",
+          which has to be readable without reading anything else first.
+        */}
+        {/*
+          The body the jump bar indexes is whichever editor is OPEN.
+          
+          It read `editor.value` unconditionally, so with a jaga note on screen
+          the bar listed the day's sections and every one of them scrolled to
+          an anchor in a mirror that was no longer rendered — buttons that
+          looked right and did nothing.
+        */}
+        <JumpBar
+          body={activeShiftNote ? activeShiftNote.body : editor.value}
+          aliases={settings.sectionAliases}
+          bookmarks={lineBookmarks.resolved}
+          onBookmark={(id) => {
+            const target = lineBookmarks.resolved.find((entry) => entry.id === id);
+            if (target) editorHandle.current?.revealLine(target.start, target.end);
+          }}
+          /*
+            Offered only on the latest note. On an older day a bookmark made
+            since is "missing" simply because the line did not exist yet, and
+            clearing it from there would delete today's bookmarks.
+          */
+          missingBookmarks={
+            selected >= (patient.lastEntryDate ?? selected) ? lineBookmarks.missing.length : 0
+          }
+          onClearMissing={lineBookmarks.clearMissing}
+        />
+        </header>
+
+        {/*
+          The archive note lives with the patient, not on the archive list.
+          
+          The list is for finding someone; this is a detail about them, and
+          editing it there meant every row carried a control that only matters
+          once you have already found the right person.
+          
+          The reason and the date stay fixed — they record what happened and
+          when, and a record you can rewrite is not a record. The note is
+          commentary, so it is the part that can be corrected.
+        */}
+        {patient.status === 'archived' ? (
+          <div className="border-b border-border px-4 py-1.5">
+            <p className="text-xs text-fg-faint">
+              Pasien terarsip{patient.archive ? ` — ${archiveSummary(patient)}` : ''}. Catatan
+              tetap dapat dibaca, disalin, dan diubah.
+            </p>
+            <input
+              type="text"
+              value={archiveNote}
+              placeholder="Catatan arsip (opsional)…"
+              onChange={(event) => setArchiveNote(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+              }}
+              onBlur={() => {
+                if (archiveNote.trim() !== (patient.archive?.note ?? '')) {
+                  void updateArchiveNote(patient.id, archiveNote).catch((error: unknown) =>
+                    console.error('[archive] note write rejected', error),
+                  );
+                }
+              }}
+              className="mt-1 min-h-tap w-full rounded-lg border border-transparent bg-transparent px-2 text-xs outline-none focus:border-border"
+            />
+          </div>
+        ) : null}
+
+        {/*
+          Consult-once metadata, demoted out of the sticky header.
+
+          Report preference, clinic day and diagnoses are things you read when
+          you arrive at the patient and act on once. They do not need to follow
+          the scroll, and while they did, they were occupying the slot identity
+          needed.
+
+          Each on its own line rather than chained in a ternary: the poli line
+          used to sit after `!identity` in that chain, so the moment a patient
+          had a name it could never render — which is why a recognised DPJP
+          showed no clinic. Separate conditions cannot shadow each other.
+        */}
+        <div className={sideHosts ? 'xl:hidden' : ''}>{renderDpjpLine()}</div>
+
+        {/*
+          PHONE: THE NOTE COMES FIRST (2026-10-08 mobile revamp).
+
+          Below `sm` the standing panels — Catatan pasien, Checklist, Custom
+          Checklist and Periksa lagi — were stacked open above the note, so the
+          note began about 1000 px down: a full phone screen of furniture
+          before the thing the screen is for. They are read once on arrival
+          and then scrolled past on every visit.
+
+          Here each is a chip that answers its own question in a word ("ada",
+          "3/10", "3") and opens the full panel in a sheet. Tablet keeps the
+          stacked panels (it has the height); desktop keeps its sidebar.
+        */}
+        {renderPhoneChips()}
+
+        <div className="hidden sm:block xl:hidden">
+          <PatientNotes sync={notesSync} />
+        </div>
+
+        <div className="hidden sm:block xl:hidden">
+          <PatientTodos patient={patient} date={selected} />
+        </div>
+
+        <div className="hidden sm:block xl:hidden">
+          <ChecklistPills
+            items={dayItems}
+            states={checklist.states}
+            progress={checklist.progress}
+            onToggle={checklist.toggle}
+            disabled={locked}
+          />
+        </div>
+
+        <div className="xl:hidden">
+          <DateRail
+            dates={railDates}
+            selected={selected}
+            today={today}
+            datesWithContent={datesWithContent}
+            onSelect={goToDate}
+            /**
+             * The phone strip gets jaga notes too.
+             *
+             * Without these it rendered days only, so a jaga note written on
+             * the phone could not be reopened on the phone — it existed and it
+             * synced, and the only way back to it was a laptop.
+             */
+            shiftNotesByDate={entryDates.shiftNotesByDate}
+            selectedShiftNoteId={selectedShiftNoteId}
+            onSelectShiftNote={(date, id) => {
+              if (date !== selected) goToDate(date);
+              setSelectedShiftNoteId(id);
+            }}
+            trailing={
+              <span className="contents sm:hidden">
+                <JagaAddButtons
+                  canAdd={!locked}
+                  onAdd={addJagaNote}
+                  onAddVersion={editor.value.trim() ? () => setVersionSheetOpen(true) : undefined}
+                />
+              </span>
+            }
+          />
+        </div>
+
+        {hint ? (
+          <Banner tone="info">
+            <span className="flex-1">{hint.message}</span>
+            <button
+              type="button"
+              onClick={() => goToDate(hint.yesterday)}
+              className="font-medium text-accent underline"
+            >
+              Buka
+            </button>
+            <button
+              type="button"
+              onClick={() => setHintDismissed(true)}
+              className="text-fg-faint"
+            >
+              Tutup
+            </button>
+          </Banner>
+        ) : null}
+
+        {otherDevice ? (
+          <Banner tone="muted">
+            {/* One line on a phone (it was two); the full sentence from `sm`. */}
+            <span className="flex-1 sm:hidden">Dibuka juga di perangkat lain ({otherDevice}).</span>
+            <span className="hidden flex-1 sm:inline">
+              Perangkat lain ({otherDevice}) sedang membuka catatan ini. Anda tetap bisa
+              menulis.
+            </span>
+          </Banner>
+        ) : null}
+
+        {editor.remoteChangedWhileDirty && !editor.conflict ? (
+          <Banner tone="muted">
+            <span className="flex-1">Perubahan dari perangkat lain digabungkan otomatis.</span>
+          </Banner>
+        ) : null}
+
+        {locked ? (
+          <Banner tone="muted">
+            <span className="flex-1">
+              Catatan terkunci{autoLocked ? ' otomatis setelah 48 jam' : ''}.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (!patientId) return;
+                void setEntryLocked(patientId, selected, false).catch((error: unknown) =>
+                  console.error('[patient] unlock failed', error),
+                );
+              }}
+              className="font-medium text-accent underline"
+            >
+              Buka kunci
+            </button>
+          </Banner>
+        ) : null}
+
+        {canCarryForward ? (
+          <Banner tone="info">
+            <span className="flex-1">Hari ini masih kosong.</span>
+            <button
+              type="button"
+              onClick={applyCarryForward}
+              className="font-medium text-accent underline"
+            >
+              Salin dari hari sebelumnya
+            </button>
+          </Banner>
+        ) : null}
+
+        {/*
+          Which day is being written to, whenever it is not today.
+
+          The date is in the header already, but a date is something you read
+          and a warning is something you notice — and the failure it guards
+          against is not misreading the header, it is never looking at it. You
+          arrive from the rail or from a link, start typing, and the note lands
+          on a day that has already been reported.
+          
+          Absent on today, deliberately. A banner that is always there is
+          furniture, and furniture is invisible by the second day.
+        */}
+        {selected !== today ? (
+          <Banner tone="warn">
+            <span className="flex-1">
+              Menulis catatan <b>{formatShortDate(selected)}</b>, bukan hari ini.
+            </span>
+            <button
+              type="button"
+              onClick={() => goToDate(today)}
+              className="min-h-tap shrink-0 underline"
+            >
+              Ke hari ini
+            </button>
+          </Banner>
+        ) : null}
+        {carrySummary ? <Banner tone="muted">{carrySummary}</Banner> : null}
+        {/*
+          Which list this patient belongs to — offered only while the note is
+          still blank.
+
+          The board creates a patient into whatever list you were looking at,
+          which is right almost every time and silent when it is. This is the
+          correction, placed where the consequence is: one tap, on the screen
+          you are already on, before you have typed anything.
+
+          It disappears once there is a note, deliberately. After that the
+          patient has a history and moving them between lists is a decision
+          rather than a correction — that lives in the ⋯ sheet, where it is
+          harder to do by accident.
+        */}
+        {patient.status === 'active' &&
+        !patient.name?.trim() &&
+        editor.value.trim().length === 0 ? (
+          <div className="flex items-center gap-2 border-b border-border px-4 py-1.5 text-xs">
+            <span className="text-fg-muted">Masuk daftar:</span>
+            {(
+              [
+                [false, 'Pasien saya'],
+                [true, 'Titipan'],
+              ] as Array<[boolean, string]>
+            ).map(([value, label]) => (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={(patient.temporary === true) === value}
+                onClick={() => void updatePatient(patient.id, { temporary: value })}
+                className={[
+                  'min-h-tap rounded-full border px-3 font-medium',
+                  (patient.temporary === true) === value
+                    ? 'border-accent text-accent'
+                    : 'border-border text-fg-muted',
+                ].join(' ')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {/*
+          THE CHECKER — what the note looks like it forgot.
+
+          Runs on the DEBOUNCED body, never on every keystroke: it compares
+          against yesterday's note and re-reads several regexes over the whole
+          thing, and doing that while someone is typing is the mobile lag this
+          app has fought before.
+
+          Every finding names a place and stops there. None of them edits,
+          because each has a legitimate reason to be exactly as it is — vitals
+          that really were identical, a diagnosis deliberately quoting the
+          admission value, a lab ordered again the same day. A checker that
+          corrected would be wrong about a patient roughly once a week; one
+          that asks is only ever ignorable.
+
+          Suppressed entirely on a locked day: nothing there can be changed, so
+          a list of things to change is noise on a page you are reading.
+        */}
+        {/*
+          DECLUTTER (2026-10-05). With nothing flagged, the panel was a box,
+          a sentence saying nothing was found, and a full-width AI button —
+          three rows above every clean note. Now: nothing flagged and no AI
+          result → one small line. Something flagged → the box, with the AI
+          button moved up beside the title instead of a row of its own.
+        */}
+        {/* In the panel layout on a laptop the checker lives in the sidebar, so
+            it stays in view while the note scrolls; here it is the fallback. */}
+        <div className={['hidden sm:block', sideHosts ? 'xl:hidden' : ''].join(' ')}>{renderChecker('main')}</div>
+
+        {staleMarkers ? (
+          <Banner tone="warn">
+            {/*
+              Each counter is a BUTTON that takes you to it, not a word in a
+              sentence.
+
+              Naming them (`H-2, H-3, hari ke-9`) answered how many and left
+              where — and where is the expensive half. A carried-forward note
+              runs to forty lines, the counters are scattered through the
+              italic opening and the therapy list, and two of them read the
+              same. Every press of "Sudah" was preceded by a manual scan.
+
+              The press SELECTS the counter rather than scrolling near it, so
+              the number is already highlighted and the correction is one
+              keystroke. Repeated presses walk the occurrences when a counter
+              appears more than once — the chip says how many, and cycling is
+              why the count is worth showing.
+
+              A chip whose counter no longer appears in the note is struck
+              through and inert: it has been edited since the list was made.
+              That is shown, not removed, and it does not dismiss the banner —
+              editing a number is evidence the user looked at it, not proof the
+              number is now right, and only the user can say that.
+            */}
+            <span className="flex flex-1 flex-wrap items-center gap-x-1 gap-y-1">
+              <span>Perbarui hitungan hari — disalin dari catatan yang lebih lama:</span>
+              {staleMarkers.map((text) => {
+                const remaining = markerCounts[text] ?? 0;
+                if (remaining === 0) {
+                  return (
+                    <span
+                      key={text}
+                      title="Sudah diubah sejak daftar ini dibuat"
+                      className="rounded px-1 font-semibold line-through opacity-60"
+                    >
+                      {text}
+                    </span>
+                  );
+                }
+                return (
+                  <button
+                    key={text}
+                    type="button"
+                    onClick={() => jumpToMarker(text)}
+                    title={
+                      remaining > 1
+                        ? `Tampilkan ${text} di catatan (${remaining} tempat)`
+                        : `Tampilkan ${text} di catatan`
+                    }
+                    className="rounded border border-current px-1.5 py-0.5 font-semibold underline decoration-dotted"
+                  >
+                    {text}
+                    {remaining > 1 ? ` ×${remaining}` : ''}
+                  </button>
+                );
+              })}
+            </span>
+            {/* Dismissed by hand, never by a timer or by the next keystroke.
+                It is a task, and a task that clears itself is one you can
+                believe you did. */}
+            <button
+              type="button"
+              onClick={() => {
+                setStaleMarkers(null);
+                setDayMarkersDismissed(true);
+              }}
+              className="min-h-tap shrink-0 underline"
+            >
+              Sudah
+            </button>
+          </Banner>
+        ) : null}
+
+
+        <JagaBar
+          notes={shiftNotes.notes}
+          activeId={activeShiftNote?.id ?? null}
+          canAdd={!locked}
+          onSelect={(id) => {
+            // Leaving a jaga note saves it; see useShiftNotes.
+            shiftNotes.flush();
+            setJustCreatedJaga(null);
+            setSelectedShiftNoteId(id);
+          }}
+          onAdd={addJagaNote}
+          onAddVersion={editor.value.trim() ? () => setVersionSheetOpen(true) : undefined}
+        />
+
+        {/* Empty day only — see TemplatePicker for why this is never automatic.
+            Not while a jaga note is open: the picker writes the DAY's SOAP. */}
+        {!locked && !activeShiftNote && editor.value.trim().length === 0 ? (
+          <TemplatePicker
+            templates={settings.noteTemplates}
+            onPick={(body) => {
+              editor.markNextChange('transform');
+              editor.setValue(body);
+            }}
+          />
+        ) : null}
+
+        {/*
+          One editor slot, two things it can hold.
+
+          A jaga note selected in the rail replaces the day's SOAP here rather
+          than opening beside it. Two editors on screen at once would mean the
+          answer to "where am I typing" is a glance away instead of obvious,
+          and the whole reason the jaga note is a separate document is that its
+          text must not end up in the morning note.
+        */}
+        {activeShiftNote && carryPending?.id === activeShiftNote.id ? (
+          <CarryPendingPanel
+            pending={carryPending.changes}
+            onDismiss={() => setCarryPending(null)}
+          />
+        ) : null}
+        {activeShiftNote ? (
+          <ShiftNoteEditor
+            note={activeShiftNote}
+            readOnly={locked}
+            aliases={settings.sectionAliases}
+            date={selected}
+            tint={settings.sectionTint}
+            {...(settings.showWatermark
+              ? {
+                  watermark: {
+                    name: patient.name?.trim() || 'Tanpa nama',
+                    mrn: patient.mrn ? `RM ${patient.mrn}` : 'RM —',
+                    date: formatShortDate(selected),
+                    opacity: settings.watermarkOpacity,
+                    mode: settings.watermarkMode ?? 'ulang',
+                  },
+                }
+              : {})}
+            onChange={(body) => shiftNotes.setBody(activeShiftNote.id, body)}
+            onBlur={shiftNotes.flush}
+            onClear={() => {
+              shiftNotes.clear(activeShiftNote.id);
+              setSelectedShiftNoteId(null);
+            }}
+            onBack={() => setSelectedShiftNoteId(null)}
+            onTime={(time) => shiftNotes.setTime(activeShiftNote.id, time)}
+            onRename={(title) => shiftNotes.rename(activeShiftNote.id, title)}
+            focusAt={justCreatedJaga === activeShiftNote.id ? JAGA_TEMPLATE_CARET : undefined}
+          />
+        ) : visiteOn ? (
+          // The page's own sticky bar already names the patient and the day.
+          <div className="px-4 py-3">
+            <VisiteView
+              patient={patient}
+              body={entryLoading ? null : editor.value}
+              noteDate={null}
+              today={today}
+              aliases={settings.sectionAliases}
+            />
+            <Button size="sm" className="mt-4" onClick={() => setVisiteOn(false)}>
+              Kembali ke catatan
+            </Button>
+          </div>
+        ) : (
+          <BodyEditor
+            handleRef={editorHandle}
+            history={{
+              undo: editor.undo,
+              redo: editor.redo,
+              canUndo: editor.canUndo,
+              canRedo: editor.canRedo,
+              registerEditor: editor.registerEditor,
+            }}
+            value={editor.value}
+            onChange={editor.setValue}
+            onBlur={editor.flush}
+            aliases={settings.sectionAliases}
+            date={selected}
+            ward={patient.ward}
+            bookmarks={{
+              starts: lineBookmarks.resolved.map((entry) => entry.start),
+              onToggle: lineBookmarks.toggleAt,
+            }}
+            tint={settings.sectionTint}
+            readOnly={locked}
+            {...(settings.showWatermark
+              ? {
+                  watermark: {
+                    name: patient.name?.trim() || 'Tanpa nama',
+                    mrn: patient.mrn ? `RM ${patient.mrn}` : 'RM —',
+                    date: formatShortDate(selected),
+                    opacity: settings.watermarkOpacity,
+                    mode: settings.watermarkMode ?? 'ulang',
+                  },
+                }
+              : {})}
+            /*
+              Loading says loading. The editor is locked until the entry
+              arrives (that lock is what stopped a blank editor wiping a
+              note), but it used to say "Tulis SOAP hari ini…" while locked,
+              so the first keystrokes went nowhere and nothing said why.
+            */
+            placeholder={entryLoading ? 'Memuat catatan…' : 'Tulis SOAP hari ini…'}
+          />
+        )}
+
+
+        {/*
+          SPEC F4 — microcopy only. There is no save button by design.
+
+          "Tersimpan" used to be the answer whatever the server said. It now
+          says where the text is: on this phone only while offline, and not on
+          the server at all after a refusal (the pill explains that one).
+        */}
+        <div className="flex items-center gap-3 px-4 py-2 text-xs text-fg-muted">
+          <span className={`flex-1 ${syncKind === 'error' && !editor.dirty ? 'font-semibold text-danger' : ''}`}>
+            {editor.dirty
+              ? 'Menyimpan…'
+              : syncKind === 'error'
+                ? 'Ada perubahan yang ditolak server'
+                : syncKind === 'offline'
+                  ? 'Tersimpan di perangkat ini'
+                  : 'Tersimpan'}
+          </span>
+
+          {/*
+            Freeze the day's SOAP and keep editing.
+
+            Beside "Riwayat perubahan" because that is where the result lands —
+            a saved version is a revision that is never pruned and carries a
+            label. Hidden while a jaga note is open: `editor.value` is the
+            day's SOAP, and versioning it from a screen showing something else
+            is the recurring PatientPage bug (OpeningSheet and ReformatSheet
+            both had it) rather than a new one.
+          */}
+          {!activeShiftNote && editor.value.trim() ? (
+            <button
+              type="button"
+              onClick={() => setVersionLabel(defaultVersionLabel())}
+              className="min-h-tap px-1 underline"
+            >
+              Simpan versi
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setTrailOpen(true)}
+            className="min-h-tap px-1 underline"
+          >
+            Riwayat perubahan
+          </button>
+        </div>
+
+        {/*
+          Saved versions, on the page rather than behind the history sheet.
+
+          Chips because they are read as a set — "what states does today have"
+          — and the answer is usually one or two. Newest first, matching the
+          trail. Tapping opens that version's diff against the note as it
+          stands now, which is the question actually being asked: what changed
+          since the morning.
+        */}
+        {savedVersions.length > 0 && !activeShiftNote ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-fg-faint">Versi:</span>
+            {savedVersions.map((revision) => (
+              <button
+                key={revision.id}
+                type="button"
+                onClick={() => {
+                  setTrailFocus(revision.id);
+                  setTrailOpen(true);
+                }}
+                className="min-h-tap rounded-full border border-[var(--warn-strong)]/40 bg-[var(--warn-soft)] px-2.5 text-xs text-fg"
+              >
+                {revision.label ?? `rev ${String(revision.rev)}`}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {versionLabel !== null ? (
+          <div className="mt-2 flex items-center gap-2 rounded-lg border border-border p-2">
+            <input
+              autoFocus
+              value={versionLabel}
+              onChange={(event) => setVersionLabel(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void commitVersion();
+                if (event.key === 'Escape') setVersionLabel(null);
+              }}
+              /* Pre-filled with the time, so pressing Enter is a complete
+                 answer. Most versions do not need a name beyond when they
+                 were taken, and the ones that do — "Post op" — are worth
+                 typing. */
+              placeholder="Pagi / Post op"
+              className="min-h-tap min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 text-sm outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => void commitVersion()}
+              className="min-h-tap shrink-0 rounded-lg border border-accent px-3 text-sm font-medium text-accent"
+            >
+              Simpan
+            </button>
+            <button
+              type="button"
+              onClick={() => setVersionLabel(null)}
+              className="min-h-tap shrink-0 px-2 text-sm text-fg-muted"
+            >
+              Batal
+            </button>
+          </div>
+        ) : null}
+
+      {editor.conflict ? (
+        <ConflictDialog
+          conflict={editor.conflict}
+          otherDeviceLabel={otherDevice ?? 'perangkat lain'}
+          onResolve={editor.resolveConflict}
+        />
+      ) : null}
+
+      {clearDate ? (
+        <ConfirmDialog
+          title={`Hapus catatan ${formatShortDate(clearDate)}?`}
+          description="Isi catatan hari itu dikosongkan. Teksnya masih bisa dipulihkan dari Riwayat perubahan."
+          confirmLabel="Hapus"
+          onCancel={() => setClearDate(null)}
+          onConfirm={() => {
+            const target = clearDate;
+            setClearDate(null);
+            if (!patientId) return;
+            void clearEntry(patientId, target).catch((error: unknown) =>
+              console.error('[entry] clear rejected', error),
+            );
+          }}
+        />
+      ) : null}
+
+      {/*
+        Same rule as the opening sheet: it rewrites the note on screen.
+        
+        Reformatting a jaga note while it wrote the morning SOAP would have
+        been the same silent cross-write.
+      */}
+      <ReformatSheetWhenOpen
+        open={reformatOpen}
+        onOpenChange={setReformatOpen}
+        body={activeNote.body}
+        onApply={activeNote.apply}
+      />
+
+      {/*
+        `todayBody` is the note ON SCREEN, which is the jaga note when one is
+        open. Passing the day's SOAP regardless was why comparing a jaga note
+        against its own day produced two panes neither of which was visible,
+        under a header that said "hari ini".
+      */}
+      <CompareSheetWhenOpen
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        patientId={patientId ?? ''}
+        todayBody={activeShiftNote ? activeShiftNote.body : editor.value}
+        currentKey={activeShiftNote ? `${selected}#${activeShiftNote.id}` : selected}
+        openNote={{
+          date: selected,
+          kind: activeShiftNote ? (isVersion(activeShiftNote) ? 'versi' : 'jaga') : 'harian',
+          name: activeShiftNote ? noteLabel(activeShiftNote) : 'SOAP',
+        }}
+        {...(activeShiftNote || locked
+          ? {}
+          : {
+              // Same path as restoring from Riwayat perubahan: snapshot what
+              // is on screen, replace it, then save at once rather than
+              // waiting for the idle debounce on a note the user did not type.
+              onApplyRevision: (body: string) => {
+                editor.restoreRevision(body);
+                editor.flush();
+              },
+            })}
+      />
+
+      <IdentitySheetWhenOpen
+        body={editor.value}
+        open={identityOpen}
+        onOpenChange={setIdentityOpen}
+        patient={patient}
+      />
+
+      <HistorySummarySheetWhenOpen
+        open={summaryOpen}
+        onOpenChange={setSummaryOpen}
+        patientId={patient.id}
+        identity={[patient.name, patient.mrn ? `RM ${patient.mrn}` : '', formatLocation(patient)]
+          .filter(Boolean)
+          .join(' · ')}
+      />
+
+      <SoapTidySheetWhenOpen
+        open={tidyOpen}
+        onOpenChange={setTidyOpen}
+        body={activeNote.body}
+        onApply={activeNote.apply}
+      />
+
+      <PatientActionsSheetWhenOpen
+        open={actionsOpen}
+        onOpenChange={setActionsOpen}
+        patient={patient}
+        onAddShiftNote={locked ? undefined : addJagaNote}
+        onAddVersion={
+          locked || !editor.value.trim() ? undefined : () => setVersionSheetOpen(true)
+        }
+        onLab={locked || headerHasTools ? undefined : () => setLabOpen(true)}
+        {...(locked || headerHasTools ? {} : { onReformat: () => setReformatOpen(true) })}
+        {...(!locked && editor.value.trim().length > 0
+          ? // No key needed: the tidy itself is deterministic now, and the AI
+            // pass inside the sheet appears only when a key and the switch are
+            // both there.
+            { onTidy: () => setTidyOpen(true) }
+          : {})}
+        {...(aiEnabled('summary') ? { onSummarise: () => setSummaryOpen(true) } : {})}
+        onExportWord={activeNote.body.trim() ? exportWord : undefined}
+
+        onOpening={
+          locked || headerHasTools || editor.value.trim().length === 0
+            ? undefined
+            : () => setOpeningOpen(true)
+        }
+        {...(headerHasTools ? {} : { onCompare: () => setCompareOpen(true) })}
+        {...(headerHasTools ? {} : { onCalculator: () => setCalcOpen(true) })}
+      />
+
+      {calcOpen ? (
+        <FloatingCalculator
+          onClose={() => setCalcOpen(false)}
+          noteBody={activeNote.body}
+          onInsertTerapi={(line) => {
+            const next = insertIntoTerapi(activeNote.body, line, settings.sectionAliases);
+            if (next === null) return false;
+            activeNote.apply(next);
+            return true;
+          }}
+        />
+      ) : null}
+
+        </div>
+
+        {/* Sidebar: fixed-width context, scrolls independently. */}
+        {/* Collapsing gives the note the full width. The state persists, so a
+            preference set once survives navigation and reloads. */}
+        {/*
+          Sticky to the viewport, scrolling on its own.
+          
+          It used to scroll with the note, so on a long note the checklist —
+          the thing you tick WHILE reading — was somewhere off the top of the
+          screen. `max-h` plus its own overflow means a long checklist still
+          scrolls without dragging the note with it.
+        */}
+        <aside
+          className={[
+            'sticky top-0 shrink-0 flex-col gap-4',
+            layout !== 'klasik' ? 'w-[320px]' : 'w-[300px]',
+            // Panel layout: a FIXED-height column, so it is always its own
+            // scroll container. `max-h` alone leaves the column as tall as its
+            // content until that content exceeds the viewport, and an expanded
+            // panel in the middle of a long stack could then run past the
+            // bottom with the scroll belonging to the page instead.
+            layout !== 'klasik' ? 'h-[var(--app-h,100dvh)] gap-3' : 'max-h-[var(--app-h,100dvh)]',
+            // A full second scrollbar beside the page's was the loudest thing in the column.
+            optionalSide ? '[scrollbar-width:thin]' : '',
+            // The scrollbar's space is reserved whether or not it is showing.
+            // Without this the column lost ~15px the moment a panel was
+            // expanded enough to overflow, so every card reflowed and the
+            // sidebar appeared to resize itself on each expand.
+            'overflow-y-auto overscroll-contain overflow-x-hidden py-4 [scrollbar-gutter:stable]',
+            paneOpen ? 'hidden xl:flex' : 'hidden',
+          ].join(' ')}
+        >
+          <div className="shrink-0">
+            <Segmented
+              label="Isi panel samping"
+              value={paneView}
+              onChange={setPaneView}
+              options={[
+                ['pasien', 'Pasien'],
+                ['dokumen', 'Dokumen'],
+              ]}
+            />
+          </div>
+
+          {paneView === 'dokumen' ? <DocumentPanel /> : null}
+
+          {paneView === 'pasien' && layout === 'panel' ? (
+            <>
+              {renderChecker('side')}
+              {renderDpjpSide()}
+              {/*
+                Order: the standing note, then the daily checklist, then the
+                per-patient one, then the dates. Read top to bottom it is what
+                the round asks in the order it asks: what carries over, what
+                must be done every day, what must be done for this patient,
+                and only then which day you are on — the list that grows
+                without limit and had been sitting above the checklists.
+              */}
+              <SidePanel
+                title="Catatan pasien"
+                summary={notesSummary}
+                preview={
+                  <p className="line-clamp-3 whitespace-pre-line text-xs text-fg-muted">
+                    {notesSync.value.trim() || 'Belum ada catatan tetap.'}
+                  </p>
+                }
+              >
+                <PatientNotes sync={notesSync} bare />
+              </SidePanel>
+
+              <SidePanel
+                title="Checklist"
+                summary={`${checklist.progress.doneCount}/${checklist.progress.total}`}
+                tone={checklistDone ? 'done' : 'plain'}
+                preview={
+                  checklistDone ? (
+                    /*
+                      Nothing to read when everything is ticked. The list only
+                      answers "what is left", and when the answer is "nothing"
+                      seven struck-through lines say it slower than one word.
+                    */
+                    <p className="flex items-center gap-1.5 text-xs font-medium text-accent">
+                      <span aria-hidden="true">✓</span> Semua selesai
+                    </p>
+                  ) : (
+                    /*
+                      Two columns, every item, no "+N lagi". The whole point of
+                      the minimised view is to answer the question without
+                      opening anything, and a list that stops at four hides the
+                      three that might be the unticked ones.
+                    */
+                    <ul className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-xs">
+                      {activeChecklistItems.map((item) => {
+                        const done = checklist.states[item.id]?.done === true;
+                        return (
+                          <li key={item.id} className="flex min-w-0 gap-1">
+                            <span
+                              aria-hidden="true"
+                              className={done ? 'text-accent' : 'text-fg-faint'}
+                            >
+                              {done ? '✓' : '○'}
+                            </span>
+                            <span
+                              className={[
+                                'min-w-0 flex-1 leading-snug',
+                                done ? 'text-fg-faint line-through' : '',
+                              ].join(' ')}
+                            >
+                              {item.label}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )
+                }
+              >
+                <ChecklistPills
+                  items={dayItems}
+                  states={checklist.states}
+                  progress={checklist.progress}
+                  onToggle={checklist.toggle}
+                  disabled={locked}
+                  orientation="vertical"
+                />
+              </SidePanel>
+
+              <SidePanel
+                title="Custom Checklist"
+                summary={todoSummary.text}
+                tone={todoSummary.tone}
+                preview={
+                  todoViewsForSummary.length === 0 ? (
+                    <p className="text-xs text-fg-faint">Belum ada langkah khusus.</p>
+                  ) : todoSummary.tone === 'done' ? (
+                    // Same rule as the daily checklist: when nothing is left,
+                    // say so instead of listing what is already done.
+                    <p className="flex items-center gap-1.5 text-xs font-medium text-accent">
+                      <span aria-hidden="true">✓</span> Semua selesai
+                    </p>
+                  ) : (
+                    (() => {
+                      // What is left first: see `previewTodos`.
+                      const preview = previewTodos(todoViewsForSummary, 4);
+                      return (
+                        <ul className="space-y-0.5 text-xs">
+                          {preview.shown.map((view) => (
+                            <li key={view.id} className="flex gap-1.5">
+                              <span aria-hidden="true" className={view.done ? 'text-accent' : 'text-fg-faint'}>
+                                {view.done ? '✓' : '○'}
+                              </span>
+                              <span className={view.done ? 'truncate text-fg-faint line-through' : 'truncate'}>
+                                {view.label}
+                              </span>
+                            </li>
+                          ))}
+                          {preview.hiddenOpen > 0 ? (
+                            <li className="font-medium text-fg-muted">+{preview.hiddenOpen} belum</li>
+                          ) : null}
+                          {preview.hiddenDone > 0 ? (
+                            <li className="text-fg-faint">+{preview.hiddenDone} selesai</li>
+                          ) : null}
+                        </ul>
+                      );
+                    })()
+                  )
+                }
+              >
+                <PatientTodos patient={patient} date={selected} compact />
+              </SidePanel>
+
+              {/*
+                Capped and scrolling inside itself. On a three-week stay this
+                list is the reason the sidebar had no room for anything else.
+              */}
+              {/*
+                The preview is the last few days, newest first, which is the
+                part anyone actually reaches for. Opening gives the whole rail,
+                capped and scrolling inside itself so a three-week stay cannot
+                push the sections above it off the screen.
+              */}
+              <SidePanel
+                title="Tanggal"
+                summary={`${railDates.length} hari`}
+                preview={
+                  <div className="flex flex-wrap gap-1">
+                    {[...railDates]
+                      .slice(-4)
+                      .reverse()
+                      .map((date) => (
+                        <span
+                          key={date}
+                          className={[
+                            'rounded px-1.5 py-0.5 text-xs',
+                            date === selected
+                              ? 'bg-[var(--accent-soft)] font-medium text-accent'
+                              : 'bg-bg-subtle text-fg-muted',
+                          ].join(' ')}
+                        >
+                          {formatShortDateNoWeekday(date)}
+                        </span>
+                      ))}
+                    {railDates.length > 4 ? (
+                      <span className="px-1 py-0.5 text-xs text-fg-faint">
+                        +{railDates.length - 4}
+                      </span>
+                    ) : null}
+                  </div>
+                }
+              >
+                <div className="max-h-72 overflow-y-auto">{dateRail}</div>
+              </SidePanel>
+            </>
+          ) : null}
+
+          {paneView === 'pasien' && optionalSide ? (
+            <>
+              {renderChecker('side')}
+              {(() => {
+                const around = neighbourDates(railDates, selected);
+                const content: PanelContent = {
+                  notes: { value: notesSync.value, editor: <PatientNotes sync={notesSync} bare /> },
+                  checklist: {
+                    title: 'Checklist',
+                    tabLabel: 'Checklist',
+                    rows: activeChecklistItems.map((item) => ({
+                      id: item.id,
+                      label: item.label,
+                      done: checklist.states[item.id]?.done === true,
+                      colorToken: item.colorToken,
+                    })),
+                    progress: checklist.progress,
+                    onToggle: checklist.toggle,
+                    disabled: locked,
+                    loading: checklist.loading,
+                  },
+                  todos: {
+                    title: 'Custom Checklist',
+                    tabLabel: 'Custom',
+                    rows: todoViewsForSummary.map((view) => ({
+                      id: view.id,
+                      label: view.label,
+                      done: view.done,
+                      ...(view.doneYesterday ? { hint: 'sudah kemarin' } : {}),
+                    })),
+                    progress: {
+                      total: todoViewsForSummary.length,
+                      doneCount: todoDone,
+                      complete: todoSummary.tone === 'done',
+                      segments: todoViewsForSummary.map((view) => ({
+                        itemId: view.id,
+                        label: view.label,
+                        colorToken: '',
+                        done: view.done,
+                      })),
+                      pendingLabel: null,
+                      pendingItemId: null,
+                    },
+                    onToggle: (id) => tickTodo(patient, selected, id),
+                    full: <PatientTodos patient={patient} date={selected} compact />,
+                  },
+                  dates: {
+                    count: railDates.length,
+                    current: formatShortDateNoWeekday(selected),
+                    rail: dateRail,
+                    ...(around.prev ? { prev: () => goToDate(around.prev!) } : {}),
+                    ...(around.next ? { next: () => goToDate(around.next!) } : {}),
+                  },
+                };
+                const viewKey = `${patient.id}-${selected}`;
+                return layout === 'tab' ? (
+                  <>
+                    {renderDpjpSide('quiet')}
+                    <TabPanels key={viewKey} content={content} />
+                  </>
+                ) : (
+                  <RailPanels key={viewKey} content={content} top={renderDpjpSide('bare')} />
+                );
+              })()}
+            </>
+          ) : null}
+
+          {paneView === 'pasien' && layout === 'klasik' ? (
+            <>
+          <PatientNotes sync={notesSync} />
+
+          <PatientTodos patient={patient} date={selected} />
+
+          <section>
+            <h3 className="mb-1.5 text-xs font-semibold text-fg-muted">Tanggal</h3>
+            {dateRail}
+          </section>
+
+          <section>
+            <h3 className="mb-1.5 text-xs font-semibold text-fg-muted">Checklist</h3>
+            <ChecklistPills
+              items={dayItems}
+              states={checklist.states}
+              progress={checklist.progress}
+              onToggle={checklist.toggle}
+              disabled={locked}
+              orientation="vertical"
+            />
+          </section>
+            </>
+          ) : null}
+        </aside>
+      </div>
+
+      <LabSheetWhenOpen
+        open={labOpen}
+        onOpenChange={setLabOpen}
+        date={selected}
+        placement={
+          labOpen
+            ? describeLabPlacement(labPlacement(activeNote.body, settings.sectionAliases))
+            : undefined
+        }
+        onInsert={(text) => {
+          // Above the newest lab, else after the last EKG, else end of O.
+          // See domain/lab/insertLab for why the end of the stack was wrong.
+          activeNote.apply(insertLabBlock(activeNote.body, text, settings.sectionAliases));
+        }}
+      />
+
+      <ScrollToTop />
+
+      <OpeningSheetWhenOpen
+        open={openingOpen}
+        onOpenChange={setOpeningOpen}
+        /**
+         * Reads and writes whichever note is OPEN.
+         *
+         * It was wired to `editor` unconditionally, so changing the pembuka
+         * while a jaga note was on screen rewrote the morning SOAP instead —
+         * silently, against a note that was not even visible. Every toolbar
+         * action on this page has to ask the same question the editor does:
+         * which note am I looking at.
+         */
+        body={activeNote.body}
+        greetings={settings.greetings}
+        openingSentences={settings.openingSentences}
+        closingSentences={settings.closingSentences}
+        onApply={(next) => {
+          activeNote.apply(next);
+          setOpeningOpen(false);
+        }}
+      />
+
+      <NewVersionSheetWhenOpen
+        open={versionSheetOpen}
+        onOpenChange={setVersionSheetOpen}
+        body={editor.value}
+        aliases={settings.sectionAliases}
+        defaultTitle={defaultVersionTitle(shiftNotes.notes, dpjp?.initials)}
+        latestByDefault={Boolean(dpjp && settings.dpjpFormats[dpjp.id]?.latestPenunjang)}
+        carry={carrySource}
+        onCreate={createVersion}
+      />
+
+      <CopySheetWhenOpen
+        open={copyOpen}
+        onOpenChange={setCopyOpen}
+        patient={patient}
+        body={activeVersion ? activeVersion.body : editor.value}
+        date={selected}
+        aliases={settings.sectionAliases}
+        presets={settings.copyPresets}
+        dpjpFormats={settings.dpjpFormats}
+        bullet={settings.whatsappBullet}
+        activeShiftNote={activeJaga}
+        closings={settings.closingSentences}
+      />
+
+      <RevisionTrailWhenOpen
+        focusId={trailFocus}
+        open={trailOpen}
+        onOpenChange={(next) => {
+          if (!next) setTrailFocus(null);
+          setTrailOpen(next);
+        }}
+        revisions={revisions}
+        currentBody={editor.value}
+        onRestore={editor.restoreRevision}
+        onDelete={
+          patient
+            ? (revisionId) => {
+                void deleteVersion(patient.id, selected, revisionId).catch((error: unknown) =>
+                  console.error('[versions] delete rejected', error),
+                );
+              }
+            : undefined
+        }
+      />
+    </AppShell>
+  );
+}
+
+
+/**
+ * The rail spans admission → today, with a minimum window, plus any date that
+ * already has an entry so a back-dated note stays reachable.
+ */
+/**
+ * Days that actually have a note, plus today.
+ *
+ * This used to render every calendar day since admission, which on a long stay
+ * meant scrolling past two weeks of empty chips to reach the three days that
+ * had anything in them. A rail is for navigation, and an empty day is not a
+ * destination — today is the only exception, because that is where writing
+ * starts.
+ */
+function buildRail(
+  _admittedAt: ClinicalDate,
+  today: ClinicalDate,
+  entryDates: readonly ClinicalDate[],
+): ClinicalDate[] {
+  const dates = new Set<ClinicalDate>(entryDates);
+  dates.add(today);
+  return [...dates].sort();
+}
+
+/**
+ * The days either side of `selected` in the rail, for the arrows in the side
+ * panel. The admission note sits above every day, so its only neighbour is the
+ * first day; a day that is not in the rail (picked via "Tanggal lain") still
+ * gets the nearest ones on each side.
+ */
+function neighbourDates(
+  rail: readonly ClinicalDate[],
+  selected: ClinicalDate,
+): { prev?: ClinicalDate; next?: ClinicalDate } {
+  if (isIgdEntry(selected)) return rail[0] ? { next: rail[0] } : {};
+  const before = rail.filter((date) => date < selected);
+  const next = rail.find((date) => date > selected);
+  const prev = before[before.length - 1];
+  return { ...(prev ? { prev } : {}), ...(next ? { next } : {}) };
+}
+
+
+/**
+ * The default label: the time it was frozen at.
+ *
+ * Dots rather than a colon, matching `ShiftNote.time` — a colon reads as a
+ * heading delimiter to the section parser if this text ever finds its way into
+ * a body, and it has before.
+ */
+function defaultVersionLabel(): string {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, '0')}.${String(now.getMinutes()).padStart(2, '0')}`;
+}
