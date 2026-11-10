@@ -5,6 +5,65 @@ Catatan teknis lengkap (akar masalah, perbaikan) ada di CHANGES.md.
 
 Entri teratas harus versi yang sedang dirilis; tes gagal bila belum ditulis.
 
+## `2026-11-09.7`
+- **Denah shift sebelumnya.** Di tab Denah, tombol "Shift sebelumnya" menampilkan denah dari list terakhir yang disimpan sebelum shift ini dimulai (Simpan edisi), untuk dibandingkan dengan denah sekarang. Ketuk "← Denah sekarang" untuk kembali. Tombol muncul bila list itu ada.
+
+## `2026-11-09.6`
+- **Tab dan kotak cari List Maker kini satu baris** di layar lebar, jadi bagian yang menempel di atas lebih pendek. Di HP tetap bertumpuk.
+- **Pulang minta konfirmasi** bila pasien belum ditandai pulang hari ini (hijau), supaya salah pencet tidak mengeluarkan pasien dari list. Pasien hijau langsung pulang seperti biasa.
+
+## `2026-11-09.5`
+- **Kotak cari di List Maker kini melayang.** Kotak cari menempel di bawah tab Denah/List, jadi tetap terjangkau saat menggulir list yang panjang.
+- **Tempel: lihat perubahan SOAP.** Setelah Baca, buka "Lihat perubahan" untuk melihat baris yang berubah saja pada tiap SOAP yang diperbarui. Tertutup secara bawaan.
+- **Lab hari ini memuat lab harian.** Baris Plan seperti "- Cek APTT/hari" kini muncul setiap hari di sticky Lab hari ini, tanpa perlu tanggal. "/3 hari" tidak ikut.
+- **List: hanya baris pasien yang tebal.** Tebal pada "Plan" dan judul "KJS" dihapus, di teks WhatsApp, Word, dan PDF. Isi teks tidak berubah.
+- **Setelan → tanda kini ringkas.** Tiap tanda jadi satu baris berisi nama dan aturannya. Ketuk untuk mengubah; hanya satu yang terbuka.
+
+## `2026-11-09.4`
+- **Stabilo SOAP kini hanya berlaku di hari tempat kamu menandainya.** Sebelumnya tanda ikut muncul di SOAP hari lain yang barisnya sama. Tanda lama tidak dipakai lagi.
+
+## `2026-11-09.3`
+- **Kotak "Tidak di-FU" kini hanya berisi pasien bertanda "Tidak di-follow up".** Pasien yang di-follow up tapi belum ada juniornya pindah ke kotak baru, "Belum ada junior". Pasien "Tidak di-FU" tidak dihitung untuk chief mana pun. Berlaku di layar, Word, dan PDF.
+- Centang di Setelan kini cukup bertuliskan "Tidak di-follow up".
+
+## `2026-11-09.2`
+- **Tanda "Tidak di-follow up".** Di Setelan → tanda, centang "Tidak di-follow up" pada sebuah tanda. Pasien dengan tanda itu tidak lagi ditawarkan Ganti chief. Pakai tanda otomatis "DPJP tertentu" untuk DPJP yang tidak di-follow up, atau pasang dengan tangan untuk pasien titipan. Ikut dicetak atau tidak tetap bisa dipilih.
+
+## `2026-11-09.1`
+- **Tanda "Pasien baru" kini mengikuti shift, bukan hari.** Pasien diberi tanda bila belum ada di list terakhir yang disimpan (Simpan edisi) sebelum shift sekarang dimulai: 07.00 dan 16.00 pada hari kerja, 07.00 dan 19.00 pada hari libur dan tanggal merah. Menyimpan ulang list di shift yang sama tidak menghapus tandanya.
+- **"Pasien baru" hanya tampil di Plano.** Tanda ini tidak ikut tercetak di Word/PDF.
+
+## `2026-11-08.3`
+- **Pasien yang dirawat lagi mulai dari nol di List Maker.** Pasien yang pernah pulang atau pindah lalu masuk lagi tidak lagi membawa Chief, Junior, warna, tanda, divisi, dan catatan operan dari rawatan sebelumnya. Riwayat (log) pasien tetap tersimpan.
+
+## `2026-11-08.2`
+- **Pasien di Shelf tidak lagi muncul di sticky.** Catatan pasien yang dipindah ke Shelf kini hilang dari sticky Catatan pasien (juga dari sticky ringkasan lain). Keluarkan dari Shelf, dan catatannya muncul lagi.
+
+## `2026-11-08.1`
+- **Stabilo untuk baris SOAP yang belum diubah.** Blok teks (atau taruh kursor di satu baris), lalu ketuk ikon stabilo di toolbar: baris itu diberi warna kuning supaya tidak terlewat saat menyalin SOAP kemarin. Begitu barisnya kamu ubah, warnanya hilang sendiri. Ketuk lagi untuk menghapus. Tanda hanya ada di perangkat ini dan tidak ikut tersalin.
+
+## `2026-11-07.6`
+- **Tanggal merah bisa ditandai di Setelan list.** Pada hari yang ditandai tidak ada saran ganti chief; saran berikutnya muncul pukul 07.00, tepat 24 jam sebelum hari kerja berikutnya. Tiap list punya daftarnya sendiri, dan anggota yang bisa mengedit bisa mengisinya.
+
+## `2026-11-07.5`
+- **Saran ganti chief tidak lagi muncul sepanjang akhir pekan.** Saran untuk Senin 07.00 kini baru tampil sejak Minggu 07.00, tepat 24 jam sebelumnya. Dari Jumat 16.00 sampai saat itu sarannya disembunyikan, supaya chief tidak terganti terlalu awal. Abaikan yang diketuk sebelum Minggu 07.00 tidak lagi menyembunyikan saran hari Senin. Hari kerja tidak berubah.
+
+## `2026-11-07.4`
+- **Balans cairan kini cukup input dikurangi output.** IWL, air metabolisme, dan berat badan dihapus, sesuai praktik bangsal.
+- **SOAP Checker memahami “Meropenem (H-5) 6/11”.** Tanggal tepat setelah hitungan hari dibaca sebagai tanggal mulai, lalu dibandingkan dengan tanggal catatan.
+
+## `2026-11-07.3`
+- **SOAP Checker kini mengenali lima hal baru.** RM atau nama di catatan yang berbeda dengan data pasien; TTV yang mustahil dan pasti salah ketik (mis. TD 1200/80); hitungan urine output atau balance yang tidak cocok dengan angkanya sendiri; rencana cek yang tanggalnya sudah lewat tapi hasilnya belum tertulis; dan hitungan hari yang tidak cocok dengan tanggal mulainya. Checker hanya mengingatkan, catatan tidak diubah.
+
+## `2026-11-07.2`
+- **Chief kini tampil di Kartu Ringkas dan Papan Kerja.** Nama chief ada di bawah baris DPJP dan RM, jadi langsung terlihat kepada siapa catatan dilaporkan.
+- **List Maker: sorot beberapa DPJP sekaligus.** Di Denah ada baris “Sorot DPJP”: pilih satu atau beberapa DPJP, pasien mereka tersorot dan yang lain meredup. Pilihan diingat di perangkat ini. Ini menggantikan tombol “Hanya pasien …” yang hanya bisa satu.
+- **Kalkulator baru: Balans cairan.** Input dikurangi output, lengkap dengan baris siap salin. Laju IWL dan air metabolisme Anda isi sendiri; bila kosong, tidak ikut dihitung.
+- **Tampilan lebih tenang saat pindah halaman.** Layar tidak lagi kosong sesaat saat membuka halaman, lebar konten tidak berubah antar halaman, kartu tidak lagi melompat saat kembali ke Aktif, dan editor SOAP tidak lagi terdorong turun setelah catatan dimuat. Tulisan “Catatan terkunci” juga tidak lagi muncul sekilas saat catatan sedang dimuat.
+
+## `2026-11-07.1`
+- **Sticky Catatan pasien kini mengikuti urutan visite.** PJT Lantai 4 mulai dari kamar 420 dan berakhir di kamar 410. Pasien yang di-pin tidak lagi naik ke atas sticky, dan penulisan ruang “PJT Lt. 4” dan “PJT Lantai 4” dianggap satu ruang.
+
 ## `2026-11-06.4`
 - **List Maker lebih hemat kuota saat bolak-balik.** Pasien yang sudah pulang/pindah tidak lagi dibaca ulang setiap kali Anda kembali ke List Maker. Tampilan tidak berubah.
 

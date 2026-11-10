@@ -1,5 +1,161 @@
 # Plano — CHANGES
 
+## `2026-11-09.7` — Denah snapshot of the previous shift
+
+Avi (9 Nov): a snapshot of the previous shift's Denah, to compare within the shift; the button on the Denah tab.
+
+- **Source.** `shiftEdition` (`chiefHandover.ts`) returns the edition `shiftBaseline` already used (newest saved before the shift start); on another date, the last edition before it, as before. `ListMakerPage` computes it once: its keys stay the "Pasien baru" baseline, its `patients` (stored with residents, colours and tags as sent) draw the snapshot through the same `FloorDenah`.
+- **Open.** Tapping a patient in the snapshot opens them as they are now; one who has left since opens nothing.
+- **Firestore.** 0 new reads: the editions page is already subscribed on this screen.
+- **Not done.** Not checked in the app. Only the loaded editions page is searched (same limit as the baseline). Tags in the snapshot are as saved, not re-derived.
+
+## `2026-11-09.6` — Tabs and search on one row; Pulang confirmation
+
+- **Bar.** `ListMakerTabs`: from `lg` the tab strip (`shrink-0`) and the search (`flex-1`) share one row; below `lg` they stack as in .09.5. `--lm-tabs-h` is still measured off the whole bar, so the List side panel follows.
+- **Pulang.** `PatientControls`: Pulang on a patient whose shown `discharge` is not `'today'` opens the existing `ConfirmDialog` (names the patient); green patients go at once. Same component for the List row and the denah SOAP window.
+- **Firestore.** 0 new reads or writes; Pulang writes the same fields as before, once, after the confirm.
+- **Not done.** Not checked in the app. The 1024-1280 px range is not measured: with all six tabs the search may be narrow there.
+
+## `2026-11-09.5` — Floating search, paste diff, daily labs, list bold, compact tags
+
+Avi (9 Nov), five requests in one message.
+
+- **Search.** The List Maker search moved into the sticky tab bar (`ListMakerTabs` takes `children`), so it stays on screen while scrolling. It is measured into `--lm-tabs-h`, so the List tab's pinned side panel still sits below it.
+- **Tempel diff.** `PasteChanges` in `PastePanel`: a closed `<details>` under "SOAP diperbarui". When opened, `diffRevision(before.report.full, report.full, { ignoreFormatting: true })` per patient, `same` rows dropped. `RevisionLine` moved from `CompareSheet` to `components/common/RevisionLine.tsx`, shared.
+- **Daily labs.** `labPlans` (`labPlan.ts`) also reads an undated lab line below the assessment that says `/hari`, `per hari`, `tiap hari` or `setiap hari` as `{ daily: true, text }`. `/3 hari` is not daily. `labDueOn` is the one filter for the sticky (`PatientSummaryRows`) and its copy text (`BoardPage`). Before, only dated lines counted, so "Cek APTT/hari" never showed.
+- **List bold.** `buildFloorList`: the A/P body goes through `unbold` (the `formatters` `BOLD_RE`/`SINGLE_BOLD_RE`, the same spans Word reads as bold), and the KJS heading is plain `KJS`. The patient line stays bold. Applies to Salin teks, Word: List and PDF, which share the text. `report.ts` still reads a plain `KJS` heading (tested).
+- **Tags in Setelan.** `MarksField`: one row per tag (dot, name, rules in one truncated line), the editor opens under it, one at a time. A new tag opens at once. Viewers see the rows only.
+- **Firestore.** Search, diff, bold and tag layout: 0 reads or writes. Daily labs: `Patient.labPlans` changes for patients whose plan has a daily lab line, so `healCardPreview` writes it once per such patient on the next heal (one write, plus one read on each open listener that holds the patient). Then nothing new. No new listener or query.
+- **Not done.** Not checked in the app (no browser run). A daily line stays due every day until the plan drops it; it has no end date. The WhatsApp text also loses the A/P bold (one text feeds all three outputs).
+
+## `2026-11-09.4` — Stabilo is per day
+
+- **Root cause.** Marks were keyed by patient and matched by line text, so any day's note holding the same text showed them (carry-forward copies are mostly identical lines). Now keyed `plano.marks.<patient>.<day>`; the hook takes the selected day.
+- **Not done.** Old `plano.marks.<patient>` entries are left in localStorage unused (not migrated: they cannot tell which day they belonged to). Not checked in the app.
+
+## `2026-11-09.3` — "Tidak di-FU" box = tagged patients only
+
+Avi (9 Nov): the "Tidak di-FU" holder box listed every patient without a junior (13 on the floor, most of them followed up); it should hold only patients tagged "tidak di-follow up".
+
+- **Root cause.** Not a bug in the new mark: `residentGroups` (`residents.ts`) has filled "Tidak di-FU" with `!p.junior` since 19 Oct, when the box meant "nobody holds them". The 09.2 mark flag never reached it.
+- **Fix.** A patient with a `noFollowUp` tag goes to `unheld` ("Tidak di-FU", last box) and, like a division patient, counts for no chief. A followed-up patient with no junior goes to a new `unassigned` box, "Belum ada junior", before it, still counted for its chief. One function, so the app (FloorDenah), Word (docx) and PDF (printHtml) all change together.
+- **Label.** The Setelan checkbox reads "Tidak di-follow up" (owner: "(tanpa Ganti chief)" dropped).
+- **Firestore.** None: derived from data already on screen.
+- **Not done.** Not checked in the app or in an opened Word/PDF. Editions saved before 09.2 carry no `noFollowUp` on their tags, so re-exporting an old edition puts its no-junior patients in "Belum ada junior" and shows no "Tidak di-FU" box.
+
+## `2026-11-09.2` — "Tidak di-follow up" marks skip Ganti chief
+
+Avi (9 Nov): Ganti chief should only offer patients the ward follows up. Not followed up: chosen DPJPs, and titipan (non-cardio patients listed only to be observed).
+
+- **Mark flag.** `FloorMark.noFollowUp` (`marks.ts`), read by `readMarks`, carried onto the tag by `tagsOf`. A checkbox per mark in `MarksField`, next to the print one; printing stays its own choice.
+- **Rule.** `chiefSuggestions` skips a patient whose tags include a `noFollowUp` one, as it already skipped division patients. The mark's existing ways apply: auto "DPJP tertentu", set by hand (titipan), or turned off for one patient (`tagsOff`).
+- **Not changed.** "Pasien baru" still tags these patients (owner's choice).
+- **Firestore.** 0 new reads or listeners. Ticking the box is one write to the floor doc's `marks`, as any mark edit; the floor listener was already open.
+- **Not done.** Not checked in the app. Patients already tagged need nothing new: the flag acts as soon as a mark has it.
+
+## `2026-11-09.1` — "Pasien baru" against the previous shift, screen only
+
+Avi (8 Nov): new patients should be marked against the previous shift's list, so the list maker sees whose DPJP and resident still need setting. List times vary, so the shift comes from the clock, not from list times. Also: the tag must not be printed.
+
+- **Shift.** `shiftStart` (`chiefHandover.ts`, next to the jam dinas hours): 07.00 and 16.00 on a working day, 07.00 and 19.00 on a day off or a `floor.holidays` date.
+- **Baseline.** `shiftBaseline`: the newest edition (Simpan edisi) with `createdAt` before the shift start. A save in the current shift, a correction re-send included, never counts, so the tags hold all shift. Today's list only; another date keeps the 13.10 day rule. With no list before the shift, new = `addedAt` since the shift start (`rosterView`'s new `newSince`).
+- **"Sent" = saved.** Plano cannot see the WhatsApp send. A list not saved with Simpan edisi leaves an older baseline: patients stay "baru" longer, never shorter.
+- **Ticking.** `ListMakerPage` keeps the shift start as an ISO string, checked once a minute, so memos re-run only when the shift changes.
+- **Print.** `screenOnly` in `marks.ts`: the "baru" auto mark never goes to Word/PDF, whatever its print setting. Setelan shows "Hanya di layar" for it instead of the checkbox.
+- **Firestore.** 0 new reads and writes: the editions page is already subscribed on this screen.
+- **Not done.** Not checked in the app. Only the loaded editions page is searched: if every loaded edition is from the current shift, the fallback (`addedAt`) applies. A readmission keeps its first `addedAt`, so that fallback misses it. No "where from" label, tag not held until a resident is set, an in-floor room move is not "baru".
+
+## `2026-11-08.3` — A readmission starts a new stay in List Maker
+
+Avi (8 Nov): a new patient entered tonight was matched to his earlier admission and came back with that stay's Chief and Resident.
+
+- **Root cause.** Patients are filed by RM (`floors/{id}/patients/{key}`), so a returning patient finds his old record (`pasteDiff` → `readmit`, or `manualAddAction` → `readmit`). Both readmit paths wrote only `status`, `leftAt`, `pindahKe`. The hand-set fields of the earlier stay (`junior`, `chief`, colour and dates, `division`, `tags`/`tagsOff`, `operkan`, `gantiChief`, …) stayed, and `effective()` puts a hand override first, so the old names showed.
+- **Fix.** `readmitFields()` in `floor.ts` is the blank per-stay part of a patient. `newRosterPatient` is built from it, and both readmit writes (`PastePanel`, `ManualPatientSheet`) send it. The record, its log and `addedAt` are kept. `RosterChange.fields` now accepts any per-stay field.
+- **Firestore.** Same writes as before (one batch, the same document), only more fields in the update. 0 new reads.
+- **Not done.** Not checked in the app or emulator. `addedAt` keeps the first admission, so on a floor with no earlier list the "Pasien baru" fallback still misses a readmission (parked with the shift-based "pasien baru" idea). Readmissions already made keep their old Chief/Resident until set by hand.
+
+## `2026-11-08.2` — Shelved patients leave the summary stickies
+
+Avi (8 Nov): a patient moved into Shelf still showed in the Catatan pasien sticky.
+
+- **Root cause.** `summaryCards` in `BoardPage` was built from `cards` only. Shelf membership lives in the shared canvas layouts (`allPhoneShelves`), which nothing in that memo read, so shelved patients stayed in the list.
+- **Fix.** `summaryCards` drops ids in `shelvedIds(allPhoneShelves)`. Reversible: taking a patient off the shelf lists it again.
+- **Side effect.** `summaryCards` feeds every summary sticky (Catatan pasien, Lab hari ini, the phone blocks), so shelved patients leave all of them. Narrow it to Catatan only if that is unwanted.
+- **Firestore.** No change: 0 reads, 0 writes (shelf data was already loaded).
+- **Not done.** Not checked in the browser, and no new test (the filter is inline in a memo).
+
+## `2026-11-08.1` — Stabilo on SOAP lines
+
+Avi (8 Nov): after copying yesterday's SOAP it is easy to forget which lines are still unchanged.
+
+- **Why not in the text.** The SOAP is one string that is copied verbatim, so a marker cannot live in it. A mark is the line's trimmed text + occurrence (`domain/lineMarks.ts`, anchor shared with bookmarks), painted by a mirror layer (`MarkerBands`) behind the textarea.
+- **Disappears on edit.** Unlike bookmarks it is not re-anchored: an edited line stops resolving, so the mark goes. It would return only if the old text were typed back.
+- **Storage.** `localStorage` per patient (`plano.marks.<id>`), capped at 200. No Firestore: 0 reads, 0 writes.
+- **Not done.** No sync across devices, one colour, lines only (a selection marks the whole lines it touches), not checked on a ward device or with a very long note.
+
+## `2026-11-07.6` — Tanggal merah for the chief handover
+
+Avi (7 Nov) chose to add this after `.5` left weekday holidays unknown.
+
+- **Data.** `FloorDoc.holidays`: ISO dates, per list, written with `arrayUnion` / `arrayRemove` so two editors cannot overwrite each other. `readFloor` drops anything not shaped like a date. An old floor without the field reads as none.
+- **Rules.** `firestore.rules` adds `holidays` to what a floor editor may change. `firestore-deploy.yml` deploys it on push to main. Until that run finishes, an editor who is not the owner gets the "Perubahan belum tersimpan" message; the owner is not affected.
+- **Logic.** `chiefHandover.ts` now has one test for both weekends and holidays: open on a working day until 16.00, or from 07.00 if tomorrow is a working day. `handoverCycleStart` follows the same days: the latest eve of a working day, 16.00 after a working day and 07.00 after a day off. Behaviour with no holidays is the same as `.5`.
+- **UI.** Setelan gains a "Ganti chief" group with `HolidaysField`: a `DateField` that adds on pick, then upcoming dates with their weekday and Hapus. Past dates stay stored but are not shown. Viewers see the list read-only.
+- **Not done.** No built-in national calendar, because cuti bersama changes by decree and a wrong date would silently hide a handover. Marking is per list, so each ward enters its own. A holiday hides only the chief suggestions: it does not touch Morning Report's own day range or anything else.
+
+## `2026-11-07.5` — Chief handover opens 24 hours before the change, not all weekend
+
+Avi (7 Nov), seeing Monday's handover in the Saran tray on Saturday night: weekend and holiday shifts run 07.00-19.00 and 19.00-07.00, and the notification should appear 24 hours before the actual change. Read as: Sunday 07.00 for Monday 07.00.
+
+- **Root cause.** The 1 Nov EARLY change made `chiefSuggestions` open at every hour so Terima could land before the list is printed. On weekdays the next jam dinas is always under 24 hours away, so that was fine; from Friday 16.00 it is 63 hours away, and nothing bounded it. The in-app guide already said "sejak 16.00 hari sebelumnya", which the code did not do on a weekend.
+- **Second cause, same line of code.** `handoverCycleStart` used Friday 16.00 as the start of Monday's cycle, so an Abaikan tapped on Saturday because it was too early also hid Monday's real suggestion.
+- **Fix.** `handoverOpen` hides chief rows from Friday 16.00 to Sunday 07.00. `handoverCycleStart` is now the moment the current handover opened: the latest Monday-to-Thursday 16.00 or Sunday 07.00. Dismissals already made this weekend expire on Sunday 07.00 with no migration. Discharge rows are untouched. Monday to Thursday and Friday before 16.00 behave as before.
+- **Not done.** No holiday list (added in `.6`). No suggestions are made for the 07.00 and 19.00 weekend shift changes. Terima still changes the chief at once, so a tap on Sunday morning shows the new chief for all of Sunday. Patients with no chief are hidden in the same gap. Not checked in the app or on a ward device: tests cover the clock boundaries only.
+
+## `2026-11-07.4` — Owner answers: no IWL; a date right after a counter is its start
+
+Avi (7 Nov): "We dont use IWL"; `Meropenem (H-5) 6/11` means it starts from 6/11. Settles both questions left open in `.2` and `.3`.
+
+- **Balans cairan.** `fluidBalance.ts` is now input minus output; IWL, air metabolisme and weight are removed. Air metabolisme went by my inference, not Avi's words: alone it could only raise the balance. The Cox citation went too, since nothing rests on it. The `arithmetic` checker rule still counts IWL or air metabolisme when a note's own balance line names them, so a line written that way is not falsely flagged.
+- **`counter-vs-start`.** A date right after a counter, optional `)`, is its start, per counter, so several counters on one line are each judged by their own date. A date further along the line (`ganti ke Azitromisin 6-11`) is not read. Day 0 and day 1 conventions are still both accepted, and the expected day in the message counts the start as day 1.
+- **Not done.** Not run on real notes, so it is unknown how often a post-procedure counter (`post PPM H-2 05-11`) has a date meaning something other than the start. Checked in the emulator on 7 Nov: the card has six fields and gives the right line; `(H-5) 6/11` is flagged and `(H-2) 6/11` is not. Not on a ward device.
+
+## `2026-11-07.3` — SOAP checker: five rules that compare a note with itself and its record
+
+Avi (7 Nov) chose batch 1 of the recommendations. New file `domain/format/soapConsistency.ts`, plus `impossibleVitals` in `domain/vitals.ts`. All fire only on a mismatch between things written, are silent on shapes they do not recognise, and edit nothing.
+
+- **`identity-mismatch`.** First RM line against `patient.mrn` (leading zeros ignored), else the name before the first `/` or `,` against `patient.name`. Three shared letters count as one word, so a spelling variant agrees; initials say nothing. Listed first in its level.
+- **`vitals-impossible`.** The existing reader refuses a number too long to be a reading, so `TD 1200/80` and `Nadi 1234` never reached the checker; hence a raw reading of its own. Limits are what can be a reading at all, not reference ranges: TD 40-300/20-200 with systolic above diastolic, nadi 20-350, RR 5-80, suhu 30-44, SpO2 40-100. One-letter labels are judged on the high side only, because `P 2 tablet` is not a pernapasan. These limits are my judgement, with no cited source.
+- **`arithmetic`.** A urine line with volume, hours, weight and rate, within the rounding the rate was written to; one balance line with input, output and a written total, IWL and air metabolisme counted when named.
+- **`planned-no-result`.** A Plan line starting `cek`/`periksa`, dated before the note's day, whose test words appear nowhere outside the Plan. Narrower than proposed: past days only, since a test dated today is normally still pending at the morning round and would fire on every fresh plan.
+- **`counter-vs-start`.** Only on a line saying `mulai`/`start`/`sejak`; day 0 and day 1 conventions both accepted. Narrower than proposed: a bare `Meropenem (H-5) 6/11` is left alone, because the date can mean started, as of or ending.
+- **Not done.** Not run against a real note export, so the false-alarm rate is unknown; only invented notes in `soapConsistency.test.ts` and the existing suite. A balance spread over several lines is not read. Name check not tried on real records.
+
+## `2026-11-07.2` — Flicker causes measured and fixed; chief on compact cards; several DPJPs in the denah; Balans cairan
+
+Avi (7 Nov): pages and objects flicker or change size when moving between pages or expanding/collapsing; no chief on Kartu Ringkas; wants several DPJPs highlighted; a fluid balance calculator.
+
+- **Flicker, root causes (each measured per frame in the emulator, dev build, 1283 px wide, with a layout-shift observer).**
+  1. Whole app blank on a route's first open (`#main` width 0 for 70-490 ms, dev timing): the top `Suspense fallback={null}` hid the old tree while the chunk loaded. Fix: `v7_startTransition` on `HistoryRouter`, so the old page stays until the new one is ready.
+  2. Content width changed by 10 px between pages (1041 vs 1051): `#main` only had a scrollbar on long pages, and also gained one when something expanded past the fold. Fix: `scrollbar-gutter: stable`.
+  3. Masonry cards painted piled up, then jumped (y 86 to 374, layout shift 0.136 on every return to Aktif): `MasonryItem` measured in `useEffect` and held the span in state starting at 1. Fix: `useLayoutEffect`, and the span is written straight to the DOM so a `ResizeObserver` pass also lands before paint.
+  4. Canvas cards drew at the 1200 px fallback and slid to place through the 120 ms `left/width` transition on every return to Aktif (x 1132 to 1013, w 300 to 260). Fix: width measured in a layout effect, and cards are not rendered until it is known. Only moving the measure would not do: reading layout there starts the transition from the wrong first draw.
+  5. Patient page: while the entry loaded, `locked` is true (that lock stops a blank editor wiping a note), so the page showed a false "Catatan terkunci" banner with a live "Buka kunci", hid the header tools, and then the empty-day rows pushed a visible editor down 260 px (layout shift 0.08). Fix: no banner while loading; header tools keep their place, invisible and unclickable; the editor slot and status row stay invisible until the entry arrives. The lock itself is unchanged. This also covers the day-switch flash left open in `2026-11-06.3`.
+- **After.** Same probe: no zero-width frames, width constant, layout shift 0 on all board and calculator moves, 0 on opening an empty day, 0.0017 opening a day with a note (a header row moves 33 px; left as is).
+- **Chief.** `ChiefLine` in `PatientCompactCard`, used by Kartu Ringkas and Papan Kerja. They never rendered `card.chief`; only `PatientCard` did.
+- **Several DPJPs.** The denah filter was one id, offered only after typing a code, and typing two codes was an AND no patient can satisfy. Now `dpjpsOnFloor` drives always-visible chips, `matchesPicked` is any picked DPJP AND the other typed words, and picks persist through `usePersistentIdSet`. `dpjpOffers` is removed. Screen only: Word/PDF are unchanged. Auto marks (`MarksField`) already allowed several DPJPs and are untouched.
+- **Balans cairan.** `domain/calc/fluidBalance.ts`, on the Kalkulator page and the floating calculator. Empty means not measured, never zero; no result until there is an input and an output. The line says "Balance" so `readFlows` in the checker reads it, ASCII only.
+- **Decision to confirm.** No default IWL or air metabolisme rate ships. Ward notes use 15 and 5 cc/kgBB/hari, but no primary source for those figures was found (Cox 1987 reviews estimation; only its abstract was read and it gives no figure). The calculator rule is that every figure is cited, so they are typed fields. Fever correction is left out for the same reason.
+- **Not done.** Not seen on a ward device or a production build, so blank-frame times are dev timings. `scrollbar-gutter` not checked on phones, where overlay scrollbars should make it a no-op. Denah chips checked in the emulator with six demo patients (KS then PT: 4 highlighted, 2 dimmed, saved), not on real floor data. No render tests for the layout fixes. Seen and left: on the canvas, invisible resize grips stick out 8 px past a card at the right edge, so `#main` can scroll sideways by 8 px; card geometry matches the baseline, so this is not new.
+
+## `2026-11-07.1` — Summary stickies follow the visit route: pins and ward spelling no longer break it
+
+Avi (7 Nov): Catatan pasien sticky showed 406 before 421/3 and 421/5; it must run 420 first, 410 last on PJT Lantai 4.
+
+- **Root cause (two, both inferred from code; the screenshot's data was not inspected).** (1) `orderPatients` always puts pinned patients above the sorted rest, so a pinned 406 led the sticky. (2) `compareLocation` compared raw `ward` strings; `compareVisit` already canonicalised wards, but a mismatch fell through to the raw comparison, so "PJT Lt. 4" and "PJT Lantai 4" patients split into two blocks.
+- **Fix.** `summaryCards` in `BoardPage.tsx` orders unpinned copies of the patients; `compareLocation` in `domain/board.ts` compares `canonicalWard`. The route itself (`denahPlan.ts`) was already 420, 421, 412-419, 411, 401-410 and is unchanged.
+- **Not done.** No test added; which of the two causes hit 406 is unconfirmed.
+
 ## `2026-11-06.4` — Roster listener can resume: the departures cutoff is a calendar day
 
 Console, Avi (6 Nov): reads rose after `2026-10-31.11`/`.12`: 58K, 43K, 65K, 70K, 55K on 1-5 Nov (no-cost 50K); peak connections 17 (was ~10), writes +38% week on week. Cloud Monitoring, 7 days: ~70-75% QUERY, ~25-30% LOOKUP; hourly follows ward hours and nearly stops at night, so no idle loop.

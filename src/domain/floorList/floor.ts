@@ -47,6 +47,8 @@ export interface FloorDoc {
   chiefs: string;
   /** The chief who takes the floor's patients in jam dinas (24 Oct 2026, `chiefHandover.ts`); '' = not set. */
   chiefBangsal: string;
+  /** Tanggal merah the editors marked, ISO (7 Nov 2026, `chiefHandover.ts`): days off for the chief handover. */
+  holidays: string[];
   /**
    * The floor's junior residents, comma-separated (12.12, Avi: "a floor
    * roster so the app recognises the residents' names"). Names read from a
@@ -416,6 +418,8 @@ export function rosterView(
   previous?: ReadonlySet<string> | null,
   /** When the last list was sent (local stamp): SOAPs after it are marked (13.11). */
   lastSent?: string,
+  /** Today's list (8 Nov 2026): with no list before the shift, new = added since this ISO time (the shift start). */
+  newSince?: string,
 ): RosterView {
   /*
     Without a previous list, "new" = added on the list date — on the LOCAL
@@ -423,7 +427,8 @@ export function rosterView(
     (the 04:00 list-making hours) carried yesterday's UTC date and never got
     the "Pasien baru" tag.
   */
-  const isNew = (p: RosterPatient): boolean => (previous ? !previous.has(p.key) : localOf(p.addedAt).slice(0, 10) === date);
+  const isNew = (p: RosterPatient): boolean =>
+    previous ? !previous.has(p.key) : newSince ? p.addedAt >= newSince : localOf(p.addedAt).slice(0, 10) === date;
   return {
     active: roster
       .filter((p) => p.status === 'dirawat')
@@ -503,10 +508,14 @@ export function manualAddAction(existing: Pick<RosterPatient, 'status'> | null |
   return existing.status === 'dirawat' ? 'onList' : 'readmit';
 }
 
-export function newRosterPatient(report: FloorPatient, at: string, by: string): RosterPatient {
+/**
+ * The per-stay fields of a patient, blank: what a new patient starts with and
+ * what a readmission resets (8 Nov 2026, Avi: a patient back for a new
+ * admission came with the chief and junior of the earlier stay). The record,
+ * its log and `addedAt` are kept.
+ */
+export function readmitFields(): Omit<RosterPatient, 'key' | 'report' | 'log' | 'addedAt'> {
   return {
-    key: report.key,
-    report,
     status: 'dirawat',
     pindahKe: '',
     leftAt: '',
@@ -523,9 +532,11 @@ export function newRosterPatient(report: FloorPatient, at: string, by: string): 
     operkan: '',
     gantiChief: '',
     chiefDismissed: '',
-    addedAt: at,
-    log: [{ at, by, what: 'Masuk list' }],
   };
+}
+
+export function newRosterPatient(report: FloorPatient, at: string, by: string): RosterPatient {
+  return { key: report.key, report, ...readmitFields(), addedAt: at, log: [{ at, by, what: 'Masuk list' }] };
 }
 
 // ── paste ──────────────────────────────────────────────────────────────────

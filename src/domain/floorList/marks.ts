@@ -38,7 +38,7 @@ export type MarkAuto =
   | { kind: 'tanpa-junior' };
 
 export const AUTO_LABEL: Record<MarkAuto['kind'], string> = {
-  baru: 'Pasien baru (belum ada di list kemarin)',
+  baru: 'Pasien baru (belum ada di list shift sebelumnya)',
   dpjp: 'DPJP tertentu',
   btkv: 'KJS BTKV',
   kjs: 'Konsul / KJS dari DPJP lain',
@@ -56,6 +56,11 @@ export interface FloorMark {
    * "SOAP sudah update" must not appear in the Word sent to consultants).
    */
   print?: false | undefined;
+  /**
+   * true: a patient with this tag is not followed up by the ward, so Ganti
+   * chief never offers it (9 Nov 2026, Avi: titipan, or chosen DPJPs).
+   */
+  noFollowUp?: true | undefined;
 }
 
 /** A tag as shown on a patient. */
@@ -64,6 +69,8 @@ export interface PatientTag {
   color: MarkColor;
   /** false: screen only (not in Word/PDF). */
   print?: false | undefined;
+  /** From a "tidak di-follow up" mark. */
+  noFollowUp?: true | undefined;
 }
 
 function readAuto(raw: unknown): MarkAuto | undefined {
@@ -112,8 +119,16 @@ export function autoMatches(auto: MarkAuto | undefined, facts: AutoFacts): boole
 export function tagsOf(marks: readonly FloorMark[], hand: readonly string[], off: readonly string[], facts: AutoFacts): PatientTag[] {
   return marks
     .filter((m) => hand.includes(m.id) || (autoMatches(m.auto, facts) && !off.includes(m.id)))
-    .map((m) => ({ label: m.label, color: m.color, ...(m.print === false ? { print: false as const } : {}) }));
+    .map((m) => ({
+      label: m.label,
+      color: m.color,
+      ...(screenOnly(m) ? { print: false as const } : {}),
+      ...(m.noFollowUp ? { noFollowUp: true as const } : {}),
+    }));
 }
+
+/** Off paper: set so by the floor, or "Pasien baru", a working tag for the list maker only (8 Nov 2026, Avi). */
+export const screenOnly = (mark: FloorMark): boolean => mark.print === false || mark.auto?.kind === 'baru';
 
 /** 13.7 stored a hand mark as `colour` = "m:<id>"; read as a tag since 13.10. */
 export const MARK_PREFIX = 'm:';
@@ -138,7 +153,8 @@ export function readMarks(raw: unknown): FloorMark[] {
     seen.add(id);
     const auto = readAuto((entry as Record<string, unknown>).auto);
     const print = (entry as Record<string, unknown>).print === false ? { print: false as const } : {};
-    out.push({ id, label: label.trim(), color, ...(auto ? { auto } : {}), ...print });
+    const noFollowUp = (entry as Record<string, unknown>).noFollowUp === true ? { noFollowUp: true as const } : {};
+    out.push({ id, label: label.trim(), color, ...(auto ? { auto } : {}), ...print, ...noFollowUp });
   }
   return out;
 }

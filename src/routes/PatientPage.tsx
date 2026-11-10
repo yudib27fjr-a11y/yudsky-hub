@@ -108,6 +108,7 @@ import {
 } from '@/domain/clinicalDate';
 import { useBodyEditor } from '@/hooks/useBodyEditor';
 import { useLineBookmarks } from '@/hooks/useLineBookmarks';
+import { useLineMarks } from '@/hooks/useLineMarks';
 import { useClinicalToday } from '@/hooks/useClinicalToday';
 import { useChecklist } from '@/hooks/useChecklist';
 import { useShiftNotes } from '@/hooks/useShiftNotes';
@@ -450,6 +451,8 @@ export default function PatientPage(): JSX.Element {
       ? null
       : (shiftNotes.notes.find((note) => note.id === selectedShiftNoteId) ?? null);
 
+  const lineMarks = useLineMarks(patientId ?? null, editor.value, selected);
+
   /**
    * Line bookmarks on the day's SOAP. Off while the entry loads (the body is
    * a placeholder '' then, and following an "edit" from '' to the real note
@@ -789,8 +792,10 @@ export default function PatientPage(): JSX.Element {
       date: selected,
       // The board's EKG chip, ticked for THIS day (ticks are kept per day).
       ekgDone: patient?.reminderDone?.date === selected && patient.reminderDone.ids.includes('ekg'),
+      name: patient?.name,
+      mrn: patient?.mrn,
     }),
-    [hariRawat, patient?.ward, patient?.room, patient?.bed, patient?.reminderDone, dpjp, plannedDischarge, selected],
+    [hariRawat, patient?.ward, patient?.room, patient?.bed, patient?.reminderDone, patient?.name, patient?.mrn, dpjp, plannedDischarge, selected],
   );
   /** Per finding with several places: which one "Tampilkan" goes to next. */
   const [occurrenceStep, setOccurrenceStep] = useState<Record<string, number>>({});
@@ -1823,6 +1828,7 @@ export default function PatientPage(): JSX.Element {
 
           <PatientHeaderActions
             locked={locked}
+            loading={entryLoading}
             noteEmpty={editor.value.trim().length === 0}
             calcOpen={calcOpen}
             paneOpen={paneOpen}
@@ -2056,7 +2062,8 @@ export default function PatientPage(): JSX.Element {
           </Banner>
         ) : null}
 
-        {locked ? (
+        {/* Not while loading: `locked` holds the editor then, but the note is not locked. */}
+        {locked && !entryLoading ? (
           <Banner tone="muted">
             <span className="flex-1">
               Catatan terkunci{autoLocked ? ' otomatis setelah 48 jam' : ''}.
@@ -2297,6 +2304,9 @@ export default function PatientPage(): JSX.Element {
           and the whole reason the jaga note is a separate document is that its
           text must not end up in the morning note.
         */}
+        {/* Unseen until the day's note arrives: the rows above it only appear
+            then, and pushed a visible editor down by up to 260 px. */}
+        <div className={`contents ${entryLoading ? 'invisible' : ''}`}>
         {activeShiftNote && carryPending?.id === activeShiftNote.id ? (
           <CarryPendingPanel
             pending={carryPending.changes}
@@ -2366,6 +2376,7 @@ export default function PatientPage(): JSX.Element {
               starts: lineBookmarks.resolved.map((entry) => entry.start),
               onToggle: lineBookmarks.toggleAt,
             }}
+            marks={{ spans: lineMarks.spans, onToggle: lineMarks.toggle }}
             tint={settings.sectionTint}
             readOnly={locked}
             {...(settings.showWatermark
@@ -2434,6 +2445,7 @@ export default function PatientPage(): JSX.Element {
           >
             Riwayat perubahan
           </button>
+        </div>
         </div>
 
         {/*
