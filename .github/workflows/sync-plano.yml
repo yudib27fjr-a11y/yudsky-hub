@@ -1,0 +1,53 @@
+name: Sinkron update Plano
+
+# Setiap hari menarik update terbaru dari nottezio/plano ke branch
+# plano-update (pratinjau). Branch plano (situs utama) tidak disentuh.
+on:
+  schedule:
+    - cron: '0 20 * * *'   # 04:00 WITA
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: plano-update
+          fetch-depth: 0
+
+      - name: Tarik update Plano
+        id: sync
+        run: |
+          set -e
+          git config user.name "plano-sync"
+          git config user.email "plano-sync@users.noreply.github.com"
+          git remote add upstream https://github.com/nottezio/plano.git
+          git fetch -q upstream main
+          BASE=$(cat .plano-sync-base)
+          NEW=$(git rev-parse upstream/main)
+          if [ "$BASE" = "$NEW" ]; then echo "changed=no" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git diff --binary "$BASE" "$NEW" -- . ':!.github' ':!.env*' > /tmp/plano.patch
+          if git apply --3way --index /tmp/plano.patch; then
+            echo "$NEW" > .plano-sync-base
+            git add .plano-sync-base
+            git commit -q -m "Update Plano $(git log -1 --format=%s upstream/main)"
+            git push origin HEAD:plano-update
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+          else
+            git reset -q --hard
+            echo "changed=conflict" >> "$GITHUB_OUTPUT"
+          fi
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Laporkan bentrok
+        if: steps.sync.outputs.changed == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Update Plano bentrok dengan perubahan YUDSKY" \
+            --body "Update Plano (${{ steps.sync.outputs.new }}) tidak bisa digabung otomatis. Minta Claude menyelesaikannya." || true
