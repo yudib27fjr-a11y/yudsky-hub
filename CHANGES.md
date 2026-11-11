@@ -1,5 +1,220 @@
 # Plano — CHANGES
 
+## `2026-11-11.7` — Visite DPJP tab, H-1/Pulang on Bagi pasien, SOAP float header by status
+
+Avi (11 Nov, screenshot of the floating SOAP box): show H-1 / pulang hari ini in Bagi pasien; a visite summary per DPJP (patients in visit order with Dx, Tx, Plan); colour the float's header by status and make junior/chief easy to find.
+
+- **Visite DPJP.** `dpjpVisit.ts` (domain, tested): `visitDpjps` lists DPJPs in the list message's DPJP order (`dpjpOrder`, now exported from `build.ts`) with own + KJS counts; `dpjpVisit` takes that DPJP's own and KJS patients in `byRoute` order and picks Dx/Tx/Plan with Visite mode's `visiteSummary` (same Salin boundary rules, last A block, TS blocks left out). Hand-entered patients use their three typed fields. `dpjpVisitText` is the copy text. `VisitPanel` is the new "Visite DPJP" tab (after List): DPJP chips, Salin, one card per patient (tap opens the SoapFloat). Lines are slices of the stored SOAP, never rewritten.
+- **Shared chip.** `DischargeChip` (+ `FLAG_TEXT`, moved out of `ListPanel`) draws the H-1 / Pulang word; used by ListPanel, AssignPanel (`Badges`: waiting cards and clipboard rows), SoapFloat and VisitPanel. Each clipboard also counts "Pulang hari ini n · H-1 n" of the patients that resident holds.
+- **SoapFloat header.** Background `color-mix(--note-red|--note-green 16%, --surface)` for H-1 / pulang hari ini, with the long chip by the name. Junior and Chief moved off the grey meta line into their own row of bordered `text-sm` chips ("Junior dr. X", "Chief dr. Y"; "Belum ada residen" when neither).
+- **Firestore cost.** None: no read, listener or write added or changed. Everything comes from the roster already loaded.
+- **Not done.** A patient with no registry DPJP id (only a free `dpjpCode`) does not appear in Visite DPJP. Usul H-1 is not shown on Bagi pasien or the header. The DPJP picked is not remembered. Contrast of the muted RM line on the tinted header was not measured by tool; not checked on a phone or a ward device.
+
+## `2026-11-11.6` — Analisis checks (belum SOAP, pulang terlewat, usul lama, lama di list), 7-day Bagi pasien count, board kept
+
+Avi (11 Nov): build all five Analisis recommendations; 1-3 switchable in Setelan; keep the Bagi pasien board while rethinking it.
+
+- **Domain (`analysis.ts`, tested).** `noSoapToday(active, date)`: followed-up patients (no division, no "tidak di-follow up" tag) whose `sentAt` date is before the clinical date, oldest first. `overdueDischarge(roster, active, date)`: dirawat with `dischargeDate < date` (an H-1 marked the day before sets tomorrow's date, so this is the day after the planned discharge). `longStay(..., from = 8)`: from the 8-14 bucket up, longest first. `assignedRecently(roster, residents, date, 7)`: counts "Bagi pasien: junior dr. X" log lines per floor resident, local day within the last 7.
+- **Analisis.** Three new Blocks in "Hari ini, per pasien" (Belum SOAP, Rencana pulang terlewat, Lama di list); the usul Block colours "usul sejak n hari" with `--warn-strong` from 1 day and adds "tanyakan DPJP". Blocks follow the junior/chief toggle.
+- **Setting.** `UserSettings.analysisChecks` (`belumSoap`, `terlewat`, `usulLama`; absent or true = on), set in Setelan → Analisis (`AnalysisChecksField`) through `updateSettings`. Per account, not per list: one person turning a check off does not hide it for the floor, and no rules change was needed (the `settings` map is already the user's own).
+- **Bagi pasien.** Placements and the skip set persist in `localStorage` (`plano.assign.<floorId>`), validated on read, removed when empty (Terapkan / Kosongkan). Each clipboard shows "Dapat n pasien baru dalam 7 hari". `AssignPanel` now takes `roster` and `date`.
+- **Firestore cost.** No new reads or listeners: all from the roster already loaded. A Setelan check toggle = one write to the user's own document (its session listener re-reads that one document). Bagi pasien persistence is device-only.
+- **Not done.** The board is not shared across devices. "Belum SOAP" uses the SOAP's date, not the shift: a SOAP sent at 23.00 counts for that day. Not checked on a phone or a ward device.
+
+## `2026-11-11.5` — List Maker: Saran one line per proposal, Shift sebelumnya floats, Bagi pasien clipboards
+
+Avi (11 Nov, screenshot): the Saran rows took too much height (one row per patient); move Shift sebelumnya into the floating Denah/Per DPJP/Residen bar; Bagi pasien should be fun: a clipboard per resident with their patients, cards for unheld patients, dragged onto a clipboard instead of picked from a dropdown.
+
+- **Saran.** `groupTray(rows)` (domain, tested) groups rows by kind + proposal + answer labels; chief rows group by the incoming chief (the outgoing one differs per patient). `SuggestionTray` draws a line per group: title + count, patient chips (name opens; ✓ only on one-answer lines; × dismisses), then the line's answers for all ("Abaikan semua", "Tandai semua", "Terima semua"; an usul line keeps both answers). First 6 chips, then "+n lagi". The tapped-row "ghost" animation is gone: the chip leaves with the snapshot (local cache, at once), and the last action is read out through a polite live region. The bottom "Terima semua chief" bar folded into the chief lines.
+- **Shift sebelumnya.** `FloorDenah` gained `jumpStart`, drawn at the start of the floating `JumpBar` with a divider. The page passes the toggle there ("Shift sebelumnya" / "← Sekarang"); the "list … disimpan … · n pasien" note stays as `toolbarStart`. With no patients on the list (no Denah), the button stays inline above the message.
+- **Bagi pasien.** `AssignPanel` rewritten: a "Belum dipegang" drop zone of cards, and a clipboard per floor resident (clip, before → after total, MZ and Trio counts, newly placed cards, then the patients they already hold). HTML5 drag-and-drop for a mouse; tap a card, then "Taruh di papan dr. X", for touch and keyboard (HTML5 DnD does not fire on touch). "Usulkan" fills the clipboards from `proposeAssignment` with the "Ikut diusulkan" skip set; "Kosongkan papan" clears. Placements live in component state, read against the current open list, so a patient someone else took drops out. Terapkan writes `junior` and a log line per placed patient in one batch, as before.
+- **Firestore cost.** No new reads, listeners or writes. Saran's "… semua" is one batch per line (was one per chief group plus one write per discharge tap); per-chip taps are one write each, as before.
+- **Not done.** Touch drag (tap-to-place instead). The skip set and placements are not saved. Not checked on a phone or a ward device.
+
+## `2026-11-11.4` — Lab RM and name cross-check; windowed patient page uses chips when short
+
+Avi (11 Nov, four screenshots of the Plano window at full screen, ~1050, ~770 and ~515 CSS px wide): check the name on a lab PDF against the patient, loosely; fix the spacing of the windowed app.
+
+- **Lab name check.** `labMeta.labPatientNames` reads every `Nama[ Pasien] :` value (ending at a run of spaces or the next header label). `namesCouldMatch` passes when ANY name-word is shared after `nameTokens` (titles and words of 2 letters or fewer, Muhammad/Andi dropped), folding dj/j, tj/c, oe/u, y/i and doubled letters, and allowing one typo (`sameWord`, now exported from `jaga/match`) or a prefix (`ABD` / `Abdul`). It flags only names that share nothing. A side with no usable word makes no claim. `LabSheet` takes an optional `patientName` (PatientPage passes it; BoardPage does not) and shows a danger callout at the top of Hasil. It warns and does not block. Tests added (invented names).
+- **RM check (same build, asked after the name check).** `labRmNumbers` reads `No[.] RM` / `No. Rekam Medis` values; `labIdentityCheck` compares them to `patient.mrn` as digits without leading zeros (`01761685` = `1761685`). A different RM is its own danger callout. When the report prints the patient's own RM, the name is not checked (the RM is the identifier, so a name mismatch there is a spelling problem). With no RM on either side, the name check runs alone.
+- **Root cause of the crowded window.** Stacked panels showed from `sm` (640 px) up to `xl`, on the assumption that a tablet has the height. A laptop window at 1056×~700 CSS px (the screenshots are at 150% scaling) does not: Catatan pasien, the custom checklist rows, the workflow pills and the day rail filled the first screen, and the note started below the fold. The phone layout at 515 px showed the note at once.
+- **Fix.** `PANELS_ONLY` / `CHIPS_ONLY` in PatientPage: the stacked panels (and the main Periksa lagi) need 640–1279 px wide AND ≥900 px tall. Every shorter window below `xl` gets the phone chip row, which opens each panel in its sheet. The DPJP chip stays phone-only because from `sm` the DPJP line under the header already shows it. Desktop `xl` is unchanged.
+- **Clipboard pill.** The floating pill (sm–lg) sat at `left: 12px` over the 76 px nav rail; it now starts at 88 px. `--warn-soft` is translucent, so the note's text showed through it; it now sits on an opaque `bg-surface`.
+- **Firestore cost.** None: no read, listener or write changed.
+- **Not done.** Single-column width (`max-w-3xl`) and gutters unchanged. The 900 px height cut-off is chosen, not measured on a ward tablet.
+
+## `2026-11-11.3` — Colour picker folded into a dropdown
+
+Avi (11 Nov, screenshot): the wheel took too much room in Setelan; make it a dropdown, as other apps do.
+
+- `MarkColorPicker` is now a swatch button (colour, name, chevron; `aria-haspopup="dialog"`, `aria-expanded`) that opens the wheel and palette in the `Popover` from `ListActions`. That `Popover` is now exported with `align`. It closes on an outside pointerdown, on Escape, or after a palette pick; the wheel stays open while dragging. Palette is 3 per row beside the wheel: the panel measured 288×160 px in the emulator (was 304 tall when it wrapped).
+- MarksField: the new-tag colour sits between the name field and "+". NewBadgeField: the colour sits beside the text field.
+- Firestore cost: unchanged (one write per pick, on release).
+- Not checked on a phone; the 288 px panel is capped at the viewport width minus 2 rem.
+
+## `2026-11-11.2` — Analisis holders toggle, Bagi pasien exclusions, hue-wheel tag colour
+
+Avi (11 Nov): show junior and chief in "Hari ini, per pasien"; leave someone (usually the list maker) out of Bagi pasien; a colour wheel instead of swatches.
+
+- **Holders.** `AnalysisPanel` checkbox (off by default, not saved). Patients on the floor show the effective junior/chief from `view.active`; those gone show the roster override, else the SOAP's. Built only while the box is ticked.
+- **Bagi pasien.** `proposeAssignment(patients, residents, skip)`: skipped residents get nothing new but still count as holders, so their own patients are not re-offered. The open list is now every patient that `needsHolder`, so with everyone skipped the rows read "lewati" rather than "Semua pasien sudah dipegang". The skip set lives in component state for that sitting. Test added.
+- **Colour wheel.** A new `MarkColor` form `h<0-359>`. Only the hue is free: `markCss` renders `oklch(var(--hue-l) var(--hue-c) h)`, with lightness and chroma per theme in `tokens.css` (light 0.5/0.14, dark 0.8/0.12, Senja 0.85/0.1). `check-contrast.mjs` now checks every 5° in all three themes as a mark on its 8% tint. The lowest are light 4.61:1 at 195°, dark 7.64:1 and Senja 5.74:1. Word/PDF get `oklchHex(0.5, 0.14, h)` through `markInfo`. `MarkColorPicker` is a ring (pointer drag with capture, plus arrow keys at 5° or 15° with Shift, as role=slider) with the named palette beside it. Grey and brown can't sit on a fixed-chroma ring.
+- **Firestore cost.** No new reads or listeners. A wheel drag writes once on release, and arrow keys write on key-up, both to the existing marks/newBadge field on the list doc (each write bills a read on that doc's open listeners, as any colour change did). Holders and exclusions write nothing.
+- **Not done.** The skip set isn't saved. A device without OKLCH (Chrome < 111, Safari < 15.4) shows no colour for a wheel-picked tag. Not checked on a phone or a ward device.
+
+## `2026-11-11.1` — List Maker: KJS BTKV from an italic DPJP line or "TS (BTKV)"
+
+Avi (11 Nov): a consult from TS BTKV (PJT Lt. 4) was not marked KJS BTKV.
+
+- **Root cause.** The BTKV surgeon was not in the DPJP registry, so `btkv` rested on two text fallbacks in `readReport`, and both missed. The DPJP-line check skipped leading punctuation with `^\W*`, but `_` is a word character: the italic line `_DPJP BTKV (Utama): …_` never matched. The opening check wanted `TS BTKV` and the message said `TS (BTKV)`.
+- **Fix.** `^[\W_]*DPJP…` and `\bTS\s+\(?\s*BTKV\b`. Test added in `floorList.test.ts` (invented patient).
+- **Firestore cost.** None: parsing only, no read, listener or write changed.
+- **Not done.** Patients already on a list keep their old `btkv` until the report is pasted again. Not checked in the emulator or on a ward device.
+
+## `2026-11-10.13` — List Maker header layout, one-line Denah toolbar, Analisis order, draggable lists, tag palette
+
+Avi (10 Nov, screenshot at 1920 px): the upper section is weirdly positioned; the Denah's three control rows take too much height (make Sorot DPJP collapsible); Analisis summary and "Hari ini per pasien" always on top; drag lists so PJT Lantai 4 opens first; more tag colours or a palette picker.
+
+- **Header (impeccable layout pass, Operate mode).** Cause: the date/Chief Bangsal/actions grid was capped at `max-w-3xl`, so on a wide screen the right half stayed empty and Panduan/Catatan Visite floated mid-row; the Chief chips wrapped inside that 48 rem box. Now row 1 = list chips (flex-1) + page tools pinned right (from 640 px); row 2 = date | Chief Bangsal | Chief across the full width from 1024 px (date | Bangsal, Chief below from 640 px). Phone unchanged (folded chiefs, Catatan Visite beside the date). Measured at 1024 px: tabs start at 149 px (was ~182).
+- **Denah toolbar.** `FloorDenah` gained `toolbarStart`; the page passes Shift sebelumnya (and its "List … disimpan …" note) into it, so Shift sebelumnya, Tampilkan usul H-1 and Sorot DPJP share one wrapping row. Sorot DPJP is a toggle (`aria-expanded`, count of highlighted DPJPs); its chips open inline (`display: contents`), open by default when a DPJP is already highlighted. With no patients on the list the Shift button still shows above the empty message.
+- **Analisis.** `AnalysisPanel` gained `afterToday`; `AssignPanel` goes there, after "Hari ini, per pasien".
+- **List order.** `UserSettings.listMakerOrder` (ids), written through `updateSettings` (merge) on drop; `orderFloors` sorts by it, unknown lists after by name. `floorId` falls back to the first in that order. HTML drag and drop on the chip wrappers (mouse); after-target when dragged rightwards, before when leftwards. Test: `orderFloors`.
+- **Tag colours.** Four tokens `--mark-indigo|cyan|fuchsia|olive` for light, dark and Senja (all pass `check:contrast`: 4.81–8.48:1) with Word colours; no red/green/amber (those mean H-1, pulang, watch). `MarkColorPicker`: a swatch radiogroup (arrow keys, 44 px targets on touch) replacing the colour selects in Warna list (each mark and the new-mark row) and Lencana pasien baru. Still token keys, never a stored hex.
+- **Firestore cost.** List reorder: one write to the user's own profile per drop (already listened to by the session: +1 read on that listener). Colour picks: the same floor-doc write as the select it replaces. No new read or listener.
+- **Checked (emulator).** 1024 px: chips row with Catatan Visite at the right edge; date, Chief Bangsal, Chief on one row; Shift sebelumnya, usul, Sorot DPJP on one line, chips open inline. Two lists: drag (dispatched DragEvents) put PJT Lantai 4 first; a reload with no list in the URL opened it. Analisis order: ringkasan → Hari ini → Bagi pasien → trends. Picker: 11 swatches, a pick saved. Impeccable detector: no findings.
+- **Not done / not checked.** Dragging on a phone (touch) is not supported; the strip scrolls. The automated mouse drag could not start a native HTML drag, so drag was checked with dispatched events, not a real mouse. Screenshots of the full desktop width failed in the preview pane (it drew only part of the frame), so the desktop layout was checked by measured positions, not by eye. Not checked on a ward device or in light theme.
+
+## `2026-11-10.12` — Bagi pasien; floor vs shift-only residents; Pasien baru badge
+
+Avi (10 Nov): assigning new patients to a holder resident for the next dinas day is a headache; make it fair (Trio AFM/AFG/ZD spread across the floor juniors, MZ across all residents for the PowerPoint), only for patients with no holder, never touching ones already followed up. Separate the floor residents from residents who only take a shift there. And Pasien baru (= pindahan) as an automatic badge like SOAP baru, its text/colour/on-off in Setelan, instead of a mark.
+
+- **Why the two resident boxes matter.** `effective()` keeps a SOAP sender's name as the junior when it is not on the roster (`rosterName` returns it as-is), so a new patient sent by tonight's resident gets that resident as junior, and "no junior" alone would miss it. `FloorDoc.guestJuniors` ("Bukan residen lantai ini") is recognised like `juniors` ("Residen lantai", the old roster, same data), but only `juniors` receive patients. A patient is given out when the ward follows it (not `division`, no `noFollowUp` tag) and its junior is empty or not a floor resident.
+- **`domain/floorList/assign.ts`.** `proposeAssignment`: kept loads counted first; open patients ordered MZ (utama or KJS) → Trio (utama AFM/AFG/ZD) → rest, route order within a group; each goes to the resident with the lowest (MZ count, total) / (Trio count, total) / (total); ties to the first resident listed (deterministic). `loadsWith` gives before/after per resident with hand changes. Tests: who is given out, groups, MZ spread counting held MZ, Trio even + lightest total, determinism, hand change.
+- **`AssignPanel`** at the top of Analisis: rows (place, code, MZ/Trio chip, current holder), a resident select per row with "— lewati —", the before → after table (Total, MZ, Trio), Terapkan writes `junior` + a log line per patient via `writeRosterBatch` (not awaited). Viewers see the proposal only. No floor residents: asks to fill Setelan.
+- **Badge.** `NewBadge` {label, color, on} on the floor doc (`newBadge`, `readNewBadge`). `newBadgeOf`: the stored badge; else the text/colour of a list's existing "Pasien baru" mark; else "Pasien baru", teal. `effective()` puts `newBadge` on a new patient when on; `SoapBadge` draws it before the SOAP badge (Denah and List). Never printed (exports don't read it). The "baru" auto rule no longer matches (`autoMatches` → false) and is offered only on a mark that still has it, with a note. Setelan → Tampilan list → Lencana pasien baru (`NewBadgeField`): on/off, text (≤30), colour, preview; a write only when something changed.
+- **Rules.** `firestore.rules`: an edit member may also change `guestJuniors` and `newBadge` on the floor document. Deployed by the workflow on push; until then those two writes are refused on production.
+- **Firestore cost.** No new read or listener. Terapkan: one write per patient given out (one batch); each also bills one read per open roster listener (members with the list open). Setelan: one small floor-doc write per change of the shift-only box or the badge (each billed as a read on every member's floors listener). Grows with patients given out and members online.
+- **Tests changed.** floor/marks tests that expected a "Baru" tag now expect the badge (same rule, new carrier). Fixtures gained `guestJuniors`/`newBadge`.
+- **Not done.** The Trio/MZ groups are fixed in code (not editable in Setelan). Room proximity is not considered. No "dinas besok" per date: the floor box is the standing roster. Assigning a chief is unchanged. Edition snapshots store `newBadge` in their patients but never show it.
+
+## `2026-11-10.11` — List Maker: send/print/save on every tab; Denah jump buttons
+
+Avi (10 Nov): the Jam list / Simpan edisi / Kirim-ekspor box was only on the List tab; make it reachable from every tab, with Salin teks, a printer button and Simpan edisi as separate buttons. And a floating button on the Denah to jump to Denah, Per DPJP and Residen.
+
+- **New `ListActions`** (`components/floor/ListActions.tsx`), passed to `ListMakerTabs` as `actions`, so it is pinned with the tabs on every tab. Three buttons: **Salin teks** (copy icon), **Cetak** (printer icon; a panel with Word: List, Word: Denah, PDF and Atur cetak → `PrintSetup`), **Simpan edisi** (primary, shows the Jam list; a panel with the Jam list field and the save button). The save logic moved unchanged from `ListPanel` (same-list check, 2.5 s rest, restore point). Viewers get Salin and Cetak only. Panels close on a tap outside or Escape.
+- **Jam list** is page state now (`ListMakerPage`), shared by `ListActions` and the List tab's WhatsApp preview; `defaultListTime` replaces `ListPanel.defaultTime` (same rule). It resets on reload, as before.
+- **Tab bar layout.** Phone: tabs, then the search with the icon-only actions beside it (no extra row; labels are `sr-only`). From 640 px: tabs with the actions at the row's end, the search below. From 1536 px: one row. Below 1280 px Cetak is an icon and Simpan shows ✓ + time, so the six tabs fit beside the buttons at 1024 px (measured: tab strip 489 px, no overflow). The tab strip and the search take `basis-0`: a wrapping flex row wraps an item before it shrinks anything, so with content-width bases the buttons fell to their own row (seen at 1024 px and 375 px before the fix). Before this, lg put tabs and search on one row; between 1024 and 1535 px the bar is now one row taller when the search shows.
+- **`ListPanel`** keeps the patient list, the pulang/pindah note and the WhatsApp preview; the export card is gone.
+- **Denah jumps.** `JumpBar` in `FloorDenah`: a fixed pill (bottom right, above the phone tab bar) with Denah / Per DPJP / Residen; `scrollIntoView` (instant under reduced motion), sections carry `scroll-mt` of `--lm-tabs-h` so they land under the pinned bar. With no ward plan, the patient section is the Denah target. Also shown on the "Shift sebelumnya" snapshot.
+- **Panduan** step 4 text updated (buttons beside the tabs; Jam list inside Simpan edisi); the viewer step has its own lead with no Simpan edisi.
+- **Firestore.** None: the same writes, moved. No new read or listener.
+- **Checked (emulator, 4 made-up patients).** 1024 and 1280 px: buttons beside the tabs; Cetak menu lists the four items, Escape and a tap outside close it; Simpan edisi with Jam list 16.00 saved one edition that shows in Riwayat; buttons present on Denah, Tempel and Riwayat. 375 px: tabs row, then search + three icon buttons; the jump pill sits above the tab bar; Residen lands 8 px under the pinned bar.
+- **Not done.** No current-section highlight in the jump pill. Salin teks has no visible label on phones (icon, with an aria-label). The Jam list still resets to the default on reload (as before). The jump pill can cover the bottom-right of the denah while scrolling. Word/PDF files not opened. Not checked on a ward device, in light theme, or at 1536 px+.
+
+## `2026-11-10.10` — A new list showed no patients until a reload
+
+Found while reviewing List Maker on the emulator (10 Nov): created a list, pasted 4 patients ("Tersimpan: 4 pasien baru"), and Denah and List still said "Belum ada pasien" until a reload. Console: `[floors] roster FirebaseError … Null value error` at the `patients` read rule.
+
+- **Root cause.** `ListMakerPage` picks `params.get('f') ?? floors[0]`, and `subscribeMyFloors` delivers the new floor from the local cache while `createFloor`'s write is still in flight. `useRoster` attaches at once; the server runs the `patients` read rule (`request.auth.uid in floorP().memberIds`) against a floor document it does not hold yet, so `get()` is null and the listen is refused. Firestore ends a refused listener for good and nothing re-attached it, since `floorId` did not change. The same race applies to the editions, restore points and visit-note listeners, and to accepting an invite (membership arrives locally before the server has it).
+- **Fix.** `retryDenied` in `floors.repo.ts`: when a listener fails with `permission-denied`, attach the same query again after 1, 2, 4 and 8 s, then report the error as before. Any other error is reported at once; unsubscribing cancels a pending retry. Used by `subscribeRoster` (both queries), `subscribeEditions`, `subscribeRestorePoints` and `subscribeVisitNote`. Offline nothing changes: a listener does not error offline, and the cache keeps serving it.
+- **Firestore cost.** Normal open: unchanged (same queries, same values, so resume still works). Only after a refusal: one more listen attempt per retry, at most 4 per listener (5 listeners on a list), each billed as a denied read at most; then the attached listener bills one read per document on the list as usual. Grows only with how often a list is created or joined, not with patients.
+- **Tests.** `retryDenied.test.ts`: retries a refusal up to `DENIED_RETRIES` then reports; another error is reported at once; unsubscribing stops a pending retry.
+- **Not done.** Other listeners outside List Maker were not changed. A member truly removed from a list now sees the error about 15 s later than before (after the retries). Not checked against production Firestore; checked on the emulator only.
+
+## `2026-11-10.9` — Sensus Maker: header per DPJP, from the group chat
+
+Avi (10 Nov), with the SENSUS PASIEN KARDIOLOGI export (9 and 10 Nov): adjust the WhatsApp header for each DPJP to what that DPJP's group uses.
+
+- **Root cause.** `formatCensus` wrote one header for everyone (greeting, name from `DPJPS`, all places with every floor spelled out, slash date, `*Total Pasien : n pasien*`). The residents keep one wording per DPJP: KS writes "PJT Lt. 4, 5, dan 6" with blank lines around the name, MZ adds an RSWS/PJT breakdown and a rule, PT writes "IGD, CVCU, HCU, ICU PJT Lt. 4, 5, dan 6", PK greets as Prof and lists PJT IGD first, AHA adds "jam 06.00", ZD adds "Total Pasien PJT", and so on.
+- **Fix.** New `HEADER_STYLES` table in `census/maker.ts`, keyed by DPJP code (KS, MZ, PK, PT, AFM, AHA, AHN, AFG, ZD, IM, ARB). Each style gives the greeting, name (only where the group writes it differently from `DPJPS`), whether the name has blank lines around it, a `places` function over the pasted lists' coverage (so a place is named only if a list covers it, as before), the date separator and wrapper, and the lines under "Di …". `formatCensus` uses the style when there is one; `dmy` takes a separator. A DPJP without a style gets the old header.
+- **Dokter/Prof switch.** A style fixes its own address (PK is Prof, the rest Dokter), also for the closing line, as the chat does. The switch still decides for DPJPs without a style.
+- **Date.** Always the census date. A few residents mistyped it in the chat (9-10-2026, 11/11/2026 on the 10th); not copied.
+- **Tests.** Header tests for KS, MZ, PT, PK, AHA, AHN, ZD, AFG, AFM and the default; the old MZ/AFM header assertions moved to the new wording.
+- **Firestore.** None: text only.
+- **Not done.** Patient blocks, place titles and the closing line are unchanged (AFM and PT-style variants such as "Pusat Jantung Terpadu : 1 pasien" or "Lantai 5" in the body not copied). Bold and italic are as before: the export does not show them. Places a group never named (for example CVCU in KS's header) use the default label. DPJPs not in the chat (SM, MAA, YP…) keep the default header. Not run in the app on a real list.
+
+## `2026-11-10.8` — List Maker: status buttons told apart by size and shape
+
+Avi (10 Nov): easy to misspress a List Maker button in a rush, "by its shape and color alone".
+
+- **Root cause.** In `PatientControls` the four status actions (Pulang, Pindah ruangan…, Kamar/bed…, Ubah isi) shared one component: same height, same rounded rectangle, same 6% tint, 6 px apart in one wrapping row. Only the hue differed, so a thumb a few px off hit a neighbour, and Pulang/Pindah (which take a patient off the list) were as easy to hit as Kamar/bed (a harmless edit).
+- **Fix.** `Action` split in two. `LeaveAction` (Pulang, Pindah ruangan…): 48 px, 2 px border, bold 14 px, 10% tint, in a two-column grid with 12 px gap. `EditPill` (Kamar/bed…, Ubah isi): small neutral full-round pill, on a second row under a rule; Hapus keeps the far end of that row. The confirm rules are unchanged (Pulang still asks unless green; Hapus is still two taps).
+- **Pindah.** The save button is now its own full-width row, labelled "Pindahkan ke <tujuan>" ("Pilih tujuan dulu" while disabled), so it cannot be hit instead of a destination chip and shows where the patient goes. Chip gap 6 → 8 px. It still writes at once; no new confirm.
+- **Row.** "Atur" is wider (min 72 px) and the gap to the SOAP-opening row text 8 → 12 px.
+- **Used by** the List tab row and the SOAP window opened from the denah (`SoapFloat`), both through `PatientControls`.
+- **Firestore.** None: markup and classes only.
+- **Not done.** Not checked in the app or on a phone/ward device. Other List Maker buttons (Tempel, + Pasien manual, Simpan edisi, export tiles, Kembalikan) left as they are.
+
+## `2026-11-10.7` — Tempel changes grouped by S, O, A, P, KJS
+
+Avi (10 Nov): the changed-lines list under "Lihat perubahan" was too confusing; group it by S, O, A, P and KJS.
+
+- **Groups.** New `soapGroups` in `soapParts.ts` reuses `soapParts` (the jump-chip splitter: parser sections plus bare `TS …` lines) and folds the parts into Identitas, S, O, A (Assessment or an early Diagnosis), P (Terapi + Plan), KJS (every TS block). Joined in that order the groups are the text unchanged (tested).
+- **Diff.** `PasteChanges` runs `diffRevision` per group and shows only groups with a change, each under its name. A line that moved between groups now shows as removed in one and added in the other.
+- **Firestore.** None: display only, computed when the box is opened.
+- **Not done.** Not checked in the app or on real pastes. A SOAP whose headings the parser does not find puts everything under Identitas.
+
+## `2026-11-10.6` — Sensus Maker: device copy saved after a pause, flushed on hide
+
+Avi (10 Nov) approved delaying the local save, with flush on hide.
+
+- **Root cause.** `useEffect(() => saveStore(store), [store])` ran `JSON.stringify` over the whole Sensus store (every kept date's lists) and a synchronous `localStorage.setItem` on every keystroke.
+- **Fix.** Written 400 ms after the last change. `visibilitychange` to hidden, `pagehide` and unmount write any unsaved state at once. The first save after mount still runs (it removes the v1 key, as before).
+- **Sign-out.** A flush never writes once `useSession` has no user: sign-out clears this key in `clearDeviceUserState` and then reloads, and a `pagehide` flush would otherwise write the patient lists back after the clear.
+- **Data safety.** The account copy is unchanged (`useSensusInputSync`, its own debounce). Worst case is a browser killed while visible within 400 ms of a keystroke: that keystroke is missing from the device copy only.
+- **Firestore.** None.
+- **Not done.** Not checked in the app or on a phone; the sign-out path was reasoned from `signOutAndClear`'s order, not run.
+
+## `2026-11-10.5` — Sensus Maker typing lag; board redraws only the changed card
+
+Avi (10 Nov): Sensus Maker has the heaviest lag. Same audit as .4.
+
+- **Root cause, Sensus Maker.** The `sources` memo keyed on `day.lists`, which changes on every keystroke, and parsed every part of every box twice (`parse()` for `knownCodes`, then `parse(known)`). Bench on fixture lists (vitest, this laptop): ~1.5 ms per KB, linear; 15 KB = 26 ms, 59 KB = 92 ms per keystroke, before `buildCensus` and the rest of the render. A phone is several times slower (not measured).
+- **Fix.** Parsing reads the lists 300 ms after the last change (`useDebouncedValue` on `{date, lists}`; a date change parses at once). Each part's `ParsedSource` is cached by kind + known codes + text, so typing in one box re-parses that box only; other boxes are hits. Cache cleared past 200 entries. The labels above the boxes take their box number from the parsed lists (`boxAt`), not `filled.indexOf(list)`, which compared live objects with parsed ones.
+- **Root cause, board.** `subscribePatients` mapped `snapshot.docs` with `data()` on every snapshot, so every patient object was new each time (one patient's save, or a metadata-only sync with `includeMetadataChanges`). `cards` then rebuilt every `BoardCard`, and every `memo(PatientCard)` got a new `card` prop and redrew.
+- **Fix.** `reuseUnchanged` keeps the previous object for every doc not in `docChanges()` (metadata-only changes are not listed, and their data is identical). `buildCards` keeps a `WeakMap<Patient, BoardCard>` while items, today, initials mode and reminder kinds are the same objects. Tests in `boardCardCache.test.ts`.
+- **Firestore.** None: same listeners, same reads and writes; only how snapshots are mapped in memory.
+- **Not done.** Not measured in the app or on a phone (no profiler run, no real morning lists). `saveStore` still `JSON.stringify`s the whole Sensus store to localStorage on every keystroke; debouncing it would delay the local copy, which needs the owner's OK. `subscribeIncomingTransfers` and `subscribePatient` still map fresh objects (small, single-doc). PatientPage not profiled.
+
+## `2026-11-10.4` — Startup bundle: editor and List Maker out of the cold-start chunks
+
+Performance audit (10 Nov). Two regressions had put code that App.tsx meant to lazy-load into the chunks every cold start parses.
+
+- **Root cause 1.** `manualChunks` sent any id containing `/react/` to the `react` chunk. `node_modules/@tiptap/react/` matches that substring, so `@tiptap/react` (and the ProseMirror code only it reached) landed in `react`, which `index.html` modulepreloads. The editor's ~320 kB min was parsed on every start although only the lazy `NoteBody` uses it.
+- **Root cause 2.** `AccessGate` imported `ListMakerPage` statically for the viewer role, so the `lazy()` in App.tsx did nothing and List Maker (~170 kB min) sat in `index`.
+- **Fix.** `manualChunks` matches the package folders exactly (`/node_modules/(react|react-dom|react-router|react-router-dom|scheduler)/`). `AccessGate` lazy-loads `ListMakerPage` inside its own `Suspense`.
+- **Measured (vite build, this machine).** Startup JS (index + react + firebase): 2,309 kB min / 690 kB gzip before, 1,810 kB / 534 kB after. `react` 485 → 163 kB; `index` 1,046 → 869 kB; `NoteBody` 143 → 462 kB (now holds the editor); new `ListMakerPage` chunk 169 kB. Precache total unchanged (~3.08 MB): offline is unchanged. Load-time gain on a ward phone not measured.
+- **Firestore.** None.
+- **Not done.** Not opened in the app; viewer role (List Maker only) not exercised in the emulator; first open of a note or List Maker now waits for its chunk (from the precache, so offline still works). Runtime re-render cost on the board (every patient snapshot rebuilds every card) found in the same audit, not changed here.
+
+## `2026-11-10.3` — Sensus Maker: stray letter before the assess heading
+
+Avi (10 Nov): ARB's patient at 515 bed 2 came out with no diagnosis.
+
+- **Root cause.** The list wrote `F*Mohon izin kami assess dengan*` (an "F" typed before the bold mark). `plain()` strips `*`, so the heading reads "FMohon izin…" and `ASSESS_HEAD_RE` (`^[-•*\s]*mohon…`) did not match. The diagnosis state never left `before`, and the bullets below were skipped.
+- **Fix.** `ASSESS_HEAD_RE` allows one optional letter before "mohon". Anchored at line start, so no mid-line text is affected. Test added in `maker.test.ts`.
+- **Firestore.** None.
+- **Not done.** Only that one stray-letter shape; the pasted list was not re-run end to end in the app. Other typos in headings (e.g. "Mohn izin") are still not read.
+
+## `2026-11-10.2` — List Maker on the phone bar
+
+Avi (10 Nov): on a phone, List Maker in Dokumen's place for quicker access.
+
+- **TabBar.** The phone bar renders `PHONE_BAR` (WARD minus Dokumen, plus List Maker); "Lainnya" is every other destination, Dokumen first. Rail and sidebar unchanged. `moreActive` still lights "Lainnya" while Dokumen is open.
+- **Icon.** New `IconList` for List Maker (rail, sidebar, phone bar); it used `IconBoard`, the same glyph as Aktif, which would sit side by side on the bar.
+- **Firestore.** None.
+- **Not done.** Not checked in the app or on a phone; the "List Maker" label is not measured at 360 px (it truncates if it does not fit).
+
+## `2026-11-10.1` — Pasien baru baseline by Jam list
+
+Avi (10 Nov): Simpan edisi happens sometimes before the shift starts, sometimes after.
+
+- **Root cause.** `shiftEdition` picked the newest edition with `createdAt` before the shift start. A 04.00 list saved at 07.40 failed that test, so at 13.00 the baseline fell back to the day before's 16.00/19.00 list: every patient admitted overnight read as "Pasien baru" all day, and the Denah snapshot showed the older list. An early save (16.00 list at 15.00) was already fine.
+- **Fix.** Each edition's moment is its `date` plus the first `HH.MM`/`HH:MM` in its free-text `time` (the Jam list, defaulted 04.00/16.00/19.00 by `ListPanel`), local clock. The baseline is the newest edition whose moment is at or before the shift start; ties go to the later `createdAt`. A `time` with no clock reading (`—`) falls back to `createdAt` before the shift start, as before. `shiftBaseline` and the Denah snapshot use the same function. Off-today (`e.date < date`) is unchanged.
+- **SOAP baru unchanged.** Still "arrived after the newest saved edition's `createdAt`" (Avi: as before).
+- **Firestore.** 0 new reads or writes: the editions page is already subscribed on this screen.
+- **Not done.** Not checked in the app or against real save times. Known trade-off: a re-send before 10.00 keeps the 04.00 default, so it counts as the morning list and patients added between 07.00 and that re-send lose the tag, unless the list maker types the real time. Tests added for late, early, tied, after-start and no-time lists.
+
 ## `2026-11-09.7` — Denah snapshot of the previous shift
 
 Avi (9 Nov): a snapshot of the previous shift's Denah, to compare within the shift; the button on the Denah tab.

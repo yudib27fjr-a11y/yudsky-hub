@@ -42,7 +42,7 @@ import {
 import { trackWrite } from '../syncStatus';
 import { legacyColourDate, rosterLeftSince, type Edition, type FloorDoc, type FloorRole, type RosterPatient, type StatusChange } from '@/domain/floorList/floor';
 import { readSectionTitles, type SectionTitles } from '@/domain/floorList/analysis';
-import { isMarkColor, MARK_PREFIX, readMarks, type FloorMark, type PatientTag } from '@/domain/floorList/marks';
+import { isMarkColor, MARK_PREFIX, readMarks, readNewBadge, type FloorMark, type NewBadge, type PatientTag } from '@/domain/floorList/marks';
 import { manualFullText, type FloorPatient } from '@/domain/floorList/report';
 import { fromParts, KEEP_POINTS, restored, toParts, type RestorePlan, type RestorePoint, type RestorePointMeta } from '@/domain/floorList/restore';
 
@@ -90,6 +90,8 @@ export function readFloor(id: string, data: DocumentData): FloorDoc {
     chiefBangsal: str(data.chiefBangsal),
     holidays: Array.isArray(data.holidays) ? data.holidays.filter((v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) : [],
     juniors: str(data.juniors),
+    guestJuniors: str(data.guestJuniors),
+    newBadge: readNewBadge(data.newBadge),
     marks: readMarks(data.marks),
     analysisTitles: readSectionTitles(data.analysisTitles),
   };
@@ -236,6 +238,42 @@ export function subscribeInvites(email: string, callback: (floors: FloorDoc[]) =
   );
 }
 
+/** Re-attaches after a refusal: 1 s, 2 s, 4 s, 8 s, then the error is reported. */
+export const DENIED_RETRIES = 4;
+
+/**
+ * A listener on a list's subcollection, attached again when the server refuses it.
+ *
+ * A new list (or one just joined) reaches this screen from the local cache
+ * before its write lands, so the first listen runs the rules against a list
+ * the server does not hold yet and is refused (10 Nov 2026). Firestore ends a
+ * refused listener for good: the list stayed empty until a reload. Only a
+ * refusal is retried, a few times; offline a listener never errors.
+ */
+export function retryDenied(start: (onError: (e: Error) => void) => Unsubscribe, onError: (e: Error) => void): Unsubscribe {
+  let off: Unsubscribe = () => undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let tries = 0;
+  let stopped = false;
+  const attach = (): void => {
+    off = start((e) => {
+      if (stopped) return;
+      if ((e as { code?: unknown }).code === 'permission-denied' && tries < DENIED_RETRIES) {
+        timer = setTimeout(attach, 1000 * 2 ** tries);
+        tries += 1;
+        return;
+      }
+      onError(e);
+    });
+  };
+  attach();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    off();
+  };
+}
+
 /** How long a patient who left (Pulang/Pindah) stays in the live roster. Older ones: `readRosterPatients`. */
 export const ROSTER_LEFT_DAYS = 30;
 
@@ -261,21 +299,29 @@ export function subscribeRoster(floorId: string, callback: (roster: RosterPatien
     if (here && left) callback([...here, ...left]);
   };
   const since = rosterLeftSince(new Date(), ROSTER_LEFT_DAYS);
-  const offHere = onSnapshot(
-    query(floorPatientsCol(floorId), where('status', '==', 'dirawat')),
-    (snapshot) => {
-      here = read(snapshot.docs);
-      emit();
-    },
+  const offHere = retryDenied(
+    (fail) =>
+      onSnapshot(
+        query(floorPatientsCol(floorId), where('status', '==', 'dirawat')),
+        (snapshot) => {
+          here = read(snapshot.docs);
+          emit();
+        },
+        fail,
+      ),
     onError,
   );
-  const offLeft = onSnapshot(
-    query(floorPatientsCol(floorId), where('leftAt', '>=', since)),
-    (snapshot) => {
-      // A patient back on the floor keeps a stale `leftAt` only until the write lands; `here` has them.
-      left = read(snapshot.docs).filter((p) => p.status !== 'dirawat');
-      emit();
-    },
+  const offLeft = retryDenied(
+    (fail) =>
+      onSnapshot(
+        query(floorPatientsCol(floorId), where('leftAt', '>=', since)),
+        (snapshot) => {
+          // A patient back on the floor keeps a stale `leftAt` only until the write lands; `here` has them.
+          left = read(snapshot.docs).filter((p) => p.status !== 'dirawat');
+          emit();
+        },
+        fail,
+      ),
     onError,
   );
   return () => {
@@ -318,9 +364,13 @@ export async function rosterHasAny(floorId: string): Promise<boolean> {
 
 /** The latest sent editions (newest first). */
 export function subscribeEditions(floorId: string, callback: (editions: Edition[]) => void, onError: (e: Error) => void, count = 60): Unsubscribe {
-  return onSnapshot(
-    query(floorEditionsCol(floorId), orderBy('createdAt', 'desc'), limit(count)),
-    (snapshot) => callback(snapshot.docs.map((d) => readEdition(d.id, d.data()))),
+  return retryDenied(
+    (fail) =>
+      onSnapshot(
+        query(floorEditionsCol(floorId), orderBy('createdAt', 'desc'), limit(count)),
+        (snapshot) => callback(snapshot.docs.map((d) => readEdition(d.id, d.data()))),
+        fail,
+      ),
     onError,
   );
 }
@@ -336,9 +386,13 @@ export async function readOlderEditions(floorId: string, before: string, count: 
 
 /** The list's Catatan Visite (24 Oct 2026); null until someone writes it. */
 export function subscribeVisitNote(floorId: string, callback: (note: { body: string } | null) => void, onError: (e: Error) => void): Unsubscribe {
-  return onSnapshot(
-    floorVisitNoteDoc(floorId),
-    (snapshot) => callback(snapshot.exists() ? { body: str(snapshot.data().body) } : null),
+  return retryDenied(
+    (fail) =>
+      onSnapshot(
+        floorVisitNoteDoc(floorId),
+        (snapshot) => callback(snapshot.exists() ? { body: str(snapshot.data().body) } : null),
+        fail,
+      ),
     onError,
   );
 }
@@ -523,6 +577,16 @@ export function writeJuniors(floorId: string, juniors: string): Promise<void> {
   return trackWrite(updateDoc(floorDoc(floorId), 'juniors', juniors, 'updatedAt', serverTimestamp()));
 }
 
+/** Residents who only take shifts here (10 Nov 2026): recognised, never given patients by Bagi pasien. */
+export function writeGuestJuniors(floorId: string, names: string): Promise<void> {
+  return trackWrite(updateDoc(floorDoc(floorId), 'guestJuniors', names, 'updatedAt', serverTimestamp()));
+}
+
+/** The Pasien baru badge (10 Nov 2026): text, colour, on/off. */
+export function writeNewBadge(floorId: string, badge: NewBadge): Promise<void> {
+  return trackWrite(updateDoc(floorDoc(floorId), 'newBadge', plain(badge), 'updatedAt', serverTimestamp()));
+}
+
 /** The floor's own colours (13.7): the whole list, small and edited in one place. */
 export function writeMarks(floorId: string, marks: readonly FloorMark[]): Promise<void> {
   return trackWrite(updateDoc(floorDoc(floorId), 'marks', plain(marks), 'updatedAt', serverTimestamp()));
@@ -635,9 +699,13 @@ function readRestoreMeta(id: string, data: DocumentData): RestorePointMeta {
 
 /** The latest points, newest first (meta only; the patients are read when one is opened). */
 export function subscribeRestorePoints(floorId: string, callback: (points: RestorePointMeta[]) => void, onError: (e: Error) => void): Unsubscribe {
-  return onSnapshot(
-    query(floorRestoresCol(floorId), orderBy('createdAt', 'desc'), limit(KEEP_POINTS)),
-    (snapshot) => callback(snapshot.docs.map((d) => readRestoreMeta(d.id, d.data()))),
+  return retryDenied(
+    (fail) =>
+      onSnapshot(
+        query(floorRestoresCol(floorId), orderBy('createdAt', 'desc'), limit(KEEP_POINTS)),
+        (snapshot) => callback(snapshot.docs.map((d) => readRestoreMeta(d.id, d.data()))),
+        fail,
+      ),
     onError,
   );
 }

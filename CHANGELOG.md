@@ -5,6 +5,85 @@ Catatan teknis lengkap (akar masalah, perbaikan) ada di CHANGES.md.
 
 Entri teratas harus versi yang sedang dirilis; tes gagal bila belum ditulis.
 
+## `2026-11-11.7`
+- **Visite DPJP (tab baru di List Maker).** Pilih DPJP yang sedang visite: pasiennya tampil sesuai urutan rute visite, masing-masing dengan Dx, Tx, dan Plan yang diambil dari SOAP apa adanya (blok TS tidak ikut). Pasien KJS ikut dan diberi tanda KJS. Ketuk pasien untuk membuka SOAP lengkap; Salin memberi ringkasannya sebagai satu pesan WhatsApp.
+- **Bagi pasien: H-1 dan pulang hari ini terlihat.** Kartu pasien dan daftar di papan tiap residen kini menampilkan chip H-1 (merah) atau Pulang (hijau), dan tiap papan menulis berapa pasiennya yang pulang hari ini dan H-1.
+- **Kotak SOAP melayang lebih jelas.** Kepala kotak berwarna merah untuk H-1 dan hijau untuk pulang hari ini, dengan tulisan statusnya. Junior dan chief kini tampil besar di baris sendiri.
+
+## `2026-11-11.6`
+- **Analisis: tiga pengecekan baru di "Hari ini, per pasien".** "Belum SOAP hari ini" (pasien yang diikuti lantai tanpa SOAP bertanggal hari ini, dengan jam SOAP terakhirnya), "Rencana pulang terlewat" (masih di lantai setelah tanggal rencana pulang), dan usul H-1 yang sudah sehari atau lebih ditandai warna peringatan. Ketiganya bisa dimatikan di Setelan → Analisis; pilihan tersimpan di akun Anda dan tidak mengubah tampilan anggota lain.
+- **Analisis: "Lama di list (8 hari atau lebih)"**, pasien yang paling lama di list, bisa diketuk untuk membuka pasiennya.
+- **Bagi pasien: jumlah 7 hari.** Tiap papan residen menulis berapa pasien baru yang ia dapat dari Bagi pasien dalam 7 hari terakhir, supaya pembagian hari ini bisa menyeimbangkan minggunya.
+- **Bagi pasien tidak lagi kosong sendiri.** Kartu yang sudah ditaruh dan pilihan "Ikut diusulkan" disimpan di perangkat ini per list sampai Terapkan atau Kosongkan papan, jadi aman ditinggal ke tab lain atau dimuat ulang.
+
+## `2026-11-11.5`
+- **Saran lebih ringkas.** Satu baris per jenis saran (mis. "Plan menyebut H-1", "Ganti chief → dr. Didi"), pasiennya berupa chip: ketuk nama untuk membuka pasien, ✓ untuk menerima satu, × untuk mengabaikan satu. Tombol di ujung baris berlaku untuk semua pasien di baris itu.
+- **Shift sebelumnya pindah ke tombol melayang** (di samping Denah, Per DPJP, Residen), jadi bisa diketuk dari mana saja di halaman. Keterangan list yang sedang dilihat tetap di atas denah.
+- **Bagi pasien kini papan klip.** Tiap residen lantai punya papan berisi pasien yang sedang dipegangnya. Pasien tanpa pemegang tampil sebagai kartu: seret ke papan residen (di ponsel: ketuk kartu, lalu ketuk "Taruh di papan"), seret kembali atau ketuk × untuk melepas. "Usulkan" mengisi papan otomatis dengan aturan yang sama (MZ, Trio, lalu yang paling sedikit); "Ikut diusulkan" memilih siapa yang ikut. Tidak ada yang tersimpan sebelum Terapkan.
+
+## `2026-11-11.4`
+- **Cek No. RM dan nama pada hasil lab.** Saat Format hasil lab dibuka dari halaman pasien, No. RM dan nama di PDF lab dicocokkan dengan pasien. No. RM yang berbeda memunculkan peringatan merah sebelum menyisipkan (angka nol di depan diabaikan). Bila RM tidak tersedia, nama yang dicocokkan: peringatan hanya muncul bila tidak ada satu kata nama pun yang sama. Perbedaan ejaan, gelar (Tn., Ny.), singkatan (Abd.) dan salah satu huruf tidak dianggap berbeda.
+- **Tampilan jendela lebih lega.** Di jendela laptop yang tidak terlalu tinggi, Catatan pasien, Checklist, dan Periksa kini satu baris chip seperti di ponsel, sehingga catatan langsung terlihat. Panel bertumpuk tetap ada di tablet yang tinggi.
+- **Pill clipboard tidak menutupi menu lagi.** Di layar sedang, pill clipboard kini berada di samping menu kiri dan latarnya tidak tembus pandang.
+
+## `2026-11-11.3`
+- **Pemilih warna kini ringkas.** Roda warna tersembunyi di balik tombol kecil berisi warna yang dipilih; ketuk untuk membuka roda dan palet, ketuk di luar atau tekan Esc untuk menutup. Warna tag baru dan lencana pasien baru kini sebaris dengan isian namanya.
+
+## `2026-11-11.2`
+- **Analisis: tampilkan junior & chief.** Centang "Tampilkan junior & chief" di "Hari ini, per pasien" untuk melihat siapa yang memegang tiap pasien.
+- **Bagi pasien: pilih siapa yang ikut dibagi.** Ketuk nama residen di "Ikut dibagi" untuk mengeluarkannya dari pembagian (mis. list maker). Pasien yang sudah dipegangnya tetap miliknya.
+- **Roda warna untuk tag dan lencana.** Pilih warna dengan menyeret atau mengetuk roda; kecerahannya mengikuti tema sehingga tetap terbaca di mode terang, gelap, dan Senja, dan tercetak dengan warna yang sama di Word/PDF. Palet lama tetap ada di sampingnya.
+
+## `2026-11-11.1`
+- **List Maker kini mengenali konsul dari TS BTKV.** Laporan dengan baris DPJP bercetak miring (`_DPJP BTKV (Utama): …_`) atau pembuka "konsul pasien dari TS (BTKV)" kini ditandai KJS BTKV, termasuk bila dokter BTKV-nya belum ada di daftar DPJP. Tempel ulang laporannya agar tanda ini muncul pada pasien yang sudah ada.
+
+## `2026-11-10.13`
+- **Bagian atas List Maker lebih rapi.** Pilihan list di kiri atas, Panduan dan Catatan Visite di kanan atas. Tanggal list, Chief Bangsal, dan Chief kini satu baris di layar lebar, sehingga tab naik lebih ke atas.
+- **Denah: kontrol dalam satu baris.** Shift sebelumnya, Tampilkan usul H-1, dan Sorot DPJP kini sebaris. Sorot DPJP bisa dibuka dan ditutup; angka di tombolnya menunjukkan berapa DPJP yang sedang disorot.
+- **Analisis: ringkasan dan "Hari ini, per pasien" selalu paling atas.** Bagi pasien ada di bawahnya.
+- **Urutan list bisa diseret.** Seret chip list (mis. PJT Lantai 4) ke depan; list pertama yang dibuka saat List Maker dibuka. Urutan disimpan di akun Anda, jadi sama di semua perangkat. Menyeret memakai mouse; di ponsel baris list tetap digeser.
+- **Warna tag lebih banyak, dengan pemilih palet.** Empat warna baru (Nila, Sian, Fuksia, Zaitun), dipilih lewat bulatan warna, bukan daftar. Semua warna terbaca di tema terang, gelap, dan Senja, dan ikut di Word.
+
+## `2026-11-10.12`
+- **Bagi pasien di tab Analisis.** Pasien yang belum dipegang residen lantai (tanpa junior, atau junior-nya residen jaga yang besok tidak dinas di lantai ini) diusulkan ke residen lantai secara adil: pasien MZ dulu (satu per residen, untuk slide), lalu Trio (AFM, AFG, ZD) merata, lalu sisanya ke residen yang pasiennya paling sedikit, menghitung pasien yang sudah dipegang. Tiap usulan bisa diganti atau dilewati; tidak ada yang berubah sebelum menekan **Terapkan**. Pasien yang sudah dipegang residen lantai, pasien divisi, dan pasien "tidak di-follow up" tidak disentuh.
+- **Setelan: Residen lantai dan Bukan residen lantai ini.** Roster junior kini dua kotak: residen yang dinas di lantai ini (yang menerima pasien dari Bagi pasien), dan residen yang hanya jaga di sini. Nama keduanya tetap dikenali dari SOAP.
+- **Lencana Pasien baru.** Pasien baru (termasuk pindahan) kini diberi lencana sendiri, seperti SOAP baru, tanpa perlu membuat warna. Teks, warna, dan aktif/nonaktif diatur di Setelan → Lencana pasien baru. Warna "Pasien baru" yang lama tidak lagi dipasang otomatis; lencana memakai teks dan warnanya. Hanya di layar, tidak ikut dicetak.
+
+## `2026-11-10.11`
+- **Salin teks, Cetak dan Simpan edisi ada di semua tab List Maker.** Tiga tombol terpisah kini menempel di samping tab, tidak lagi hanya di tab List. **Cetak** membuka pilihan Word: List, Word: Denah, PDF dan Atur cetak. **Simpan edisi** menampilkan jam list-nya; ketuk untuk mengubah Jam list lalu simpan. Di ponsel tombolnya hanya ikon, di samping kotak cari; di layar laptop yang sempit, Cetak hanya ikon dan Simpan edisi menampilkan jamnya saja.
+- **Lompat cepat di Denah.** Tombol mengambang di kanan bawah membawa langsung ke Denah, Per DPJP, atau Residen.
+
+## `2026-11-10.10`
+- **List baru langsung menampilkan pasien.** Setelah membuat list baru (atau menerima undangan), pasien yang ditempel kadang tidak muncul di Denah dan List sampai halaman dimuat ulang. Kini list menyusul sendiri dalam beberapa detik. Hal yang sama untuk Riwayat, titik pulih, dan Catatan Visite.
+
+## `2026-11-10.9`
+- **Judul sensus mengikuti grup tiap DPJP.** Sapaan, nama lengkap, urutan tempat, format tanggal ("10-11-2026" atau "10/11/2026"), baris "TOTAL" dan penutup kini ditulis seperti di grup chat Sensus Pasien Kardiologi, untuk dr. KS, Prof. MZ, dr. PT, Prof. PK, dr. AFM, dr. AHA, dr. AHN, dr. AFG, dr. ZD, Prof. IM dan dr. ARB. Contoh: MZ mendapat rincian RSWS dan PJT di bawah total, AHA ditambah "jam 06.00", ZD mendapat "Total Pasien PJT". DPJP lain tetap memakai judul lama, dan pilihan Dokter/Prof hanya berlaku untuk mereka.
+
+## `2026-11-10.8`
+- **Tombol di List Maker lebih sulit salah tekan.** Di "Atur" pasien, Pulang dan Pindah ruangan kini tombol besar dan tebal, berdampingan dengan jarak lebar. Kamar/bed, Ubah isi dan Hapus menjadi tombol kecil berwarna netral di baris terpisah di bawahnya. Tombol pindah kini bertuliskan tujuannya ("Pindahkan ke ICU") dan berdiri sendiri di bawah pilihan tujuan. Tombol Atur di tiap baris pasien lebih lebar dan lebih jauh dari baris yang membuka SOAP.
+
+## `2026-11-10.7`
+- **Tempel: perubahan SOAP dikelompokkan.** Di "Lihat perubahan", baris yang berubah kini ditampilkan per bagian: Identitas, S, O, A, P (termasuk terapi), dan KJS (blok TS). Bagian yang tidak berubah tidak ditampilkan.
+
+## `2026-11-10.6`
+- **Sensus Maker lebih ringan lagi saat mengetik.** Salinan list di perangkat disimpan sesaat setelah berhenti mengetik, bukan pada setiap huruf. Menutup atau menyembunyikan aplikasi tetap langsung menyimpannya.
+
+## `2026-11-10.5`
+- **Sensus Maker tidak lagi tersendat saat mengetik.** List dibaca ulang setelah jeda singkat (0,3 detik), bukan pada setiap huruf, dan kotak yang tidak diubah tidak dibaca ulang. Hasil sensus muncul sesaat setelah berhenti mengetik.
+- **Papan lebih ringan.** Saat satu pasien berubah, hanya kartu pasien itu yang digambar ulang, bukan semua kartu.
+
+## `2026-11-10.4`
+- **Aplikasi terbuka lebih cepat.** Saat dibuka, Plano kini memuat sekitar 500 kB kode lebih sedikit (kira-kira seperlima). Editor catatan dan List Maker baru dimuat saat dipakai. Tidak ada yang berubah di layar.
+
+## `2026-11-10.3`
+- **Sensus Maker kini membaca judul diagnosis yang diawali huruf nyasar.** Judul seperti "F*Mohon izin kami assess dengan*" (ada "F" terketik sebelum tanda tebal) sebelumnya tidak dikenali, sehingga pasien itu tampil tanpa diagnosis di sensus.
+
+## `2026-11-10.2`
+- **List Maker di bar bawah HP.** Di HP, bar bawah kini Aktif, Arsip, List Maker, Lainnya. Dokumen pindah ke Lainnya. Tablet dan layar lebar tidak berubah. List Maker juga punya ikon sendiri, tidak lagi sama dengan Aktif.
+
+## `2026-11-10.1`
+- **Pasien baru kini mengikuti Jam list, bukan jam simpan.** List shift sebelumnya dipilih dari tanggal dan Jam list-nya (04.00, 16.00, 19.00), jadi list 04.00 yang baru disimpan pukul 07.40 tetap dihitung sebagai list pagi. Sebelumnya list itu terlewat, dan semua pasien semalam ikut tertanda Pasien baru seharian. Bila ada dua list dengan Jam list yang sama, yang disimpan terakhir dipakai. Jam list tanpa angka ("—") tetap memakai jam simpan. Denah "Shift sebelumnya" ikut aturan yang sama. SOAP baru tidak berubah.
+
 ## `2026-11-09.7`
 - **Denah shift sebelumnya.** Di tab Denah, tombol "Shift sebelumnya" menampilkan denah dari list terakhir yang disimpan sebelum shift ini dimulai (Simpan edisi), untuk dibandingkan dengan denah sekarang. Ketuk "← Denah sekarang" untuk kembali. Tombol muncul bila list itu ada.
 

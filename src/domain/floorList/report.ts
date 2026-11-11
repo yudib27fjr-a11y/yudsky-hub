@@ -85,6 +85,8 @@ export interface FloorPatient {
   gantiChief?: string | undefined;
   /** On the list view only: the SOAP arrived after the last sent list, or is from before today (13.11). */
   soap?: 'baru' | 'lama' | undefined;
+  /** On the list view only: the Pasien baru badge, when it is on (10 Nov 2026, `newBadgeOf`). Never printed. */
+  newBadge?: { label: string; color: PatientTag['color'] } | undefined;
   /** A DPJP code written on a sent list that is not one of ours ("TM/…", 13.10): printed as written. */
   dpjpCode?: string | undefined;
   /** Held by a cardiology division, not the ward residents (13.9, `divisionOf`). */
@@ -404,9 +406,10 @@ export function readReport(message: ChatMessage): FloorPatient | null {
     kjsDpjpIds: kjs,
     btkv:
       btkvDpjp ||
-      /KJS\s+(?:TS\s+)?BTKV|\bTS\s+BTKV\b/i.test(lines.slice(0, opening + 1).join(' ')) ||
-      // "DPJP BTKV (Utama) : …" for a surgeon the registry does not know.
-      lines.some((line) => /^\W*DPJP[^:\n]*\bBTKV\b|^\W*DPJP[^\n]*Sp\.?\s*BTKV/i.test(line)),
+      /KJS\s+(?:TS\s+)?BTKV|\bTS\s+\(?\s*BTKV\b/i.test(lines.slice(0, opening + 1).join(' ')) ||
+      // "DPJP BTKV (Utama) : …" for a surgeon the registry does not know. `[\W_]`, not `\W`:
+      // the line is often italic ("_DPJP BTKV (Utama): …_") and `_` is a word character.
+      lines.some((line) => /^[\W_]*DPJP[^:\n]*\bBTKV\b|^[\W_]*DPJP[^\n]*Sp\.?\s*BTKV/i.test(line)),
     body,
     full: text.trim(),
     chief,

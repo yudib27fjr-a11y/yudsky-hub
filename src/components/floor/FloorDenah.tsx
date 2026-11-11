@@ -12,6 +12,7 @@ import { setPrintSettings, usePrintSettings } from '@/hooks/usePrintSettings';
 import { dpjpsOnFloor, dpjpWord, matchesPicked } from '@/domain/floorList/search';
 import { placeBeds } from '@/domain/floorList/beds';
 import { SoapBadge } from './SoapBadge';
+import { IconChevronRight } from '@/components/common/Icons';
 import { planLayout } from '@/domain/floorList/layout';
 import { scrollParentOf } from '@/lib/scrollParent';
 import {
@@ -171,9 +172,10 @@ function RoomBox({
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }): JSX.Element {
+function Section({ title, id, children }: { title: string; id?: string | undefined; children: ReactNode }): JSX.Element {
   return (
-    <section className="space-y-2">
+    // Lands under the pinned tab bar when jumped to (`JumpBar`).
+    <section id={id} className="scroll-mt-[calc(var(--lm-tabs-h,4.5rem)+0.5rem)] space-y-2">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-faint">{title}</h3>
       {children}
     </section>
@@ -411,6 +413,8 @@ export function FloorDenah({
   onOpen,
   words = [],
   marks = [],
+  toolbarStart,
+  jumpStart,
 }: {
   plan: WardPlan | null;
   ward: string;
@@ -420,12 +424,18 @@ export function FloorDenah({
   words?: readonly string[];
   /** The floor's own colours, for the legend. */
   marks?: readonly FloorMark[];
+  /** Leads the toolbar row (Shift sebelumnya, 10 Nov 2026), so the controls share one line. */
+  toolbarStart?: ReactNode;
+  /** Leads the floating jump bar (Shift sebelumnya, 11 Nov 2026, Avi): reachable from anywhere on the page. */
+  jumpStart?: ReactNode;
 }): JSX.Element {
   const sorted = [...patients].sort(byRoute(ward));
   // Several DPJPs at once (7 Nov 2026): chips, remembered on this device; a DPJP with no patient here is ignored.
   const onFloor = dpjpsOnFloor(sorted);
   const [pickedIds, togglePicked] = usePersistentIdSet('plano.denah.dpjp');
   const picked = onFloor.filter((id) => pickedIds.has(id));
+  // Sorot DPJP folds behind one button (10 Nov 2026): open when a DPJP is already highlighted.
+  const [sorotOpen, setSorotOpen] = useState(() => picked.length > 0);
   const clearPicked = (): void => picked.forEach((id) => togglePicked(id));
   const searching = words.length > 0 || picked.length > 0;
   const hits = searching ? sorted.filter((p) => matchesPicked(p, words, picked)) : [];
@@ -470,6 +480,13 @@ export function FloorDenah({
     <ShowUsul.Provider value={showUsul}>
     <div className="space-y-6">
       <div className="space-y-2">
+        {/*
+          One toolbar line (10 Nov 2026, Avi: three rows took too much height): Shift sebelumnya,
+          Tampilkan usul H-1, then Sorot DPJP folded behind a toggle whose chips open in the same
+          line. It wraps only when the open chips run out of room.
+        */}
+        <div className="flex flex-wrap items-center gap-2">
+        {toolbarStart}
         <button
           type="button"
           aria-pressed={showUsul}
@@ -484,6 +501,50 @@ export function FloorDenah({
           Tampilkan usul H-1
           <span className="tabular-nums text-fg-faint">{usulPatients.length}</span>
         </button>
+        {onFloor.length > 0 ? (
+          <button
+            type="button"
+            aria-expanded={sorotOpen}
+            aria-controls="denah-sorot"
+            onClick={() => setSorotOpen(!sorotOpen)}
+            className={`flex min-h-tap items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors [@media(pointer:fine)]:min-h-9 ${
+              picked.length > 0 ? 'border-accent text-fg' : 'border-border text-fg-muted hover:text-fg'
+            }`}
+          >
+            Sorot DPJP
+            {picked.length > 0 ? <span className="rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-4 text-on-accent">{picked.length}</span> : null}
+            <IconChevronRight
+              width={14}
+              height={14}
+              aria-hidden="true"
+              className={`transition-transform duration-150 motion-reduce:transition-none ${sorotOpen ? '-rotate-90' : 'rotate-90'}`}
+            />
+          </button>
+        ) : null}
+        {onFloor.length > 0 && sorotOpen ? (
+          <div id="denah-sorot" role="group" aria-label="Sorot pasien DPJP" className="contents">
+            {onFloor.map((id) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={picked.includes(id)}
+                title={`Sorot pasien ${dpjpTitle(id)}`}
+                onClick={() => togglePicked(id)}
+                className={`flex min-h-tap items-center rounded-full border px-3 text-xs font-medium transition-colors [@media(pointer:fine)]:min-h-8 ${
+                  picked.includes(id) ? 'border-accent bg-accent font-semibold text-on-accent' : 'border-border text-fg-muted hover:text-fg'
+                }`}
+              >
+                {dpjpWord(id).toUpperCase()}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {picked.length > 0 ? (
+          <button type="button" onClick={clearPicked} className="min-h-tap px-1 text-xs text-fg-muted underline [@media(pointer:fine)]:min-h-8">
+            Hapus sorotan
+          </button>
+        ) : null}
+        </div>
         {showUsul && usulPatients.length > 0 ? (
           <p className="text-xs text-fg-muted">
             <span className="font-semibold text-fg">Usul H-1:</span>{' '}
@@ -499,30 +560,6 @@ export function FloorDenah({
           </p>
         ) : null}
       </div>
-      {onFloor.length > 0 ? (
-        <div role="group" aria-label="Sorot pasien DPJP" className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-fg-muted">Sorot DPJP</span>
-          {onFloor.map((id) => (
-            <button
-              key={id}
-              type="button"
-              aria-pressed={picked.includes(id)}
-              title={`Sorot pasien ${dpjpTitle(id)}`}
-              onClick={() => togglePicked(id)}
-              className={`flex min-h-tap items-center rounded-full border px-3 text-xs font-medium transition-colors [@media(pointer:fine)]:min-h-8 ${
-                picked.includes(id) ? 'border-accent bg-accent font-semibold text-on-accent' : 'border-border text-fg-muted hover:text-fg'
-              }`}
-            >
-              {dpjpWord(id).toUpperCase()}
-            </button>
-          ))}
-          {picked.length > 0 ? (
-            <button type="button" onClick={clearPicked} className="min-h-tap px-1 text-xs text-fg-muted underline [@media(pointer:fine)]:min-h-8">
-              Hapus sorotan
-            </button>
-          ) : null}
-        </div>
-      ) : null}
       {searching ? (
         <Section title={`${words.length > 0 ? 'Hasil cari' : 'Pasien DPJP disorot'} (${hits.length})`}>
           {hits.length === 0 ? (
@@ -537,7 +574,7 @@ export function FloorDenah({
         </Section>
       ) : null}
       {plan ? (
-        <Section title={`Denah ${ward}`}>
+        <Section title={`Denah ${ward}`} id={JUMP_IDS.denah}>
           <DenahCanvas>
             <div className="grid grid-cols-2 gap-2">
               {plan.header.map((slot) => (
@@ -594,7 +631,7 @@ export function FloorDenah({
       ) : null}
 
       {strays.length > 0 ? (
-        <Section title={plan ? 'Di luar denah' : `Pasien ${ward}`}>
+        <Section title={plan ? 'Di luar denah' : `Pasien ${ward}`} id={plan ? undefined : JUMP_IDS.denah}>
           <div className="rounded-lg border border-border bg-surface p-2">
             {strays.map((p) => (
               <PatientButton key={p.key} patient={p} onOpen={onOpen} found={find(p)} />
@@ -603,7 +640,7 @@ export function FloorDenah({
         </Section>
       ) : null}
 
-      <Section title="Per DPJP">
+      <Section title="Per DPJP" id={JUMP_IDS.dpjp}>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {order.map((id) => {
             const own = shown.filter((p) => p.dpjpId === id);
@@ -634,7 +671,7 @@ export function FloorDenah({
         </div>
       </Section>
 
-      <Section title="Residen">
+      <Section title="Residen" id={JUMP_IDS.residen}>
         <div className="flex flex-wrap items-center gap-2">
           {chiefs.length > 0 ? (
             <p className="min-w-0 flex-1 text-[12px]">{chiefs.map(([name, n]) => `dr. ${name} ${n}`).join(' · ')}</p>
@@ -717,7 +754,50 @@ export function FloorDenah({
         ) : null}{' '}
         · Ketuk pasien untuk SOAP lengkap.
       </p>
+      <JumpBar start={jumpStart} />
     </div>
     </ShowUsul.Provider>
+  );
+}
+
+const JUMP_IDS = { denah: 'lm-jump-denah', dpjp: 'lm-jump-dpjp', residen: 'lm-jump-residen' } as const;
+
+/**
+ * Floating jumps to the three parts of a long Denah page (10 Nov 2026, Avi):
+ * the plan, Per DPJP, Residen. Bottom right, above the phone tab bar.
+ */
+function JumpBar({ start }: { start?: ReactNode }): JSX.Element {
+  const jump = (id: string): void => {
+    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById(id)?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+  };
+  return (
+    <nav
+      aria-label="Lompat ke bagian"
+      className="fixed bottom-[calc(env(safe-area-inset-bottom)+80px)] right-3 z-30 flex items-center rounded-full border border-border bg-surface p-0.5 shadow-pop sm:bottom-6 sm:right-6 print:hidden"
+    >
+      {start ? (
+        <>
+          {start}
+          <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-border" />
+        </>
+      ) : null}
+      {(
+        [
+          [JUMP_IDS.denah, 'Denah'],
+          [JUMP_IDS.dpjp, 'Per DPJP'],
+          [JUMP_IDS.residen, 'Residen'],
+        ] as const
+      ).map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => jump(id)}
+          className="min-h-tap rounded-full px-3 text-xs font-semibold text-fg-muted hover:bg-bg-subtle hover:text-fg [@media(pointer:fine)]:min-h-9"
+        >
+          {label}
+        </button>
+      ))}
+    </nav>
   );
 }

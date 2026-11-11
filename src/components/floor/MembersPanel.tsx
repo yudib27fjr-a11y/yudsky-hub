@@ -9,17 +9,21 @@ import {
   deleteFloor,
   removeHoliday,
   writeJuniors,
+  writeGuestJuniors,
   inviteMember,
   removeMember,
   transferOwnership,
   setMemberRole,
   writeNickname,
+  writeNewBadge,
 } from '@/data/repositories/floors.repo';
 import { canEdit, chiefsOf, isOwner, type FloorDoc, type FloorRole } from '@/domain/floorList/floor';
 import { collapseNicknames, confirmQuestion, memberRole, saveErrorMessage, transferQuestion } from '@/domain/floorList/membersView';
+import { AnalysisChecksField } from './AnalysisChecksField';
 import { ChiefsField } from './ChiefsField';
 import { HolidaysField } from './HolidaysField';
 import { MarksField } from './MarksField';
+import { NewBadgeField } from './NewBadgeField';
 import type { FloorPatient } from '@/domain/floorList/report';
 
 const ROLE_LABEL: Record<FloorRole, string> = { edit: 'Lihat dan edit', view: 'Lihat saja' };
@@ -263,8 +267,8 @@ export function MembersPanel({
         <div className="space-y-5">
           <Group title="Nama dan residen">
             <Section
-              title="Roster junior lantai"
-              hint="Nama dari SOAP atau list yang ditulis sedikit berbeda ditampilkan sesuai ejaan di sini. Chief diisi di header."
+              title="Residen lantai"
+              hint="Junior yang dinas di lantai ini pada jam dinas. Hanya mereka yang mendapat pasien dari Bagi pasien (tab Analisis). Nama dari SOAP atau list yang ditulis sedikit berbeda ditampilkan sesuai ejaan di sini. Chief diisi di header."
             >
               {editor ? (
                 <ChiefsField
@@ -276,6 +280,23 @@ export function MembersPanel({
                 />
               ) : (
                 <p className="text-xs">{chiefsOf(floor.juniors).join(', ') || '—'}</p>
+              )}
+            </Section>
+
+            <Section
+              title="Bukan residen lantai ini"
+              hint="Residen yang hanya jaga di lantai ini (mis. jaga malam) dan tidak dinas di sini besok. Namanya tetap dikenali, tetapi pasiennya ikut dibagi ke residen lantai."
+            >
+              {editor ? (
+                <ChiefsField
+                  label="Residen jaga"
+                  id="floor-guest-input"
+                  noun="residen jaga"
+                  chiefs={chiefsOf(floor.guestJuniors)}
+                  onChange={(next) => run(() => writeGuestJuniors(floor.id, next.join(', ')))}
+                />
+              ) : (
+                <p className="text-xs">{chiefsOf(floor.guestJuniors).join(', ') || '—'}</p>
               )}
             </Section>
 
@@ -302,6 +323,12 @@ export function MembersPanel({
             >
               <MarksField floorId={floor.id} marks={floor.marks} editable={editor} />
             </Section>
+            <Section
+              title="Lencana pasien baru"
+              hint="Muncul sendiri pada pasien yang belum ada di list shift sebelumnya (pasien baru atau pindahan), seperti SOAP baru. Hanya di layar, tidak ikut dicetak."
+            >
+              <NewBadgeField floor={floor} editable={editor} onSave={(badge) => run(() => writeNewBadge(floor.id, badge))} />
+            </Section>
           </Group>
 
           <Group title="Ganti chief">
@@ -315,6 +342,12 @@ export function MembersPanel({
                 onAdd={(iso) => run(() => addHoliday(floor.id, iso))}
                 onRemove={(iso) => run(() => removeHoliday(floor.id, iso))}
               />
+            </Section>
+          </Group>
+
+          <Group title="Analisis">
+            <Section title="Pengecekan" hint="Daftar tambahan di tab Analisis. Tersimpan di akun Anda, tidak mengubah tampilan anggota lain.">
+              <AnalysisChecksField />
             </Section>
           </Group>
         </div>
