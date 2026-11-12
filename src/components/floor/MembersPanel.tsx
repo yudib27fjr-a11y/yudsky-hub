@@ -164,10 +164,12 @@ export function MembersPanel({
           {problem}
         </Callout>
       ) : null}
-      <p role="status" aria-live="polite" className="h-4 px-1 text-xs text-fg-muted">
+      {/* Takes room only while it has something to say (12 Nov 2026): an empty 16 px line plus its gap sat as a dead band under the tabs. */}
+      <p role="status" aria-live="polite" className={saved ? 'px-1 text-xs text-fg-muted' : 'sr-only'}>
         {saved}
       </p>
 
+      {/* Two columns from 1024 px again (12 Nov 2026, build 12.2): one 48 rem column left the right half of a desk screen empty. */}
       <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
         <Group title="Tim">
           <Section title={`Anggota (${floor.memberIds.length})`}>
@@ -176,7 +178,7 @@ export function MembersPanel({
                 const name = floor.names[member] || 'Anggota';
                 const current = memberRole(floor, member);
                 return (
-                  <li key={member} className="flex flex-wrap items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm">
+                  <li key={member} className="flex flex-wrap items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm">
                     <span className="min-w-0 flex-1 truncate">
                       {name}
                       {member === uid ? ' (saya)' : ''}
@@ -188,7 +190,7 @@ export function MembersPanel({
                           aria-label={`Peran ${name}`}
                           value={current}
                           onChange={(event) => run(() => setMemberRole(floor.id, member, event.target.value as FloorRole), 'Peran diubah ✓')}
-                          className="min-h-tap rounded-lg border border-border bg-surface px-2 text-xs"
+                          className="min-h-tap rounded-lg border border-border bg-surface px-2 text-xs [@media(pointer:fine)]:min-h-9"
                         >
                           <option value="edit">{ROLE_LABEL.edit}</option>
                           <option value="view">{ROLE_LABEL.view}</option>

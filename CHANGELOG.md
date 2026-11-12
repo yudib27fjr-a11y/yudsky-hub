@@ -5,6 +5,23 @@ Catatan teknis lengkap (akar masalah, perbaikan) ada di CHANGES.md.
 
 Entri teratas harus versi yang sedang dirilis; tes gagal bila belum ditulis.
 
+## `2026-11-12.2`
+- **Bagian atas List Maker rapi lagi dengan banyak chief.** Di layar lebar, Chief Bangsal dan Chief kini satu baris sendiri di bawah list dan tanggal. Kotak Chief memakai sisa lebar layar, jadi belasan chip chief mengalir ke samping, bukan menumpuk tinggi dan membuat celah kosong di kiri dan kanan.
+- **Per DPJP kembali menampilkan semua DPJP**, termasuk yang belum punya pasien di lantai, seperti sebelumnya. Baris "Tanpa pasien" dihapus.
+- **Kotak SOAP berwarna (H-1 merah, pulang hijau) terbaca di semua tema.** Teks abu-abu (inisial DPJP, RM, waktu laporan), chip Junior/Chief, dan tombol Update SOAP, Salin, Atur pasien kini punya warna dan garis tepi yang menyesuaikan warna kepala kotak, termasuk di tema gelap dan Senja.
+- **Analisis lebih rapi.** Kartu "Hari ini, per pasien" kini tersusun rapat dalam kolom tanpa lubang, dan daftar panjang (mis. Belum SOAP) tampil penuh tanpa gulir di dalam kotak. Jarak antarbagian lebih rapat.
+- **Setelan kembali dua kolom di layar lebar**, dan baris anggota lebih ringkas.
+
+## `2026-11-12.1`
+- **List Maker lebih lega dan lebih mudah dibaca.** Bagian atas kini satu baris: list, tanggal, chief, Catatan Visite, dan Panduan. Di ponsel baris ini digeser ke samping, dan chief dibuka dengan satu chip. Pasien pertama kini terlihat di layar pertama ponsel.
+- **Tombol Denah · Per DPJP · Residen tidak lagi menutupi isi halaman.** Tombolnya pindah ke bilah yang menempel di atas, bersama Shift sebelumnya (di ponsel: Shift sebelumnya ada di tombol **⋯**). Di Denah ponsel, pencarian menjadi ikon kaca pembesar.
+- **Denah di ponsel terbaca tanpa dicubit.** Denah kini digambar selebar layar: tiap kamar menulis nomor bed, nama, dan kode DPJP. Baris lengkap tetap ada saat pasien diketuk. Bed kosong ditulis sebagai jumlah ("3 kosong"), bukan "1. 2. 3." kosong. DPJP tanpa pasien di Per DPJP kini satu baris "Tanpa pasien", bukan kotak kosong.
+- **Saran terlipat jadi satu baris** yang menyebut semua saran dan jumlahnya. Ketuk **Tinjau** untuk membukanya; pilihan buka/tutup diingat di perangkat ini.
+- **Baris pasien di tab List** kini menulis kamar, nama, dan umur di baris pertama, lalu RM, kode DPJP, residen, dan catatan di baris kedua. Di layar lebar barisnya menjadi tabel. Tombol Atur menjadi **⋯**. Lencana "Pasien baru" kini titik berwarna, dengan jumlahnya di judul list. Teks identitas yang ditulis tidak berubah.
+- **Pratinjau WhatsApp** kini dibuka dengan tombol, jadi list memakai lebar layar penuh saat pratinjau ditutup. Tombol Tempel di tab List dihapus (pakai tab **Tempel**).
+- **Di ponsel, Salin teks dan Cetak ada di tombol ⋯**, dan tombol simpan bertuliskan "Simpan 04.00".
+- **Visite DPJP:** Dx, Tx, dan Plan berdampingan di layar lebar. **Analisis:** bagian yang kosong dikumpulkan dalam satu baris "Kosong hari ini". **Setelan:** satu kolom, tanpa celah kosong di atas. Tombol kirim/cetak tidak tampil di Setelan dan Riwayat.
+
 ## `2026-11-11.7`
 - **Visite DPJP (tab baru di List Maker).** Pilih DPJP yang sedang visite: pasiennya tampil sesuai urutan rute visite, masing-masing dengan Dx, Tx, dan Plan yang diambil dari SOAP apa adanya (blok TS tidak ikut). Pasien KJS ikut dan diberi tanda KJS. Ketuk pasien untuk membuka SOAP lengkap; Salin memberi ringkasannya sebagai satu pesan WhatsApp.
 - **Bagi pasien: H-1 dan pulang hari ini terlihat.** Kartu pasien dan daftar di papan tiap residen kini menampilkan chip H-1 (merah) atau Pulang (hijau), dan tiap papan menulis berapa pasiennya yang pulang hari ini dan H-1.

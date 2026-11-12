@@ -1,5 +1,63 @@
 # Plano — CHANGES
 
+## `2026-11-12.2` — List Maker fixes after 12.1: two-row head, every DPJP box, legible tinted SOAP header, Analisis/Setelan spacing
+
+Avi tested 12.1 with real data (one list: 14 chiefs, 25 patients, 6 members) at ~1900 px, dark theme. Reproduced on the emulator with invented names.
+
+- **Root causes.**
+  - *Head.* From 640 px the list chips, date, both chief fields and the tools were one `flex-wrap items-center` row, the chief fields put in it with `sm:contents`. The Chief box (`sm:min-w-[12rem] sm:flex-1`) was squeezed to the space left on its line (~270 px), so 14 chips wrapped into ~8 rows (~350 px tall), and `items-center` floated every other item in the middle of that height.
+  - *Per DPJP.* 12.1 deliberately drew only DPJPs with patients (`withPatients`) and listed the rest on one line; the owner wants every box, as on the sheet.
+  - *Tinted SOAP header.* 11.7 changed only the header's background (`--note-red|green` 16% over `--surface`). The tokens on top of it did not follow: `--fg-faint` fell to 2.5:1 (light) / 3.3:1 (dark) / 4.1:1 (Senja) on the tint, and `--border` to ~1.0:1, so the button and chip outlines vanished.
+  - *Analisis.* The today grid was `items-start` with empty Blocks removed: each row started under its tallest card, and a long Block scrolled inside `max-h-64`.
+  - *Setelan.* 12.1 made it one `max-w-3xl` column, leaving half of a wide screen empty.
+- **Fixes.**
+  - `ListMakerHeader`: the chief fields leave the first row; from 640 px they are their own `flex items-start` row: Chief Bangsal `sm:w-64 sm:shrink-0`, Chief `sm:flex-1` (min-width removed). Phone (<640) unchanged: one sideways strip, the summary chip opening the fields below.
+  - `FloorDenah`: maps `order` again (no `withPatients`/`withoutPatients`, no "Tanpa pasien:" line), grid back to stretch; empty boxes keep `min-h-10`.
+  - `SoapFloat`: `tintedHeader(flag)` sets, on the header only, `--fg-muted` and `--fg-faint` = `--fg` mixed 78% toward the header tint, `--border` = flag 45% over surface, and `--chip-bg` = flag 6% over surface. The Junior/Chief chips use `bg-[var(--chip-bg,var(--surface))]`, the header buttons `bg-[var(--chip-bg,transparent)]` (`HEADER_BUTTON`). Untinted headers look as before.
+  - `scripts/check-contrast.mjs`: new block for the float header (fg, muted, muted on chip ≥ 4.5:1; border ≥ 1.3:1) for red and green in light, dark and Senja. Lowest text: Senja green muted 5.03:1.
+  - `AnalysisPanel`: the today cards are CSS columns (`columns-1 sm:columns-2 lg:columns-3`, `break-inside-avoid`, `mb-3`), Block lists no longer capped at `max-h-64`; panel `space-y-8` → `space-y-6`. "Kosong hari ini" kept. Reading order in the cards is now down each column, not across rows.
+  - `MembersPanel`: `lg:grid-cols-2 lg:items-start` again; the empty status line stays `sr-only`; member rows `py-1.5`, role select `min-h-9` on a fine pointer.
+- **Firestore cost.** None: no read, listener or write added or changed. Layout and CSS variables only.
+- **Not done.**
+  - The sticky tab bar and Denah toolbar spacing were checked but not changed.
+  - The `hangat`/`pekat` surface variants are not in the new contrast block (only the three theme blocks).
+  - Not checked: a real ward device, 360 px, keyboard-only use, a viewer account.
+
+## `2026-11-12.1` — List Maker layout: one-line head, pinned Denah jumps, compact phone denah, readable rows
+
+Avi (12 Nov): "a lot of overlap, spacing/padding issues, empty spaces, non-human UI" in the List Maker. Reviewed in the emulator with 18 invented patients at 390 px (dark) and 1366 px (light); a before/after mockup was approved ("Build all three batches").
+
+- **Root causes.**
+  - *Overlap.* `JumpBar` was `position: fixed` at the bottom right. Nothing reserved room for it, so it covered whatever scrolled under it: Saran's "Tandai semua" and the usul H-1 heading on a phone, the right-hand rooms on a desk.
+  - *First patient on screen 2.* The head was three rows on a phone (list strip; date + Catatan Visite; folded chiefs), then tabs + search, then Saran open by default with one chip per row (12 proposals ≈ 900 px).
+  - *Unreadable phone denah.* The 880 px desk plan was scaled to fit (≈ 0.41 at 390 px), so the 12 px lines rendered near 5 px.
+  - *Empty space.* The List tab kept a 24 rem column for a collapsed `<details>` preview. Visite cards stacked Dx/Tx/Plan in the left third. Analisis Blocks rendered "—" and stretched to their row's height (grid `align-items: stretch`). Per DPJP drew every DPJP in `LIST_DPJP_ORDER`, with or without patients. RoomBox drew a numbered empty line per free bed. MembersPanel kept an empty `h-4` status line.
+  - *"Non-human" rows.* `PatientRowText` printed `identity` verbatim (name/DOB/age/RM), and the per-row bordered "Atur ▾" took ~40 % of a phone row.
+- **Head (`ListMakerHeader`).** One line: list chips, date (`DateField`, pill on a phone), chiefs, then `actions` (Panduan, now ghost; Catatan Visite). Below 640 px the line scrolls sideways and the chiefs fold behind one summary chip (`chiefsOpen`, remembered as before) that opens both fields below. From 640 px the line wraps and the chief fields are inline (`ChiefsField inline`: label inside the box, placeholder "nama"). The `onGuide` prop and its phone-only Panduan chip are gone (Panduan is in `actions` at every width).
+- **Pinned bar.** `DenahJumps` (exported from `FloorDenah`, replaces `JumpBar`) sits in `ListMakerTabs` on the Denah tab. "Per DPJP" reads "DPJP" below 640 px. On a phone's Denah the search folds to an icon (`searchOpen`; stays open while it has text). Shift sebelumnya is `shiftToggle('bar')` in the bar from 640 px and `shiftToggle('menu')` at the top of the phone ⋯ menu (`ListActions menuStart`). `FloorDenah` lost `jumpStart`.
+- **`ListActions`.** Below 640 px Salin teks and Cetak share one ⋯ popover (`printItems` reused by both popovers). Simpan reads "Simpan 04.00" up to 1280 px, then "Simpan edisi". With `tight` (the phone Denah row) it shows the time only. The actions are not passed on Setelan and Riwayat.
+- **Compact denah.** Below 600 px `DenahCanvas` draws at the container width (`drawWidth`, `fit` = 1; a pinch or double tap goes up to `MAX_ZOOM`). It provides `Compact` and `data-compact`, so `PatientButton` (in-room lines only) shows `bed · name · DPJP code` with `SoapBadge compact` dots, and the full identity as the title. Grid columns use `minmax(0, …)` so long names truncate instead of widening the plan (the first try overflowed to the right). 600-879 px keeps the scaled desk plan.
+- **Empty beds and DPJPs.** `RoomBox` lists occupied beds only (each keeps its bed number) and writes "n kosong" / "kosong". Per DPJP draws DPJPs with own or KJS patients; the rest are one "Tanpa pasien:" line.
+- **Saran.** Folded by default (`readOpen` is true only when '1' is stored). Folded, the line names each group with its count and ends "Tinjau ›".
+- **List tab (`ListPanel`).**
+  - `PatientRowText` is one grid: phone = room cell spanning two lines, "name · age" / "RM · code · residents · notes". From 1024 px the inner wrappers are `display: contents`, so the same cells become the `COLUMNS` table (header row added).
+  - `ageOf(identity)` reads "N tahun|thn|th" for display only. `identity` is the row's title and is never rewritten.
+  - The Atur toggle is an icon Button (⋯, `aria-label` "Atur <name>").
+  - The preview is a toggle button. The side column renders only while the preview or the pulang/pindah note is shown.
+  - The List-header Tempel button is gone, and so is `PasteFloat.tsx` (file deleted; it had no other caller). The Tempel tab is unchanged.
+- **Pasien baru.** `NewDot` (in `SoapBadge.tsx`) draws the badge as a dot in the list's colour, with the label for screen readers and as the title. The List header shows "● n <label>".
+- **Visite, Analisis, Setelan.**
+  - Visite: from 1024 px each card is `14rem | Dx | Tx | Plan`.
+  - Analisis: `Block` returns null when empty unless renaming. The empty names are one "Kosong hari ini:" line (same order as the grid), and the grid is `items-start`.
+  - Setelan: one column (`max-w-3xl`), and the status line is `sr-only` while empty.
+  - Panduan lists Visite DPJP among the tabs and mentions the phone ⋯.
+- **Firestore cost.** None: no read, listener or write added or changed. Layout only, plus two device-only flags (the Saran fold already existed; the search fold is in memory).
+- **Not done.**
+  - Saran's open state on a phone still puts one chip per row.
+  - The centre column of the compact denah truncates "411 Super VIP" names.
+  - The three label styles inside Setelan's cards were not unified.
+  - Not checked: light/Senja on a phone, 360 px, the Riwayat and Tempel tabs, the SoapFloat windows over the new rows, a viewer account, keyboard-only use of the new controls, or a real ward device.
+
 ## `2026-11-11.7` — Visite DPJP tab, H-1/Pulang on Bagi pasien, SOAP float header by status
 
 Avi (11 Nov, screenshot of the floating SOAP box): show H-1 / pulang hari ini in Bagi pasien; a visite summary per DPJP (patients in visit order with Dx, Tx, Plan); colour the float's header by status and make junior/chief easy to find.
