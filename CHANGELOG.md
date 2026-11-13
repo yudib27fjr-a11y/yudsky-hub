@@ -5,6 +5,85 @@ Catatan teknis lengkap (akar masalah, perbaikan) ada di CHANGES.md.
 
 Entri teratas harus versi yang sedang dirilis; tes gagal bila belum ditulis.
 
+## `2026-11-13.8`
+- **Pratinjau slide memenuhi panelnya.** Di layar lebar, slide kini diskalakan menjadi yang terbesar yang muat di panel pratinjau, baik lebar maupun tinggi, dan diletakkan di tengah kanvas (seperti PowerPoint), bukan hanya mengikuti lebar. Bila panel pengaturan dilipat, slide memakai seluruh lebar yang ada.
+
+## `2026-11-13.7`
+- **Nama file Slide MZ:** sekarang "PPT - Nama Pasien - 15-10-2026.pptx". Tanda garis miring tidak boleh ada di nama file, jadi tanggalnya memakai tanda hubung.
+- **Pratinjau slide lebih besar.** Daftar slide dan panel pengaturan dipersempit, dan lebarnya tidak lagi ikut membesar saat ukuran teks aplikasi diperbesar, sehingga pratinjau tidak terjepit. Tombol baru **Sembunyikan panel / Tampilkan panel** melipat panel pengaturan supaya slide memakai seluruh lebar.
+
+## `2026-11-13.6`
+- **Slide MZ: foto dan kotak teks menempel otomatis (snap) seperti PowerPoint.** Saat digeser, tepi dan tengah foto atau kotak teks menempel ke tepi dan tengah slide, ke judul, dan ke tepi dan tengah objek lain; garis putus-putus oranye menunjukkan garis yang dipakai. Saat diubah ukurannya, tepi kanan dan bawah ikut menempel. Tahan **Alt** untuk mematikan snap sementara.
+- **Slide MZ: tampilan editor dirapikan.** Ruang kerja kini tiga panel yang pas di layar tanpa menggulir halaman: daftar slide (kiri), pratinjau (tengah), dan pengaturan slide (kanan, hanya setinggi isinya). Tiap panel digulir sendiri. Baris atas dipadatkan: "Slide tinggi (4:3)" jadi kotak centang kecil (menampilkan jumlah slide yang terlalu panjang), tombol tambah (Gambar, Teks, CPPT, Impor) dikelompokkan terpisah dari Perbarui dan Unduh, dan kotak isian lebih rapat. Di layar sedang, pratinjau dan pengaturan ditumpuk dalam satu panel; di ponsel tetap berderet ke bawah.
+
+## `2026-11-13.5`
+- **Slide MZ: daftar slide bisa di-scroll sendiri.** Daftar slide di kiri kini menempel di layar dan punya gulir sendiri, jadi tidak ikut hilang saat halaman digulir dan tidak keluar batas bila slide banyak. Kontrol naik / turun / sembunyikan hanya muncul di slide yang sedang dipilih supaya daftar tetap ringkas, dan slide yang dipilih otomatis terlihat di daftar.
+- **Slide teks: teks kini kotak teks yang bebas digeser.** Di pratinjau, seret kotak teks ke mana saja, dan tarik titik di sudutnya untuk mengubah lebar dan tinggi kotak (bebas, tidak harus proporsional). Ukuran teks menyesuaikan kotaknya; **Reset posisi** mengembalikannya ke posisi bawaan.
+
+## `2026-11-13.4`
+- **Pelimpahan DPJP per hari.** Setelan → Tampilan list → "Pelimpahan DPJP": pilih tanggal, DPJP yang cuti dan penggantinya. Pada hari itu kode DPJP di list, denah, Salin teks, list pendek, Word dan PDF tertulis seperti **AFG->ZD**. Pasien tetap di kotak DPJP aslinya, dan hari lain tidak berubah.
+
+## `2026-11-13.3`
+- **Slide tinggi (opsional) untuk SOAP panjang.** Di editor Slide MZ ada pilihan **Slide tinggi (4:3)**. Bila dicentang, semua slide di deck jadi lebih tinggi (lebar sama), sehingga SOAP atau slide CPPT yang panjang muat tanpa mengecilkan teks. Ini berlaku untuk seluruh deck, bukan satu slide saja (satu file PowerPoint hanya punya satu ukuran slide). Tanda "terlalu panjang" memberi petunjuk bila perlu. Tabel SOAP tetap memakai tinggi baris judul yang sama; tambahan tinggi masuk ke isi.
+
+## `2026-11-13.2`
+- **Slide teks kini menyesuaikan ukuran teks seperti slide referensi.** Teks dibungkus di dalam kotak dan mengecil dari 24 pt sampai muat (batas bawah 8 pt), jadi tidak lagi terpotong di bawah slide. Ukuran bisa diatur sendiri dengan **A−** / **A+** (atau kembali ke **Otomatis**), dan perataan bisa **Rata kiri** atau **Tengah**. Bila ukuran pilihan terlalu besar, slide diberi tanda "terlalu panjang".
+- **Slide CPPT (ketik bebas).** Tombol baru **Slide CPPT** menambah slide berkolom Identitas / Anamnesis dan Pemeriksaan Fisik / Diagnosis dan Terapi yang diisi dengan mengetik sendiri (tanggal bisa dipilih), untuk hari yang tidak ada di catatan Plano atau catatan yang ditulis di tempat lain. Ukuran teksnya menyesuaikan seperti slide SOAP.
+
+## `2026-11-13.1`
+- **Tautan Slide MZ juga di panel samping.** Kartu DPJP di panel Pasien (tampilan dengan panel samping) kini punya baris **Slide → Slide MZ ›**, bukan hanya baris DPJP di atas catatan.
+- **Slide SOAP lebih rapi:** hanya judul bagian utama (S, O, Diagnosis, Terapi, Plan) yang ditebalkan; sub-judul seperti "Faktor Risiko Kardiovaskular" dan "Premedikasi pra-tindakan" ditulis biasa. Judul "Mohon izin kami assess dengan" dan "Mohon izin kami terapi dengan" ditulis "Diagnosis:" dan "Terapi:" di slide. Catatan SOAP tidak berubah.
+
+## `2026-11-12.14`
+- **Slide MZ: PowerPoint harian untuk pasien Prof. MZ.** Di halaman pasien yang ber-DPJP MZ, baris "Kirim sendiri ke grup Prof MZ" kini punya tautan **Slide MZ ›**. Plano menyusun slide sendiri dengan tata letak yang sama seperti slide yang biasa dikirim (judul, satu slide SOAP per hari rawat dengan kolom Identitas / Anamnesis dan Pemeriksaan Fisik / Diagnosis dan Terapi, slide gambar, tabel laboratorium, Terima kasih), dengan warna baru.
+- **Gambar penunjang:** tambahkan foto EKG, foto thorax, echo, lab, luka, laporan tindakan atau lainnya. Satu slide memuat 1 sampai 4 foto atau foto + teks. Foto bisa digeser dan diubah ukurannya, boleh keluar dari slide; judul slide tetap di atas.
+- **Edit di Plano:** teks SOAP di slide, urutan slide, sembunyikan slide, dan isi tabel lab bisa diubah. Perubahan hanya untuk slide; catatan SOAP tidak berubah. Teks yang terlalu panjang dikecilkan sampai 9 pt, lalu slide diberi tanda "terlalu panjang".
+- **Lanjutkan slide lama:** pasien titipan yang sudah punya slide? Pilih "Lanjutkan dari .pptx", lalu slide SOAP, gambar dan tabel lab dari file itu dibangun ulang dalam gaya yang sama.
+- **Tersimpan di perangkat ini saja** (belum sync). Saat pasien diarsipkan, slide dan gambarnya dihapus dari perangkat ini setelah peringatan.
+
+## `2026-11-12.13`
+- **Salin list pendek.** Tombol baru "Pendek" di samping Salin teks (di ponsel: menu ⋯ → Salin list pendek) menyalin list WhatsApp versi ringkas: judul "List pasien pendek" dengan hari, tanggal dan jam, jumlah Total / Follow up / Non-Follow Up, lalu satu baris per pasien (kamar, identitas, kode DPJP, residen) per DPJP, tanpa assess, terapi dan plan, dengan garis pemisah dan kalimat penutup. Salin teks yang biasa tidak berubah.
+
+## `2026-11-12.12`
+- **SOAP lengkap pasien Trio kini tanpa pembuka, nama, DPJP, dan penutup.** Yang dibuang dari teks list: baris salam dan "mohon izin melaporkan … atas nama:", baris nama (sudah ada di header pasien), baris DPJP (utama, pelimpahan, GH, Pulmo, dll.), Chief dan Junior, serta baris penutup "Selanjutnya mohon arahan dokter. Terima kasih" dengan variasi ejaannya. Isi klinisnya tidak diubah.
+
+## `2026-11-12.11`
+- **SOAP lengkap pasien Trio di list WhatsApp.** Setelan → Tampilan list kini punya pilihan "SOAP lengkap pasien Trio". Bila aktif, pasien AFM, AFG dan ZD ditulis dengan SOAP lengkapnya di teks list (Salin teks), bukan hanya assess, terapi dan plan. Mati secara bawaan, dan berlaku untuk semua anggota list.
+- Hitungan pasien per DPJP di tampilan list tidak lagi ikut menghitung baris bernomor di dalam SOAP.
+
+## `2026-11-12.10`
+- **Laporan pasien Lantai 6 kini masuk ke list Lantai 5.** Tempel SOAP "PJT lantai 6 kamar 604" dan pasien dibaca, lalu muncul di kotak "LANTAI 6" pada denah. Sebelumnya laporan itu dianggap lantai lain dan tidak disimpan.
+- **Denah Lantai 5 kini bernama "PJT Lantai 5 dan 6"** di pilihan Denah, judul denah, Word dan cetak.
+- **Perbaikan kamar 508 A dan 508 B:** pasien di kamar itu kini benar-benar masuk ke kotaknya di denah (sebelumnya kunci kamar tidak cocok dengan yang dibaca dari SOAP).
+
+## `2026-11-12.9`
+- **PJT Lantai 5 muncul di pilihan Denah saat membuat list baru.** Sebelumnya hanya Lantai 4 yang bisa dipilih. Pasien Lantai 6 tidak punya denah sendiri: mereka ada di kotak "LANTAI 6" pada denah Lantai 5.
+
+## `2026-11-12.8`
+- **Denah PJT Lantai 5 ditambahkan.** List Maker kini menggambar Lantai 5 sesuai lembar di dinding: 510 dan 511 di atas, kamar 509–502 di kiri (508 A dan 508 B berdampingan), 512–519 di kanan, dan 501 Super VIP di tengah. Jumlah bed tiap kamar mengikuti lembar, dan sisi kiri dan kanan sama lebar.
+- **Kotak Lantai 6 di tengah denah.** List Lantai 5 juga memuat pasien Lantai 6; mereka kini ada di kotak "LANTAI 6" (tampil di layar, Word, dan cetak), bukan di "Di luar denah".
+- **Urutan visite Lantai 5** searah jarum jam: 510, 511, 512–519, 501, 502–507, 508 A, 508 B, 509.
+
+## `2026-11-12.7`
+- **Denah di HP kembali seperti dulu.** Denah digambar selebar layar desktop lalu diperkecil agar muat, dan bisa dicubit dua jari atau diketuk dua kali untuk memperbesar. Tampilan ringkas yang dipakai sejak 12.1 dihapus.
+- **Label Pasien baru tetap berwarna** di Denah, sama seperti di List.
+
+## `2026-11-12.6`
+- **Kolom Residen tidak lagi menimpa KJS BTKV di tab List.** Nama chief yang panjang kini turun ke baris berikutnya di dalam kolomnya.
+- **Lencana pasien baru (pasbar/pasper) lebih jelas.** Di List dan Denah layar lebar, titik kecil diganti label berwarna dengan teksnya. Di Denah ponsel tetap titik.
+- **Kamar di kolom tengah Denah ponsel (mis. 411) lebih lebar,** jadi nama tidak lagi pecah per huruf.
+
+## `2026-11-12.5`
+- **Nama tidak terpotong lagi di Denah ponsel.** Nama pasien dan kode DPJP di kotak kamar kini turun ke baris berikutnya bila panjang, bukan berakhir dengan "…".
+- **Nama chief terbaca utuh di tab List** (layar lebar). Kolom Residen kini turun ke baris berikutnya, bukan "dr. Avi / dr. ...".
+
+## `2026-11-12.4`
+- **Nama pasien di tab List terbaca utuh lagi.** Nama kini ditulis pertama dan tidak dipotong. Chip Pulang dan SOAP pindah ke bawah nama bila tempatnya tidak cukup, dan kolom Pasien lebih lebar.
+
+## `2026-11-12.3`
+- **Kotak kamar di Denah kembali menulis setiap bed**, di ponsel dan layar lebar. Bed kosong ditulis "2. -" di tempatnya, dan kamar satu bed juga bernomor "1.". Hitungan "n kosong" dihapus, jadi letak bed kosong terlihat lagi seperti di lembar bangsal.
+- **Tombol Tempel kembali di tab List.** Kotak Tempel mengambang di atas list, jadi list tetap terbaca dan langsung berubah saat tempel disimpan. Baru: kursor langsung di kotak pesan, penjelasannya satu baris, **Esc** menutup kotak, dan **Kecilkan** melipat kotak jadi satu baris tanpa menghapus pesan yang sudah ditempel.
+
 ## `2026-11-12.2`
 - **Bagian atas List Maker rapi lagi dengan banyak chief.** Di layar lebar, Chief Bangsal dan Chief kini satu baris sendiri di bawah list dan tanggal. Kotak Chief memakai sisa lebar layar, jadi belasan chip chief mengalir ke samping, bukan menumpuk tinggi dan membuat celah kosong di kiri dan kanan.
 - **Per DPJP kembali menampilkan semua DPJP**, termasuk yang belum punya pasien di lantai, seperti sebelumnya. Baris "Tanpa pasien" dihapus.

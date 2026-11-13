@@ -25,13 +25,14 @@ import { NewDot, SoapBadge } from './SoapBadge';
 import { PatientControls } from './PatientControls';
 import { ListMessage } from './ListMessage';
 import { ManualPatientSheet } from './ManualPatientSheet';
+import { PasteFloat } from './PasteFloat';
 import { DischargeChip, FLAG_TEXT } from './DischargeChip';
 
 /**
  * The list's columns from 1024 px (12 Nov 2026): one table row per patient, so the
  * full width is used. Below 1024 px the same cells read as two lines.
  */
-const COLUMNS = 'lg:grid-cols-[4.5rem_minmax(0,1.5fr)_3.5rem_6.5rem_3.5rem_minmax(0,1fr)_minmax(0,1fr)]';
+const COLUMNS = 'lg:grid-cols-[4.5rem_minmax(0,2.2fr)_3.5rem_6.5rem_3.5rem_minmax(0,1fr)_minmax(0,1fr)]';
 
 /**
  * List (12.12): the roster on this list date, with every decision by hand —
@@ -72,10 +73,12 @@ export function ListPanel({
     24 rem column of its own, which left a third of a wide screen empty beside the list.
   */
   const [previewOpen, setPreviewOpen] = useState(false);
+  // Tempel over the list (2026-10-16; back in 12.3 after 12.1 dropped it).
+  const [pasteOpen, setPasteOpen] = useState(false);
   const [editing, setEditing] = useState<FloorPatient | null>(null);
   const chiefs = chiefsOf(floor.chiefs);
   const byKey = useMemo(() => new Map(roster.map((p) => [p.key, p])), [roster]);
-  const text = useMemo(() => buildFloorList(view.active, { ward: floor.ward, date, time }), [view.active, floor.ward, date, time]);
+  const text = useMemo(() => buildFloorList(view.active, { ward: floor.ward, date, time, trioFullSoap: floor.trioFullSoap }), [view.active, floor.ward, date, time, floor.trioFullSoap]);
   const all = [...view.active].sort(byRoute(floor.ward));
   const sorted = words.length > 0 ? all.filter((p) => matchesSearch(p, words)) : all;
   const lastEdition = editions[0];
@@ -117,6 +120,11 @@ export function ListPanel({
             </span>
           </Button>
           {editable ? (
+            <Button size="sm" variant={pasteOpen ? 'primary' : 'secondary'} onClick={() => setPasteOpen((v) => !v)} aria-pressed={pasteOpen}>
+              Tempel
+            </Button>
+          ) : null}
+          {editable ? (
             <Button
               size="sm"
               onClick={() => {
@@ -130,6 +138,7 @@ export function ListPanel({
             </Button>
           ) : null}
         </div>
+        {pasteOpen && editable ? <PasteFloat floor={floor} roster={roster} myName={myName} onClose={() => setPasteOpen(false)} /> : null}
         <ManualPatientSheet
           open={manualOpen}
           onOpenChange={setManualOpen}
@@ -305,12 +314,16 @@ function PatientRowText({ patient }: { patient: FloorPatient }): JSX.Element {
         {patient.bed ? `/${patient.bed}` : ''}
       </span>
       <span className="flex min-w-0 items-center gap-1 lg:contents">
-        <span className="flex min-w-0 items-center gap-1.5">
-          {/* A word, not a stripe down the row's edge: the colour is also on the name. */}
-          <DischargeChip patient={patient} />
-          <span className="truncate font-semibold" style={colour ? { color: colour } : undefined}>
+        {/*
+          The name first and never cut (12 Nov 2026, build 12.4, Avi): the chips could not
+          shrink, so a narrow column cut the name to "T..". Now the cell wraps and the
+          chips drop under the name when there is no room beside it.
+        */}
+        <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 lg:py-1.5">
+          <span className="min-w-0 break-words font-semibold" style={colour ? { color: colour } : undefined}>
             {patient.name || patient.identity}
           </span>
+          <DischargeChip patient={patient} />
           <span className="flex shrink-0 items-center">
             <SoapBadge patient={patient} />
           </span>
@@ -326,12 +339,14 @@ function PatientRowText({ patient }: { patient: FloorPatient }): JSX.Element {
           <span className="hidden lg:block" />
         )}
       </span>
-      <span className="truncate text-xs text-fg-muted lg:contents">
+      {/* lg:whitespace-normal (12.6): `truncate`'s nowrap is inherited through `contents`, so the residents ran into the next column. */}
+      <span className="truncate text-xs text-fg-muted lg:contents lg:whitespace-normal">
         <span className="tabular-nums lg:truncate">{patient.rm ? `RM ${patient.rm}` : ''}</span>
         {patient.rm && code ? DOT : null}
         <span className="font-semibold lg:truncate">{code}</span>
         {code || patient.rm ? DOT : null}
-        <span className="lg:truncate">{residents || <span className="text-fg-faint">belum ada residen</span>}</span>
+        {/* Residents wrap on the desk table (build 12.5): truncated, the chief read "dr. Avi / dr. ...". */}
+        <span className="min-w-0 lg:break-words">{residents || <span className="text-fg-faint">belum ada residen</span>}</span>
         <span className="lg:flex lg:min-w-0 lg:flex-wrap lg:items-center lg:gap-1">
           {notes.map((n, i) => (
             <span key={n}>

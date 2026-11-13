@@ -7,6 +7,7 @@ import { formatDmy } from '@/domain/dateDmy';
 import { diffRevision } from '@/domain/format/revisionDiff';
 import { localStamp, newRosterPatient, pasteDiff, readmitFields, updatedReport, type FloorDoc, type PasteDiff, type RosterPatient } from '@/domain/floorList/floor';
 import { splitChat } from '@/domain/floorList/chat';
+import { wardFloors } from '@/domain/denahPlan';
 import { latestOf, onFloorNumber, readReports, type FloorPatient } from '@/domain/floorList/report';
 import { touchedPoint, type RestorePointMeta } from '@/domain/floorList/restore';
 import { SOAP_GROUPS, soapGroups } from '@/domain/floorList/soapParts';
@@ -93,7 +94,18 @@ function PasteChanges({ updated }: { updated: PasteDiff['updated'] }): JSX.Eleme
  *
  * Nobody is ever removed by a paste. The raw paste is never stored.
  */
-export function PastePanel({ floor, roster, myName }: { floor: FloorDoc; roster: readonly RosterPatient[]; myName: string }): JSX.Element {
+export function PastePanel({
+  floor,
+  roster,
+  myName,
+  compact = false,
+}: {
+  floor: FloorDoc;
+  roster: readonly RosterPatient[];
+  myName: string;
+  /** In the floating box (12 Nov 2026): a one-line intro and the cursor already in the box. */
+  compact?: boolean;
+}): JSX.Element {
   const [text, setText] = useState('');
   const [reading, setReading] = useState<Reading | null>(null);
   const [skipFresh, setSkipFresh] = useState<Set<string>>(new Set());
@@ -107,7 +119,8 @@ export function PastePanel({ floor, roster, myName }: { floor: FloorDoc; roster:
   const [undoing, setUndoing] = useState<RestorePointMeta | null>(null);
   // Each Baca's number: only the latest one may show its answer (the lookup is async).
   const readTurn = useRef(0);
-  const floorNumber = /\d+/.exec(floor.ward)?.[0] ?? '';
+  // Lantai 5's list also carries Lantai 6 (its annex box), so both floors are this list's.
+  const floorNumbers = wardFloors(floor.ward);
 
   const read = async (raw: string): Promise<void> => {
     setError('');
@@ -125,7 +138,7 @@ export function PastePanel({ floor, roster, myName }: { floor: FloorDoc; roster:
     const messages = parsed.map((m) => ({ ...m, sender: m.sender === 'You' ? myName : m.sender, sentAt: m.sentAt || now }));
     const all = messages.flatMap(readReports);
     // Another floor (moved out, CVCU) or no floor yet (IGD) is shown, not filed.
-    const reports = all.filter((p) => onFloorNumber(p, floorNumber));
+    const reports = all.filter((p) => floorNumbers.some((n) => onFloorNumber(p, n)));
     const otherFloor = all.filter((p) => !reports.includes(p));
     /*
       The live roster holds only the last 30 days of departures. A key it does
@@ -233,12 +246,16 @@ export function PastePanel({ floor, roster, myName }: { floor: FloorDoc; roster:
 
   return (
     <div className="space-y-3">
+      {compact ? (
+        <p className="text-xs text-fg-muted">SOAP, list dari rekan, atau file Export chat. Ditinjau dulu sebelum disimpan; tidak ada pasien yang dikeluarkan.</p>
+      ) : (
       <p className="text-xs text-fg-muted">
         Tempel pesan SOAP dari grup WhatsApp (boleh banyak sekaligus), <strong>list pasien yang dikirim rekan</strong>, atau
         buka file <strong>Export chat</strong> (.zip atau .txt). SOAP selalu didahulukan; dari list hanya diagnosis,
         terapi dan plan. Perubahan ditampilkan dulu sebelum disimpan. <strong>Tidak ada pasien yang dikeluarkan</strong> oleh
         tempel — pulang/pindah hanya lewat tab List.
       </p>
+      )}
       <textarea
         value={text}
         onChange={(event) => {
@@ -247,7 +264,8 @@ export function PastePanel({ floor, roster, myName }: { floor: FloorDoc; roster:
           // A lookup still running belongs to the old text.
           readTurn.current += 1;
         }}
-        rows={8}
+        rows={compact ? 6 : 8}
+        autoFocus={compact}
         placeholder="Tempel pesan WhatsApp di sini…"
         aria-label="Pesan WhatsApp"
         className="w-full rounded-xl border border-border bg-surface p-3 font-mono text-xs"

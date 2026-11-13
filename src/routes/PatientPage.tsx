@@ -89,11 +89,14 @@ import {
   REPORT_FORMAT_LABELS,
   describeConfig,
   describeDelivery,
+  detectDpjps,
   dpjpById,
   isTrioDpjp,
   primaryDpjp,
   shortDelivery,
 } from '@/domain/dpjp';
+import { hasMz, MZ_ID } from '@/domain/slides/mzLink';
+import { SlideCleanupNotice } from '@/components/slides/SlideCleanupNotice';
 import { SCHEDULE_PERIOD, upcomingPoli, weekdayName } from '@/domain/poli/schedule';
 import { Banner, DpjpSideCard, FindingTag, MarkerChips } from '@/components/patient/PatientPageParts';
 import {
@@ -658,6 +661,11 @@ export default function PatientPage(): JSX.Element {
     [settledBody, patient?.dpjpId],
   );
   const dpjpFormat = dpjp ? settings.dpjpFormats[dpjp.id] : undefined;
+  /** Slide MZ is offered whenever MZ is on any DPJP line (owner, 2026-11-12). */
+  const mzSlides = useMemo(
+    () => dpjp?.id === MZ_ID || hasMz({ dpjpId: patient?.dpjpId, dpjpIds: patient?.dpjpIds }, detectDpjps(settledBody).map((d) => d.id)),
+    [dpjp?.id, patient?.dpjpId, patient?.dpjpIds, settledBody],
+  );
 
   /**
    * The consultant's next two outpatient clinics, from the signed roster.
@@ -1578,9 +1586,29 @@ export default function PatientPage(): JSX.Element {
             */}
             {dpjp?.delivery ? (
               <p className="text-xs text-fg-muted">
-                {dpjp.initials} — {describeDelivery(dpjp.delivery)}
+                {dpjp.initials} —{' '}
+                {dpjp.id === MZ_ID ? (
+                  <>
+                    {describeDelivery({ ...dpjp.delivery, note: '' })} —{' '}
+                    <Link to={`/p/${patientId}/slide-mz`} className="font-semibold text-accent underline underline-offset-2">
+                      Slide MZ ›
+                    </Link>
+                  </>
+                ) : (
+                  describeDelivery(dpjp.delivery)
+                )}
               </p>
             ) : null}
+            {/* MZ co-managing: the slide link even when someone else is the main DPJP (owner, 2026-11-12). */}
+            {dpjp?.id !== MZ_ID && mzSlides ? (
+              <p className="text-xs text-fg-muted">
+                MZ —{' '}
+                <Link to={`/p/${patientId}/slide-mz`} className="font-semibold text-accent underline underline-offset-2">
+                  Slide MZ ›
+                </Link>
+              </p>
+            ) : null}
+            {patient && patient.status !== 'active' ? <SlideCleanupNotice patientIds={[patient.id]} /> : null}
             {isTrioDpjp(dpjp?.id) ? (
               <p className="truncate text-xs font-medium text-accent">
                 {dpjp?.initials} — rencanakan 6MWT (6 minute walk test)
@@ -1706,7 +1734,21 @@ export default function PatientPage(): JSX.Element {
         variant={variant}
         dpjp={dpjp ? { id: dpjp.id, initials: dpjp.initials, name: dpjp.name } : null}
         rows={[
-          ...(dpjp?.delivery ? [{ label: 'Kirim', value: describeDelivery(dpjp.delivery) }] : []),
+          ...(dpjp?.delivery
+            ? [{ label: 'Kirim', value: describeDelivery(dpjp.id === MZ_ID ? { ...dpjp.delivery, note: '' } : dpjp.delivery) }]
+            : []),
+          ...(mzSlides
+            ? [
+                {
+                  label: 'Slide',
+                  value: (
+                    <Link to={`/p/${patientId}/slide-mz`} className="font-semibold text-accent underline underline-offset-2">
+                      Slide MZ ›
+                    </Link>
+                  ),
+                },
+              ]
+            : []),
           ...(dpjpFormat ? [{ label: 'Format', value: describeConfig(dpjpFormat) }] : []),
           ...(isTrioDpjp(dpjp?.id) ? [{ label: 'Rencana', value: 'Rencanakan 6MWT (6 minute walk test)', strong: true }] : []),
           ...(patient.diagnoses.length > 0 ? [{ label: 'Diagnosis', value: patient.diagnoses.join(', ') }] : []),

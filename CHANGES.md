@@ -1,5 +1,214 @@
 # Plano — CHANGES
 
+## `2026-11-13.8` — Slide MZ: slide fits the preview pane both ways
+
+Avi: the preview should fill its pane (screenshot: a 16:9 slide at the pane's width, a third of the pane's height empty under it).
+
+- **Root cause:** the preview was `w-full` with a 16:9 aspect, so only the pane's width limited it. The pane (about 870 × 812 with the settings panel open) is nearly square, so a 16:9 slide at that width leaves about 340 px of empty pane.
+- **Fix (xl only):** the pane is a CSS size container (`[container-type:size]`) with the slide centred on a canvas background, and the slide's width is `min(100cqw, 100cqh × 16/9)` (`× 4/3` for the tall deck), so it is the largest slide that fits both ways. Below xl the pane has no fixed height, so the old full-width behaviour stays. Measured at 1600×900: 846 × 476 with the panel open, 1130 × 636 folded.
+- **Firestore cost:** none.
+- **Not done:** with the panel open the pane is still nearly square, so a 16:9 slide cannot fill it; bands above and below remain (folding the panel or using the tall deck fills more). A floating settings panel over the canvas would use the width better but covers part of the slide; not built. Not checked at medium or phone widths or in the Senja theme.
+
+## `2026-11-13.7` — Slide MZ: file name, bigger preview
+
+Avi: the exported file should be "PPT - Patient Name - Date (15/10/2026)"; the editor's preview ("viewhole") is too small.
+
+- **File name:** `slideMzFileName` → `PPT - <name> - <dd-mm-yyyy>.pptx`. A `/` cannot be in a file name (Windows and Android reject it), so the date keeps the dashes the rest of the app uses; the name still has unsafe characters removed.
+- **Root cause (small preview):** the list and settings columns were `rem` widths (12.5 rem + 21 rem). Avi's text-size setting scales `rem`, so on his screen the settings column was about 450 px and the slide only about 790 px. Now 10 rem and 17 rem, and a "Sembunyikan panel" button folds the settings panel away. Measured at 1600 px: preview 766 → 870 px with the panel open, 1154 px folded.
+- **Firestore cost:** none.
+- **Not done:** the columns are still `rem`, so a very large text-size setting still narrows the slide a little (less than before); the panel state is not remembered between visits; not checked at medium or phone width or in the Senja theme.
+
+## `2026-11-13.6` — Slide MZ: snapping, editor layout rework
+
+Avi: auto-snap for moving images and the text box like PowerPoint; the editor UI is wonky (dead space, loose padding), rework it.
+
+- **Snap (`domain/slides/snap.ts`, pure):** `snapMove` snaps a box's left / centre / right and top / middle / bottom to the slide's edges and centre and to the same lines of the title, the layout frames and the other photos (text box: the title and the default text area); `snapResize` snaps the right and bottom edges (free for a text box; for a picture the closer edge decides the width and the height follows the proportions). Distance is 6 screen pixels, converted to EMU with the slide's rendered width; Alt turns it off. `Draggable` reports the matched lines and `SlidePreview` draws them as dashed accent lines, cleared on release. Keyboard nudges are not snapped.
+- **Layout:** header compacted to one row (back link, title, tall checkbox, grouped quiet add buttons, Perbarui, primary Unduh); the "Slide tinggi" row was removed (its hint lives in the checkbox title and a red "n terlalu panjang" count). Workspace is `list | preview | inspector` at xl (list | preview + inspector stacked at md) in a fixed `100dvh - 5.5rem` height, each pane scrolling itself, so the page never scrolls; the inspector is `self-start` (only as tall as its content) with `xl:!mt-0` against the `space-y` margin that offset it by 12 px. Container widened to `max-w-[110rem]`; paddings and textarea heights reduced (`h-44`).
+- **Checked (emulator, 1600×900):** page scroll 0, list scrolls, inspector 567 px for a text slide and not scrolling; a text box dragged 3 px off the slide centre locked to it and showed one guide, guides gone on release (scripted pointer events, not a real mouse).
+- **Firestore cost:** none.
+- **Not done:** layout not checked at md or phone widths after the change, nor in light or Senja theme; snapping to other objects checked in unit tests only; guide lines not styled per theme; not opened in PowerPoint.
+
+## `2026-11-13.5` — Slide MZ: scrolling slide list, draggable text box
+
+Avi: make the slide list on the left scroll independently (with design care for spacing); make the free-text slide's text a freely draggable text box.
+
+- **List:** `<ol>` is `position: sticky` (top 0.5 rem) with its own scroll and a thin scrollbar on md+, capped at `100dvh - 8rem` and the grid given the same minimum height. First try capped at `100dvh - 2rem`: scrolled to the end, `main`'s bottom padding pushed the list's top 64 px off the screen, because a sticky box cannot leave its container. Measured in the emulator at 1366×800: top stays at 8 px from scroll 300 to the end. Reorder / hide buttons only render on the selected slide (inactive items are thumbnail + label), and the selected slide scrolls into view (`block: nearest`) when it changes, e.g. after adding one. The phone strip is unchanged (horizontal).
+- **Text box:** `TextSlideState.rect` (optional) → `DeckSlide` text `rect`; default is the reference slide's text area. The photo drag code is now one `Draggable` (move, corner handle, arrow-key nudge), used by photos (`aspect` resize) and the text box (`free` resize via `rectAfterBoxResize`, minimum 5 % of the slide width). The size fit (`fitTextPt` / `textFitsAt`) uses the box's own size, so a smaller box shrinks the text and a bigger one grows it; the writer places the text shape at `rect`. Reset posisi in the text editor.
+- **Firestore cost:** none (local deck state only).
+- **Not done:** the SOAP / CPPT table slides are still full-slide tables, not movable. The text box can overlap the boxed title (the title stays on top). Drag checked with synthetic pointer events in the emulator, not with a real mouse or touch; not opened in PowerPoint.
+
+## `2026-11-13.4` — Pelimpahan of the day (AFG->ZD)
+
+Avi: "add the ability to add a Pelimpahan for the day … the DPJP inisial in the list and denah would be like AFG->ZD". Pelimpahan = the main DPJP is on leave (cuti) and another covers.
+
+- **Storage:** `FloorDoc.pelimpahan: string[]`, entries `YYYY-MM-DD:from>to` (DPJP registry ids), added and removed with `arrayUnion`/`arrayRemove` like `holidays`. One leaf write; no new listener or read. `firestore.rules` editor allowlist gains `pelimpahan` (deployed by `firestore-deploy.yml`; until then adding one is refused).
+- **Display:** `effective()` looks up `pelimpahanOn(floor.pelimpahan, date, report.dpjpId)` and sets `FloorPatient.pelimpahan` (the covering DPJP's initials). `dpjpCodeOf` prints `AFG->ZD`, so the list text, short list, Denah, Word, PDF and the search all follow, as every one of them goes through it. The field is also read back in `readPatient`, so a saved edition keeps it.
+- **Filing is unchanged:** the patient stays in AFG's block and counts for AFG; only the printed code changes. A patient held by a division is left alone.
+- **UI:** `PelimpahanField` in Setelan → Tampilan list (date, who is away, who covers, Tambah; upcoming ones with Hapus). Editors only.
+- **Firestore cost:** reads: none added (rides on the list document already listened to; a change re-delivers that one document, about 1 read per open member). Writes: 1 per add or remove.
+- **Not done:** the day is picked in Setelan, not on the List tab. Only the patient's own DPJP is covered (not a KJS consultant). Several covers for one DPJP on one day are not prevented (the first entry wins). Past entries are not pruned. A list text already copied or saved earlier that day is not rewritten. Not checked in the browser or on a ward device.
+
+## `2026-11-13.3` — Slide MZ: optional tall deck (4:3)
+
+Avi: a long CPPT does not fit; asked for height, not two columns. A .pptx has one slide size per file, so a single taller slide is not possible; agreed on an optional deck-wide taller size.
+
+- **What:** `DeckState.tall` (optional) → `Deck.tall`. `geometry.ts` builds the geometry from a slide height (`geometryFor(tall)`, `slideHeight(tall)`, `SLIDE_H_TALL` = 9 144 000 EMU, same width, 4:3). Every rectangle stays a percentage of the slide, so photos, titles and the lab table scale with the height; only the SOAP header row keeps its absolute height, so the extra room goes to the text. `fitSoapFont` and the text-slide fit take the taller body into account; the writer sets `p:sldSz` and the SOAP body row from the deck's height; the preview gets a `tall` prop (aspect 4:3, positions from the same height via a context). One checkbox in the editor, with a hint showing how many slides are flagged.
+- **Firestore cost:** none. Stored in the local deck only.
+- **Not done:** titles and boxed headings are taller too (percent of height), not kept at the 16:9 height. A deck with custom photo positions keeps their absolute positions after toggling. Import does not switch a 4:3 file to tall automatically. Not opened in PowerPoint, not checked in the browser.
+
+## `2026-11-13.2` — Slide MZ: free-text slide fitting, free-text CPPT slide
+
+Avi, from a USG slide and an echo slide he typed: the free-text slide should wrap like the reference slide, with the ability to centre and enlarge the text; and add a free-text CPPT slide.
+
+- **Root cause (cut-off text):** the text slide wrote a fixed 14 pt, and the writer asked PowerPoint to autofit. PowerPoint applies autofit only when someone edits the box, so an opened file kept 14 pt and a long echo report ran off the slide. The reference echo slide stores its shrink (24 pt base, `fontScale`) in the file.
+- **Fix:** `fitTextPt` / `textFitsAt` (`fit.ts`) wrap the text to the box width and pick the largest size from 24 pt down to 8 pt that fits, in `compose`; the writer draws that size with no autofit. `TextSlideState` gained optional `pt` (manual size) and `align` (`left`/`center`); a manual size that cannot fit sets the slide's overflow flag. Editor: A− / A+ (2 pt steps, 8 to 72), Otomatis, Rata kiri / Tengah. Existing text slides have neither field and so fit automatically, left-aligned.
+- **CPPT slide:** `DeckState.cpptSlides` (`{ id, date, col2, col3 }`), composed into the same SOAP-kind slide (same table, same 10.5 to 9 pt fit, same bold headings), placed after the days Plano has notes for, by date; `SlideMeta.cpptId` routes it to its own editor (date, two text boxes). Decks saved before this have no `cpptSlides`; it is optional and read as empty. A new CPPT slide starts with S / O and Diagnosis / Terapi / Plan headings and today's date.
+- **Firestore cost:** unchanged (none).
+- **Not done:** I read "free-text CPPT slide" as the 3-column slide typed by hand; if a different layout was meant, this is the part to redo. The 24 pt base and the character-width estimate (0.45 em) are measured from the reference, not verified against PowerPoint's own wrapping of Gill Sans, so a line may wrap one word earlier or later. Not checked in the browser or opened in PowerPoint.
+
+## `2026-11-13.1` — Slide MZ: side-panel link, heading style; review fixes for .14
+
+Avi, after using .14: the Slide MZ link did not appear in the other panel style; only S, O, Diagnosis and Terapi should be bold; "mohon izin…" headings should read Diagnosis / Terapi.
+
+- **Root cause (link):** the link was added only to the folded DPJP line above the note (`renderDpjpDetails`). The desktop panel draws the same facts through `renderDpjpSide` → `DpjpSideCard` rows, which still printed the delivery note "ada slide tersendiri" as text. Now a "Slide" row with the link; the MZ check (`mzSlides`, any DPJP line) is computed once and used by both.
+- **Bold:** `isSectionLabel` (writer and preview) bolded any short line ending in ":". It now matches only S/O/A/P, Assessment, Diagnosis/Diagnosa, Terapi, Plan/Planning. Plan kept bold as a main heading (not named by Avi; drop it if wanted).
+- **Headings:** `soapColumns` replaces the header prefix of an `a` / `terapi` section whose header contains mohon/izin/ijin with "Diagnosis:" / "Terapi:" in the slide copy only; same-line text kept.
+- **Recorded here, shipped in the .14 commit (whole-change review, each with a failing test first):** IndexedDB writes now resolve on transaction commit (a quota abort after the request succeeded was silently lost); imported photo ids include the patient id (they collided across patients in the shared store); the lab table never ends with zero date columns (PowerPoint repair); the IGD admission entry sorts first and is labelled "IGD" (`compareEntryDates`); local slides are deleted only after the archive write succeeds; an empty title writes one empty paragraph.
+- **Firestore cost:** unchanged (no new reads or writes).
+- **Not done:** review Minors deferred: no flush on `visibilitychange`; deleting an image slide leaves its photos in IndexedDB until archive; photos still encoding when the editor closes become orphans; import notice says "4:3" for any non-16:9 file; archived-patient notice also shows for trashed patients and its delete has no error feedback; preview object URLs can break under StrictMode in dev. Side-panel link not checked in the browser.
+
+## `2026-11-12.14` — Slide MZ (daily PPTX for Prof. MZ's patients)
+
+Avi: Prof. MZ is reported to with a PowerPoint deck every day (updated SOAP plus photos of investigations); automate it. Design choices were his: keep the reference decks' object positions exactly, Palette B colours, no "lanjutan" slide, photos local only (no sync yet), labs as a table, any penunjang image, editing inside Plano, link on the MZ delivery line, delete local slides on archive with a warning, and import + rebuild for handed-over decks.
+
+- **Writer (`domain/slides/pptx.ts`):** hand-written PresentationML in a stored ZIP (`lib/zip`), like the Word export; no dependency. Every shape absolutely placed (no placeholders) at positions measured from 19 reference decks (`geometry.ts`, PowerPoint "Parcel", 16:9). Gill Sans MT. Deterministic output. Opened in PowerPoint desktop via COM without a repair prompt; slide PNGs matched the reference layout.
+- **Composition (`compose.ts`):** title from the patient doc; one SOAP slide per day entry. Columns from `parseSections` boundaries only (`soapColumns.ts`): everything before the first A/Terapi/Plan heading goes in the middle column, the rest on the right; the report frame (greeting, name/RM line, DPJP, Chief/Junior, closing) is dropped by `stripReportFrame`, extracted from the Trio full-SOAP filter (`soapForList` now calls it, behaviour unchanged). Slide text is a copy; edits live in a local `DeckState` with a hash of their source, so a later SOAP change is flagged ("SOAP berubah sejak diedit").
+- **Fit (`fit.ts`):** 10.5 pt down to 9 pt in 0.5 pt steps from a character-width estimate (0.45 em, measured ~0.42 on the reference slides); below the floor the slide is flagged and export asks to confirm.
+- **Lab table (`labTable.ts`):** reads the Lab formatter's `*Laboratorium … (dd-mm-yyyy)*` blocks and their `LABEL value` lines as written; one column per heading date (a block carried into later notes counts once); labels renamed to the slide's (`HGB` → `Hb (g/dL)`, `Ur/Cr` → `Ureum/Kreatinin`, HBsAg + anti HCV joined). No reference ranges, no flags.
+- **Import (`importPptx.ts`):** reads a received .pptx with `zipEntries` (new binary reader in `lib/unzip.ts`; `zipTexts` now uses it). Recognises the SOAP table ("Identitas"), lab table ("Pemeriksaan"), title + picture slides (kind guessed from the caption), text slides, title and closing; anything else becomes "tidak dikenali" text + photos. Review screen with a tick per slide and a name check. Run locally against all 19 reference decks: none failed, every SOAP slide dated. Two problems found and fixed there: dates typed `21- 09-2026` (spaces allowed now), and two SOAP slides with the same date in 9 decks (kept both, key `date#2`).
+- **Storage (`data/slidesLocal.ts`):** new IndexedDB database `visite-slides` (decks + images), separate from `visite-localbase`. Reads never throw; writes raise one notice. Photos re-encoded to ≤2000 px JPEG.
+- **Editor (`routes/SlideMzPage.tsx`, `/p/:id/slide-mz`, lazy):** slide list with up/down and hide, live 16:9 preview from the same geometry, SOAP/image/text/lab editors, photo drag + corner resize + arrow-key nudge (may leave the slide), Reset posisi, add photos (≤4 per slide), add text slide, import, Unduh / Bagikan (`deliverFile`).
+- **Archive:** the single and bulk archive UIs show what local slides will be deleted (with a link to download first) and delete them after archiving; an archived patient that still has local slides (other device) shows a notice with a two-step delete. Nothing deletes on a timer.
+- **Firestore cost (modelled):** open editor = 1 entries read per entry document (`fetchEntryBodies`; grows with length of stay, typically 3–10) plus the patient document listener the patient page already uses; "Perbarui dari SOAP" = the same n again. Writes: 0. Photos, edits, export, import, cleanup: 0. Board and list screens: unchanged.
+- **Not done:** no sync (another device or a covering resident does not see the photos or edits; clearing site data loses them). Gill Sans MT is missing on Android, so line breaks shift in phone viewers. Lab table not yet checked against real exported notes (only formatter-shaped synthetic blocks). Exported deck from the editor checked as a valid PPTX (size, name) in the emulator, not opened in PowerPoint from the editor path; PowerPoint Android, WPS and Google Slides not checked. Hand-typed lab lines with unusual labels show under their own label. Image captions without a year import with no date. The delivery-line link and the archived-patient notice sit inside the DPJP details disclosure. No unit tests for the React components (no testing library); checked in the browser at 1366 and 390 px.
+
+## `2026-11-12.13` — Salin list pendek
+
+Avi: "Add the ability to salin the list whatsapp to be like this also" (a hand-written short list: counts, a block per DPJP with one line per patient, rules, closing).
+
+- **What:** `buildShortList` and `shortLine` in `build.ts`; a second copy button in `ListActions` ("Pendek", and a menu item on a phone). Same patients and order as the long list (`view.active`, visit route). Header "Jumat, 13-11-2026 pukul 04:00" (weekday from `formatLongDate`, dashes, the time's `.` turned into `:`). Line = place / identity / DPJP code / junior (no chief, no A/P). Each DPJP block (empty ones too, like the long list) ends with 47 underscores; closing line last.
+- **Non-Follow Up** = a patient held by a division or tagged `noFollowUp` (the Residen rule); Follow up = total minus that.
+- **Where it differs from the sample:** the sample's header had a stray " ," after "mengirimkan" (dropped); DPJP order follows the app's list order, not the sample's hand order (KS, PT, AHA, AFG, MZ, AHN, ARB, ZD, AFM, IM, PK, MAA, NP, then pediatri) and includes MAA; DPJP titles are written one way ("dr. KS: 1 pasien", "Prof. MZ"), not the sample's mixed spelling; a patient filed under another DPJP as KJS is listed under a "KJS:" line in that DPJP's block, as in the long list.
+- **Firestore cost:** none; text built from the roster already loaded.
+- **Not done:** not saved with an edition (Simpan edisi still stores the long list only), no Word/print version, no per-list setting for the wording. Not checked in the browser or on a phone.
+
+## `2026-11-12.12` — Trio full SOAP without the message's framing
+
+Avi, after seeing a real list with .11: do not copy the whole SOAP for trio. Leave out the name (the header already has it), the opening, the DPJP lines and the closing.
+
+- **What:** `soapForList` in `build.ts` filters `patient.full` line by line. Dropped: the greeting / "mohon izin melaporkan … atas nama" line (`OPENING_LINE`), the name line (equal to the patient's `identity` ignoring `*`, `_` and spaces, or an "RM <this patient's RM>" line containing `/`, only in the first 8 lines), every line starting with DPJP, Chief / Junior lines (first 8 lines, they are in the header too), and the closing "Selanjutnya / Tabe … mohon arahan(nya/ta) … terima kasih" and bare "Terima kasih" lines, wherever they sit (several messages carry the closing after the diagnosis block, before S:). Everything else is untouched, including `_Pasien dikonsulkan…_` notes, TS blocks and labs.
+- **Bug caught while testing:** the line patterns used `^\W*`, which does not skip `_`, so italic DPJP lines (`_DPJP Utama: …_`, the usual WhatsApp style) survived. Now `^[\W_]*`.
+- **Firestore cost:** none; list text only.
+- **Not done:** the filter is by pattern, not by position: an unusual opening or closing wording that matches none of the patterns stays in. A real clinical line that happens to start with "DPJP" or "Terima kasih" would be dropped. Checked with invented messages in tests, not with the real list pasted by Avi. Not checked in the browser.
+
+## `2026-11-12.11` — Trio patients: full SOAP in the list message (Setelan)
+
+Avi: "Add an option in setelan, for trio patients, to include the full soap in the list Whatsapp".
+
+- **What:** `FloorDoc.trioFullSoap` (boolean, default off, stored on `floors/{id}`; absent reads as false). `buildFloorList` takes `trioFullSoap`; for a patient whose DPJP is in `TRIO_DPJP_IDS` (AFM, AFG, ZD) it prints `patient.full` (the whole message) instead of `patient.body` (the A/P), through the same `unbold`, so only the patient's own line is bold. KJS references are unchanged. `ListPanel` and `ListActions` pass the flag, so the copied text, the coloured view and Word-from-text all follow it.
+- **Setelan:** a checkbox under Tampilan list (`MembersPanel`), written by `writeTrioFullSoap` (one leaf write, same as `writeNewBadge`). Editors only; viewers see it disabled. The setting is per list, so every member copies the same text.
+- **Rules:** `trioFullSoap` added to the editor `hasOnly` allowlist in `firestore.rules`. Until `firestore-deploy.yml` has deployed it, the toggle's write is refused (permission denied); nothing else is affected.
+- **Side fix:** `splitFloorList` counted any numbered line as a patient (`1. Mitral…` inside a SOAP, numbered plans). It now counts the bold "*N. …*" lines, and the unbolded ones after "KJS". Needed because a full SOAP is full of numbered lines.
+- **Firestore cost:** reads: none added (the field rides on the list document already listened to; a toggle re-delivers that one document to each open listener, about 1 read per member per toggle). Writes: 1 per toggle.
+- **Not done:** the edition snapshot, Word list and print use the stored list text, so they carry the full SOAP only for lists sent after the option was on. The message includes the SOAP's own greeting and closing lines as written. No length limit or warning; a long list may exceed what WhatsApp accepts in one paste. Not checked in the browser or on a ward device.
+
+## `2026-11-12.10` — Lantai 6 reports in the Lantai 5 list; "Lantai 5 dan 6"
+
+Avi pasted a Lantai 6 SOAP ("PJT lantai 6 kamar 604"): the Lantai 5 list did not register it.
+
+- **Root cause (1):** `PastePanel` took the list's floor number from the ward ("PJT Lantai 5" → `5`) and `onFloorNumber` dropped every report whose floor was `6`, filing it as "another floor". The reader itself was fine (room `604`, floor `6`).
+- **Fix (1):** `wardFloors(ward)` in `denahPlan.ts` returns the ward's own floor plus the plan's annex floor (`['5','6']` for Lantai 5); `PastePanel` accepts a report on any of them. Lantai 4 still takes only `4`. Those patients show in the LANTAI 6 box through the 12.8 annex.
+- **Root cause (2), found while testing:** 12.8 keyed the isolation rooms `508 A` / `508 B`, but the reader produces `508A` / `508B` (`report.ts readPlace`, tested since Oct). A real 508 patient would never have landed in the box. Keys are now `508A` / `508B`, which also changes the printed header to "KAMAR 508A".
+- **Rename:** `WardPlan.label` ("PJT Lantai 5 dan 6") with `wardLabel()`, used in the new-list dropdown, the Denah title and the Word and print titles. The stored ward stays "PJT Lantai 5", so matching and existing lists are unchanged. The nurse-station box still says PJT Lantai 5; the board Denah and file names still use the plain ward.
+- **Firestore cost:** none; the filter runs on messages already read.
+- **Not done:** the real Lt 6 message was not run through the app, only an invented one of the same shape in a test. Other Lantai 6 report shapes (moves, "pindah") are untested. Any Lt 6 room not starting with 6 is not caught. Not checked in the browser or on a ward device.
+
+## `2026-11-12.9` — Lantai 5 in the new-list Denah choice
+
+Avi: "No denah lt 6 option?" The create form showed only PJT Lantai 4.
+
+- **Root cause:** the Denah `<select>` in `ListMakerPage.tsx` had one hardcoded `<option>`. 12.8 added the Lantai 5 plan, but no plan can be picked while the list is hardcoded, so a Lantai 5 list could not be created.
+- **Fix:** `planWards()` in `denahPlan.ts` returns every ward with a plan; the select maps over it, so the next plan appears without touching the form.
+- **Lantai 6:** there is no Lantai 6 plan or sheet; its patients sit in the LANTAI 6 box of the Lantai 5 plan. Not added as an option on purpose.
+- **Firestore cost:** none.
+- **Not done:** the form was not opened in the browser; the default name and ward of a new list are still PJT Lantai 4.
+
+## `2026-11-12.8` — PJT Lantai 5 Denah
+
+Avi gave the PJT Lantai 5 sheet (12-11-2026) and asked for it in List Maker.
+
+- **Root cause of "no Denah":** `wardPlan` only knew PJT Lantai 4, so Lantai 5 fell back to the flowing numeric grid. The layout is data in `src/domain/denahPlan.ts`; adding `PJT_LANTAI_5` to `PLANS` is the whole change, `planLayout`, the screen Denah and the Word denah all read it.
+- **Layout:** header 510 and 511 (6 beds each); left 509, 508 B + 508 A (side by side), 507, 506, 505, 504, 503, 502 (1 bed each); right 512–516 (2 beds), 517–519 (4 beds); centre nurse station (1 row), the Lantai 6 box (6 rows), 501 Super VIP. Eight rows on both sides. Bed counts are the numbered slots on the sheet.
+- **Model changes:** `DenahRoomSlot.beside` puts a room in the previous room's row; `DenahColumn.annex` is a centre box for another floor's patients (room prefix `6`). `RoomCell.slot` became `RoomCell.slots` (one or two rooms). `inAnnex` keeps those patients out of "Di luar denah" on screen, Word and print.
+- **Renderers:** screen puts the pair in one flex cell. Word and print now use a six-column grid (each side and the centre split in two) so 508 A/B and the 510/511 header need no nested tables; both sides are the same width.
+- **Visit route:** clockwise from 510 (Avi): 510, 511, 512–519, 501, 502–507, 508 A, 508 B, 509. The order of 508 A before 508 B was confirmed by Avi.
+- **Tests:** `denahPlan.test.ts` and `denah.test.ts` used Lantai 5 as their "no plan" example; they now use Lantai 6. New tests cover the Lantai 5 rooms, rows, annex, route, and the Word and print tables.
+- **Firestore cost:** none. No reads, writes or listeners changed.
+- **Not done:** a patient recorded as plain room `508` (not `508 A` or `508 B`) lands in "Di luar denah". The annex takes any room starting with 6, so a Lantai 5 room recorded wrongly as 6xx would show there too. Not checked on a ward device or in the browser; Word was only checked as generated XML, not opened in Word.
+
+## `2026-11-12.7` — phone Denah back to the scaled desk plan
+
+Avi: a friend does not like the phone Denah and wants the old one back.
+
+- **What changed:** build 12.1 drew the plan at the phone's own width under 600 px ("compact": bed, name and DPJP code only, dots instead of SOAP words). That mode is removed. The Denah is drawn at 880 px and scaled to fit, as before 12.1, with the same pinch and double-tap zoom, the "Kamar N" headers, full lines and SOAP words.
+- **Removed with it:** the `Compact` context and `COMPACT_BELOW` in `FloorDenah.tsx`, the `group-data-[compact]` grid classes (including 12.6's wider middle column), and the `compact` prop of `SoapBadge`. `NewDot` stays, the List head legend uses it.
+- **Kept:** 12.6's Pasien baru pill now shows in the Denah at every width. 12.5's name wrapping on the List tab is unchanged.
+- **Side effect:** the 12.5 and 12.6 phone-plan fixes (wrapping, room 411 width) no longer apply there, as the compact plan they fixed is gone; on the scaled plan a long name wraps inside its box at 880 px.
+- **Firestore cost:** none. No reads, writes or listeners changed.
+- **Not done:** no ward-device check. Phone text in the plan is small again (about 5 px at 375 px wide before zoom), which is why 12.1 made the compact plan; whether to offer both as a setting is left to the owner.
+
+## `2026-11-12.6` — Residen overlap, visible Pasien baru badge, wider middle column on the phone plan
+
+Avi (desk screenshots, phone screenshot): "dr. Qalby / dr. Did" ran under "KJS BTKV"; the pasbar/pasper badge was hard to see; room 411 on the phone plan broke "Ny. Haniah Wahid" one letter per line.
+
+- **Root cause (overlap):** the List row's RM/DPJP/Residen/notes wrapper is `truncate lg:contents`. `display: contents` removes the box but not inherited CSS, so `white-space: nowrap` still reached the Residen span; 12.5's `lg:break-words` could never wrap, and a long residents line overflowed into the notes column. 12.5's Residen fix was therefore ineffective on the desk table.
+- **Fix:** `lg:whitespace-normal` on the wrapper (RM and code keep their own `lg:truncate`), `min-w-0` on the Residen span.
+- **Root cause (badge):** the Pasien baru badge was an 8 px dot (`NewDot`) beside a bright SOAP pill, easy to miss.
+- **Fix:** `SoapBadge` shows `NewPill` (label, border and text in the badge colour, 18% tint) outside compact mode: List and desk Denah. The compact phone plan keeps the dot; the List head legend still uses `NewDot`.
+- **Root cause (411):** the compact plan's middle column is `0.5fr` (~65 px on a 375 px phone), sized for the nurse-station landmark; a room placed there (`layout.centre`) left ~40 px for a name, and 12.5's `break-words` then broke inside words.
+- **Fix:** the middle column is `0.85fr` when `layout.centre` has rooms, `0.5fr` otherwise.
+- **Laptop "mobile view" (no code change):** the friend's screenshot shows the `⇤` button, which only renders from 1280 px (`xl:inline-flex`), so the window is desk width and the side panel is just closed (`contextPaneOpen`, stored per device). Clicking `⇤` opens it.
+- **Firestore cost:** none. No reads, writes or listeners changed.
+- **Not done:** no ward-device check; the phone side columns are ~15% narrower when a middle room exists, so more names wrap there; the pane toggle stays an unlabeled arrow.
+
+## `2026-11-12.5` — Names wrap instead of truncating: phone Denah rooms, List residents
+
+Avi (phone screenshot; desk screenshot ~1900 px with the side panel): "Tn. Safrizal · A…", "Ny. Debora M…" on the phone plan; "dr. Avi / dr. ..." in the List Residen column.
+
+- **Root cause:** same as 12.4, in two more places. The compact `PatientButton` (`FloorDenah.tsx`) put name + DPJP code in one `truncate` span beside a `shrink-0` SOAP dot, in a room box ~150 px wide. The List table's Residen cell was `lg:truncate` in a `minmax(0,1fr)` column, so the chief (written second) was always the part cut off.
+- **Fix:** both spans now `break-words` instead of `truncate`; the compact button aligns to the top (`items-start`) so the number and the SOAP dot stay on the first line of a wrapped name.
+- **Firestore cost:** none. Render only.
+- **Not done:** not checked on a ward device. Rooms and rows with long names are taller, by design. Other `truncate` cells in the List table (RM, DPJP code) are left as they are: short fixed-width values.
+
+## `2026-11-12.4` — List tab: patient name no longer cut
+
+Avi (screenshot, ~1900 px with the Catatan pulang side panel open): names read "T..", "Ny. ...".
+
+- **Root cause:** in `PatientRowText` (`ListPanel.tsx`) the name sat between the Pulang chip and the SOAP badge in one non-wrapping flex row. Both chips are `shrink-0`, and the name was the only `truncate` item, so with the side panel open (the Pasien column about 250 px) the chips took the width and the name collapsed to an ellipsis. "SOAP baru 10:45" also spilled into the Umur column.
+- **Fix:** the name comes first, wraps instead of truncating, and the cell is `flex-wrap`, so the chips drop under the name when there is no room. Pasien column 1.5fr → 2.2fr.
+- **Firestore cost:** none. Render only.
+- **Not done:** not checked on a ward device. Rows with chips are taller when the column is narrow, by design.
+
+## `2026-11-12.3` — Denah room boxes list every bed again; Tempel float back on the List tab
+
+Avi: the room box must show every bed as before, an empty one as a numbered dash, and single-bed rooms numbered too, on phone and desk.
+
+- **Root cause:** build 12.1 changed `RoomBox` (`src/components/floor/FloorDenah.tsx`) to drop empty beds and print an "n kosong" count in the room title, to shorten six-bed rooms. That hid which bed was free, which is what the ward reads the plan for. Single-bed rooms never had a number (`number` was `undefined` when `slot.beds === 1`).
+- **Fix:** every bed renders its `<li>` again: a patient as before, an empty bed as `{n}. -`. The patient number is always `i + 1`, single-bed rooms included. The "n kosong" count is gone from both the desk and the compact (phone) title. The compact patient line now prints `1.` with a dot, to match the empty line.
+- **Tempel float restored** (Avi: "restore and improve it"). Build 12.1 deleted `PasteFloat.tsx` and the List-tab Tempel button to unclutter the List head, which left only the Tempel tab, where the list cannot be seen while pasting. Restored from da3f0b1 and wired back into `ListPanel`. Improvements: `PastePanel` takes `compact` (one-line intro, 6 rows, `autoFocus` on the textarea); Esc on the box closes it; "Kecilkan" folds it to its header. The body is hidden, not unmounted, so the pasted text, the review and the undo point survive the fold.
+- **Firestore cost:** none new. The float renders the same `PastePanel` as the Tempel tab, so its reads and writes per Baca/Simpan are unchanged; opening or folding the box reads nothing.
+- **Not done:** not checked on a ward device. The float still closes when leaving the List tab (as before 12.1), and its draft goes with it. Six-bed rooms are taller again on the phone plan, by design. Loose patients (no bed match) still render unnumbered, unchanged.
+
 ## `2026-11-12.2` — List Maker fixes after 12.1: two-row head, every DPJP box, legible tinted SOAP header, Analisis/Setelan spacing
 
 Avi tested 12.1 with real data (one list: 14 chiefs, 25 patients, 6 members) at ~1900 px, dark theme. Reproduced on the emulator with invented names.

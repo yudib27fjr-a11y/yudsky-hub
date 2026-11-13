@@ -7,13 +7,10 @@ import { soapStamp, type FloorPatient } from '@/domain/floorList/report';
  * mid-day and needs to see which SOAPs were brought up to date): "SOAP baru"
  * — arrived after the last sent list; "SOAP dd/mm" — none yet on the list
  * date, the one shown is older.
- *
- * `compact` (the phone denah, 12 Nov 2026): dots only, the words for screen
- * readers and on hover.
  */
-export function SoapBadge({ patient, compact = false }: { patient: FloorPatient; compact?: boolean }): JSX.Element | null {
-  const fresh = patient.newBadge ? <NewDot label={patient.newBadge.label} color={markCss(patient.newBadge.color)} /> : null;
-  const soap = soapBadge(patient, compact);
+export function SoapBadge({ patient }: { patient: FloorPatient }): JSX.Element | null {
+  const fresh = patient.newBadge ? <NewPill label={patient.newBadge.label} color={markCss(patient.newBadge.color)} /> : null;
+  const soap = soapBadge(patient);
   return fresh || soap ? (
     <>
       {fresh}
@@ -36,18 +33,26 @@ export function NewDot({ label, color }: { label: string; color: string }): JSX.
   );
 }
 
-function soapBadge(patient: FloorPatient, compact: boolean): JSX.Element | null {
+/**
+ * Pasien baru as a tinted pill with its label (12 Nov 2026, build 12.6, Avi: the dot was not
+ * noticeable).
+ */
+function NewPill({ label, color }: { label: string; color: string }): JSX.Element {
+  return (
+    <span
+      title={`${label}: belum ada di list shift sebelumnya`}
+      className="ml-1 inline-block rounded-full border px-1.5 align-middle text-[11px] font-bold leading-4"
+      style={{ borderColor: color, color, background: `color-mix(in srgb, ${color} 18%, transparent)` }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function soapBadge(patient: FloorPatient): JSX.Element | null {
   const at = soapStamp(patient);
   if (patient.soap === 'baru') {
     const title = `SOAP diperbarui ${at.slice(11, 16)}, setelah list terakhir dikirim`;
-    if (compact) {
-      return (
-        <span title={title} className="ml-1 inline-flex h-4 items-center align-middle">
-          <span aria-hidden="true" className="h-2 w-2 rounded-full bg-accent" />
-          <span className="sr-only">SOAP baru {at.slice(11, 16)}</span>
-        </span>
-      );
-    }
     return (
       <span title={title} className="ml-1 inline-block rounded-full bg-accent px-1.5 align-middle text-[11px] font-semibold leading-4 text-on-accent">
         SOAP baru {at.slice(11, 16)}
@@ -56,14 +61,6 @@ function soapBadge(patient: FloorPatient, compact: boolean): JSX.Element | null 
   }
   if (patient.soap === 'lama') {
     const label = `SOAP ${formatDmy(at.slice(0, 10)).slice(0, 5)}`;
-    if (compact) {
-      return (
-        <span title="Belum ada SOAP pada tanggal list ini" className="ml-1 inline-flex h-4 items-center align-middle">
-          <span aria-hidden="true" className="h-2 w-2 rounded-full border border-fg-muted" />
-          <span className="sr-only">{label}</span>
-        </span>
-      );
-    }
     return (
       <span
         title="Belum ada SOAP pada tanggal list ini"

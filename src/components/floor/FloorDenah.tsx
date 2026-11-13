@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
-import { planRooms, type DenahRoomSlot, type WardPlan } from '@/domain/denahPlan';
+import { inAnnex, planRooms, wardLabel, type DenahRoomSlot, type WardPlan } from '@/domain/denahPlan';
 import { byRoute, dpjpCodeOf, dpjpTitle, isPediatri, LIST_DPJP_ORDER, PEDIATRI_DPJP_IDS } from '@/domain/floorList/build';
 import { isAmberDpjp } from '@/domain/floorList/printSettings';
 import { handoverLine } from '@/domain/floorList/docx';
@@ -13,11 +13,10 @@ import { dpjpsOnFloor, dpjpWord, matchesPicked } from '@/domain/floorList/search
 import { placeBeds } from '@/domain/floorList/beds';
 import { SoapBadge } from './SoapBadge';
 import { IconChevronRight } from '@/components/common/Icons';
-import { planLayout } from '@/domain/floorList/layout';
+import { planLayout, type RoomCell } from '@/domain/floorList/layout';
 import { scrollParentOf } from '@/lib/scrollParent';
 import {
   clampZoom,
-  MAX_ZOOM,
   pinchStart,
   pinchStep,
   readStoredZoom,
@@ -54,14 +53,6 @@ function readUsulToggle(): boolean {
   }
 }
 
-/**
- * The plan drawn at a phone's own width (12 Nov 2026), not the 880 px desk plan
- * scaled to 40 %: there the 12 px lines came out near 5 px and needed a pinch
- * for every room. A compact plan line is the bed, the name and the DPJP code;
- * the full line stays in the SOAP the tap opens and in the lists below the plan.
- */
-const Compact = createContext(false);
-
 /** While searching (13.7): a match is highlighted, the rest dimmed — the plan keeps every bed in place. */
 type Found = 'hit' | 'dim' | undefined;
 
@@ -83,34 +74,9 @@ function PatientButton({
   const residents = [patient.junior, patient.chief].filter(Boolean).map((n) => `dr. ${n}`).join(' / ');
   const flag = patient.discharge;
   const usul = useContext(ShowUsul) && patient.usul === true;
-  const compact = useContext(Compact) && !showPlace;
   const print = usePrintSettings();
   // Red/green colour the line; a floor tag only colours itself (13.10).
   const colour = flag ? FLAG_COLOR[flag] : undefined;
-  if (compact) {
-    return (
-      <button
-        type="button"
-        onClick={() => onOpen(patient)}
-        title={patient.identity}
-        className={`flex w-full min-w-0 items-center gap-1 rounded-md px-1 py-1 text-left text-xs leading-snug text-fg hover:bg-bg-subtle focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
-          usul ? 'bg-[var(--warn-soft)]' : ''
-        } ${found === 'dim' ? 'opacity-30' : found === 'hit' ? 'outline outline-2 outline-accent' : ''}`}
-        style={colour ? { color: colour } : undefined}
-      >
-        {number !== undefined ? <span className="shrink-0 tabular-nums text-fg-muted">{number}</span> : null}
-        <span className="min-w-0 truncate">
-          {patient.name || patient.identity}
-          {code ? <span className="text-fg-muted"> · {code}</span> : null}
-        </span>
-        {flag ? <span className="sr-only"> ({FLAG_LABEL[flag]})</span> : null}
-        {usul ? <span className="sr-only"> (usul H-1)</span> : null}
-        <span className="ml-auto flex shrink-0 items-center">
-          <SoapBadge patient={patient} compact />
-        </span>
-      </button>
-    );
-  }
   return (
     <button
       type="button"
@@ -180,39 +146,27 @@ function RoomBox({
   find: (patient: FloorPatient) => Found;
 }): JSX.Element {
   const { beds, loose } = placeBeds(slot, patients);
-  const compact = useContext(Compact);
   /*
-    Empty beds as one count (12 Nov 2026): a bare "1. 2. 3." line per empty bed made the
-    six-bed rooms the tallest boxes on the plan with nothing in them. A patient keeps the
-    number of the bed they are in.
+    Every bed keeps its numbered line, an empty one as "2. -", single-bed rooms too
+    (12 Nov 2026, build 12.3, Avi): the box reads like the ward sheet. Build 12.1 had
+    folded empty beds into an "n kosong" count, which hid where the free bed was.
   */
-  const free = beds.filter((p) => !p).length;
-  const freeText = free === 0 ? '' : slot.beds > 1 ? `${free} kosong` : 'kosong';
   return (
-    <div className={`rounded-lg border border-border bg-surface ${compact ? 'p-1.5' : 'p-2'}`}>
-      {compact ? (
-        <p className="flex items-baseline justify-between gap-1 px-1 text-xs font-bold tabular-nums">
-          <span className="min-w-0 truncate">
-            {slot.room}
-            {slot.subtitle ? <span className="ml-1 font-medium text-fg-muted">{slot.subtitle}</span> : null}
-          </span>
-          {freeText ? <span className="shrink-0 text-[11px] font-normal text-fg-faint">{freeText}</span> : null}
-        </p>
-      ) : (
-        <p className="text-center text-xs font-bold uppercase tracking-wide">
-          Kamar {slot.room}
-          {slot.subtitle ? <span className="block font-semibold normal-case">{slot.subtitle}</span> : null}
-          {freeText ? <span className="block text-[11px] font-normal normal-case tracking-normal text-fg-faint">{freeText}</span> : null}
-        </p>
-      )}
+    <div className="rounded-lg border border-border bg-surface p-2">
+      <p className="text-center text-xs font-bold uppercase tracking-wide">
+        Kamar {slot.room}
+        {slot.subtitle ? <span className="block font-semibold normal-case">{slot.subtitle}</span> : null}
+      </p>
       <ol className="mt-1 space-y-0.5">
-        {beds.map((patient, i) =>
-          patient ? (
-            <li key={i} className="min-h-5 text-[12px]">
-              <PatientButton patient={patient} number={slot.beds > 1 ? i + 1 : undefined} onOpen={onOpen} showPlace={false} found={find(patient)} />
-            </li>
-          ) : null,
-        )}
+        {beds.map((patient, i) => (
+          <li key={i} className="min-h-5 text-[12px] text-fg-faint">
+            {patient ? (
+              <PatientButton patient={patient} number={i + 1} onOpen={onOpen} showPlace={false} found={find(patient)} />
+            ) : (
+              <span className="px-1 tabular-nums">{i + 1}. -</span>
+            )}
+          </li>
+        ))}
         {loose.map((patient) => (
           <li key={patient.key}>
             <PatientButton patient={patient} onOpen={onOpen} showPlace={false} found={find(patient)} />
@@ -235,8 +189,6 @@ function Section({ title, id, children }: { title: string; id?: string | undefin
 
 /** The width the plan is drawn at: the desk layout, room text at full size. */
 const DESK_WIDTH = 880;
-/** Below this the plan is drawn compact at the screen's own width (a phone); between it and DESK_WIDTH, scaled. */
-const COMPACT_BELOW = 600;
 const ZOOM_KEY = 'plano.listmaker.denahZoom';
 
 /**
@@ -280,10 +232,7 @@ function DenahCanvas({ children }: { children: ReactNode }): JSX.Element {
     return () => observer.disconnect();
   }, []);
   const narrow = width < DESK_WIDTH;
-  const compact = width < COMPACT_BELOW;
-  // Compact: drawn at the screen's width, so "fit" is full size and a pinch only enlarges.
-  const drawWidth = compact ? width : DESK_WIDTH;
-  const fit = narrow ? width / drawWidth : 1;
+  const fit = narrow ? width / DESK_WIDTH : 1;
   const scale = narrow ? clampZoom(zoom ?? fit, fit) : 1;
   const atFit = scale <= fit + 0.001;
 
@@ -391,8 +340,7 @@ function DenahCanvas({ children }: { children: ReactNode }): JSX.Element {
   // Double-tap on empty plan: fit <-> readable (full desk size), about the tap.
   // Not on a button: a patient's first tap already opened the SOAP.
   const toggleAt = useRef((_point: { x: number; y: number }): void => undefined);
-  // Scaled plan: fit <-> full size. Compact plan (already full size): fit <-> 2×.
-  toggleAt.current = (point) => zoomTo(atFit ? (compact ? MAX_ZOOM : 1) : fit, point);
+  toggleAt.current = (point) => zoomTo(atFit ? 1 : fit, point);
   useEffect(() => {
     const box = outer.current;
     if (!box || !narrow) return undefined;
@@ -429,9 +377,8 @@ function DenahCanvas({ children }: { children: ReactNode }): JSX.Element {
   }, [narrow]);
 
   return (
-    <Compact.Provider value={compact}>
     <div>
-      {narrow && !compact ? (
+      {narrow ? (
         <p className="mb-1 text-right text-xs text-fg-faint">Cubit dua jari, atau ketuk dua kali di area kosong</p>
       ) : null}
       {/*
@@ -447,13 +394,12 @@ function DenahCanvas({ children }: { children: ReactNode }): JSX.Element {
         className={`relative ${narrow && !atFit ? 'overflow-x-auto overscroll-x-contain' : 'overflow-hidden'}`}
         style={narrow ? { height: height * scale, touchAction: 'pan-x pan-y' } : undefined}
       >
-        <div style={narrow ? { width: drawWidth * scale, height: height * scale } : undefined}>
+        <div style={narrow ? { width: DESK_WIDTH * scale, height: height * scale } : undefined}>
           <div
             ref={inner}
-            data-compact={compact || undefined}
             className="group/plan"
             style={{
-              width: narrow ? drawWidth : undefined,
+              width: narrow ? DESK_WIDTH : undefined,
               transform: narrow && scale !== 1 ? `scale(${scale})` : undefined,
               transformOrigin: 'top left',
             }}
@@ -463,7 +409,6 @@ function DenahCanvas({ children }: { children: ReactNode }): JSX.Element {
         </div>
       </div>
     </div>
-    </Compact.Provider>
   );
 }
 
@@ -504,7 +449,7 @@ export function FloorDenah({
   const rooms = plan ? planRooms(plan) : [];
   const known = new Set(rooms.map((slot) => slot.room));
   const inRoom = (room: string): FloorPatient[] => sorted.filter((p) => p.room === room);
-  const strays = sorted.filter((p) => !known.has(p.room));
+  const strays = sorted.filter((p) => !known.has(p.room) && !(plan && inAnnex(plan, p.room)));
 
   // DPJP tables: the floor's order, then anyone else with a patient, then pediatri.
   const extra = [...new Set(sorted.map((p) => p.dpjpId).filter((id): id is string => !!id))].filter(
@@ -633,9 +578,9 @@ export function FloorDenah({
         </Section>
       ) : null}
       {plan ? (
-        <Section title={`Denah ${ward}`} id={JUMP_IDS.denah}>
+        <Section title={`Denah ${wardLabel(ward)}`} id={JUMP_IDS.denah}>
           <DenahCanvas>
-            <div className="grid grid-cols-2 gap-2 group-data-[compact]/plan:grid-cols-[repeat(2,minmax(0,1fr))] group-data-[compact]/plan:gap-1.5">
+            <div className="grid grid-cols-2 gap-2">
               {plan.header.map((slot) => (
                 <RoomBox key={slot.room} slot={slot} patients={inRoom(slot.room)} onOpen={onOpen} find={find} />
               ))}
@@ -652,35 +597,51 @@ export function FloorDenah({
                 gridRow: `${row + 1} / span ${span}`,
                 gridColumn: String(column),
               });
+              // One or two rooms (508 A and B) in a cell, side by side.
+              const rooms = (cell: RoomCell): JSX.Element[] =>
+                cell.slots.map((slot) => <RoomBox key={slot.room} slot={slot} patients={inRoom(slot.room)} onOpen={onOpen} find={find} />);
+              const annexPatients = layout.annex ? sorted.filter((p) => inAnnex(plan, p.room)) : [];
               return (
                 <div
-                  className="mt-2 grid grid-cols-[1fr_0.7fr_1fr] gap-2 group-data-[compact]/plan:mt-1.5 group-data-[compact]/plan:grid-cols-[minmax(0,1fr)_minmax(0,0.5fr)_minmax(0,1fr)] group-data-[compact]/plan:gap-1.5"
+                  className="mt-2 grid grid-cols-[1fr_0.7fr_1fr] gap-2"
                   style={{ gridTemplateRows: `repeat(${layout.rows}, minmax(3rem, auto))` }}
                 >
                   {layout.left.map((cell) => (
-                    <div key={cell.slot.room} style={place(cell.row, cell.span, 1)} className="flex min-w-0 [&>*]:min-w-0 [&>*]:flex-1">
-                      <RoomBox slot={cell.slot} patients={inRoom(cell.slot.room)} onOpen={onOpen} find={find} />
+                    <div key={cell.slots[0]!.room} style={place(cell.row, cell.span, 1)} className="flex min-w-0 gap-2 [&>*]:min-w-0 [&>*]:flex-1">
+                      {rooms(cell)}
                     </div>
                   ))}
+                  {layout.annex ? (
+                    <div style={place(layout.annex.row, layout.annex.span, 2)} className="min-w-0 rounded-lg border border-dashed border-border bg-surface p-2">
+                      <p className="text-center text-xs font-bold uppercase tracking-wide">{layout.annex.label}</p>
+                      <ol className="mt-1 space-y-0.5">
+                        {annexPatients.map((p, i) => (
+                          <li key={p.key}>
+                            <PatientButton patient={p} number={i + 1} onOpen={onOpen} found={find(p)} />
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  ) : null}
                   {layout.landmark ? (
                     <div
                       style={place(layout.landmark.row, layout.landmark.span, 2)}
-                      className="flex items-center justify-center rounded-lg border border-[var(--warn-strong)] bg-[var(--warn-soft)] p-2 text-center text-xs font-bold uppercase leading-tight tracking-wide text-fg group-data-[compact]/plan:p-1 group-data-[compact]/plan:text-[11px]"
+                      className="flex items-center justify-center rounded-lg border border-[var(--warn-strong)] bg-[var(--warn-soft)] p-2 text-center text-xs font-bold uppercase leading-tight tracking-wide text-fg"
                     >
                       <span>
                         {layout.landmark.label}
-                        <span className="block group-data-[compact]/plan:hidden">{ward}</span>
+                        <span className="block">{ward}</span>
                       </span>
                     </div>
                   ) : null}
                   {layout.centre.map((cell) => (
-                    <div key={cell.slot.room} style={place(cell.row, cell.span, 2)} className="flex min-w-0 [&>*]:min-w-0 [&>*]:flex-1">
-                      <RoomBox slot={cell.slot} patients={inRoom(cell.slot.room)} onOpen={onOpen} find={find} />
+                    <div key={cell.slots[0]!.room} style={place(cell.row, cell.span, 2)} className="flex min-w-0 gap-2 [&>*]:min-w-0 [&>*]:flex-1">
+                      {rooms(cell)}
                     </div>
                   ))}
                   {layout.right.map((cell) => (
-                    <div key={cell.slot.room} style={place(cell.row, cell.span, 3)} className="flex min-w-0 [&>*]:min-w-0 [&>*]:flex-1">
-                      <RoomBox slot={cell.slot} patients={inRoom(cell.slot.room)} onOpen={onOpen} find={find} />
+                    <div key={cell.slots[0]!.room} style={place(cell.row, cell.span, 3)} className="flex min-w-0 gap-2 [&>*]:min-w-0 [&>*]:flex-1">
+                      {rooms(cell)}
                     </div>
                   ))}
                 </div>

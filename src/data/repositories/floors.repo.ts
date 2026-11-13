@@ -40,7 +40,7 @@ import {
   floorVisitNoteDoc,
 } from '../paths';
 import { trackWrite } from '../syncStatus';
-import { legacyColourDate, rosterLeftSince, type Edition, type FloorDoc, type FloorRole, type RosterPatient, type StatusChange } from '@/domain/floorList/floor';
+import { isPelimpahanEntry, legacyColourDate, rosterLeftSince, type Edition, type FloorDoc, type FloorRole, type RosterPatient, type StatusChange } from '@/domain/floorList/floor';
 import { readSectionTitles, type SectionTitles } from '@/domain/floorList/analysis';
 import { isMarkColor, MARK_PREFIX, readMarks, readNewBadge, type FloorMark, type NewBadge, type PatientTag } from '@/domain/floorList/marks';
 import { manualFullText, type FloorPatient } from '@/domain/floorList/report';
@@ -94,6 +94,8 @@ export function readFloor(id: string, data: DocumentData): FloorDoc {
     newBadge: readNewBadge(data.newBadge),
     marks: readMarks(data.marks),
     analysisTitles: readSectionTitles(data.analysisTitles),
+    trioFullSoap: data.trioFullSoap === true,
+    pelimpahan: Array.isArray(data.pelimpahan) ? data.pelimpahan.filter((v: unknown): v is string => typeof v === 'string' && isPelimpahanEntry(v)) : [],
   };
 }
 
@@ -128,6 +130,7 @@ export function readPatient(raw: unknown): FloorPatient | null {
     ...(p.fromList === true ? { fromList: true } : {}),
     ...readTags(p.tags, p.mark),
     ...(typeof p.dpjpCode === 'string' && p.dpjpCode ? { dpjpCode: p.dpjpCode } : {}),
+    ...(typeof p.pelimpahan === 'string' && p.pelimpahan ? { pelimpahan: p.pelimpahan } : {}),
     ...(typeof p.operkan === 'string' && p.operkan ? { operkan: p.operkan } : {}),
     ...(typeof p.gantiChief === 'string' && p.gantiChief ? { gantiChief: p.gantiChief } : {}),
     ...(p.usul === true ? { usul: true } : {}),
@@ -587,6 +590,11 @@ export function writeNewBadge(floorId: string, badge: NewBadge): Promise<void> {
   return trackWrite(updateDoc(floorDoc(floorId), 'newBadge', plain(badge), 'updatedAt', serverTimestamp()));
 }
 
+/** Trio patients print their whole SOAP in the list message (a boolean on the list document). */
+export function writeTrioFullSoap(floorId: string, on: boolean): Promise<void> {
+  return trackWrite(updateDoc(floorDoc(floorId), 'trioFullSoap', on, 'updatedAt', serverTimestamp()));
+}
+
 /** The floor's own colours (13.7): the whole list, small and edited in one place. */
 export function writeMarks(floorId: string, marks: readonly FloorMark[]): Promise<void> {
   return trackWrite(updateDoc(floorDoc(floorId), 'marks', plain(marks), 'updatedAt', serverTimestamp()));
@@ -609,6 +617,15 @@ export function writeChiefBangsal(floorId: string, name: string): Promise<void> 
 /** One date at a time, so two editors marking different days cannot overwrite each other. */
 export function addHoliday(floorId: string, iso: string): Promise<void> {
   return trackWrite(updateDoc(floorDoc(floorId), 'holidays', arrayUnion(iso), 'updatedAt', serverTimestamp()));
+}
+
+/** A pelimpahan of a day ("2026-11-14:afg>zd"); past ones stay stored, unseen, like the holidays. */
+export function addPelimpahan(floorId: string, entry: string): Promise<void> {
+  return trackWrite(updateDoc(floorDoc(floorId), 'pelimpahan', arrayUnion(entry), 'updatedAt', serverTimestamp()));
+}
+
+export function removePelimpahan(floorId: string, entry: string): Promise<void> {
+  return trackWrite(updateDoc(floorDoc(floorId), 'pelimpahan', arrayRemove(entry), 'updatedAt', serverTimestamp()));
 }
 
 export function removeHoliday(floorId: string, iso: string): Promise<void> {

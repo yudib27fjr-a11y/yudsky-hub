@@ -5,9 +5,11 @@ import { TwoTapButton } from '@/components/common/TwoTapButton';
 import { Button, Callout, Section } from '@/components/common/ui';
 import {
   addHoliday,
+  addPelimpahan,
   cancelInvite,
   deleteFloor,
   removeHoliday,
+  removePelimpahan,
   writeJuniors,
   writeGuestJuniors,
   inviteMember,
@@ -16,6 +18,7 @@ import {
   setMemberRole,
   writeNickname,
   writeNewBadge,
+  writeTrioFullSoap,
 } from '@/data/repositories/floors.repo';
 import { canEdit, chiefsOf, isOwner, type FloorDoc, type FloorRole } from '@/domain/floorList/floor';
 import { collapseNicknames, confirmQuestion, memberRole, saveErrorMessage, transferQuestion } from '@/domain/floorList/membersView';
@@ -24,6 +27,7 @@ import { ChiefsField } from './ChiefsField';
 import { HolidaysField } from './HolidaysField';
 import { MarksField } from './MarksField';
 import { NewBadgeField } from './NewBadgeField';
+import { PelimpahanField } from './PelimpahanField';
 import type { FloorPatient } from '@/domain/floorList/report';
 
 const ROLE_LABEL: Record<FloorRole, string> = { edit: 'Lihat dan edit', view: 'Lihat saja' };
@@ -330,6 +334,31 @@ export function MembersPanel({
               hint="Muncul sendiri pada pasien yang belum ada di list shift sebelumnya (pasien baru atau pindahan), seperti SOAP baru. Hanya di layar, tidak ikut dicetak."
             >
               <NewBadgeField floor={floor} editable={editor} onSave={(badge) => run(() => writeNewBadge(floor.id, badge))} />
+            </Section>
+            <Section
+              title="Pelimpahan DPJP"
+              hint="DPJP yang cuti dan siapa penggantinya pada hari itu. Di hari itu kode DPJP pada list dan denah tertulis seperti AFG->ZD; pasien tetap di kotak DPJP aslinya."
+            >
+              <PelimpahanField
+                entries={floor.pelimpahan}
+                editable={editor}
+                onAdd={(entry) => run(() => addPelimpahan(floor.id, entry))}
+                onRemove={(entry) => run(() => removePelimpahan(floor.id, entry))}
+              />
+            </Section>
+            <Section
+              title="SOAP lengkap pasien Trio"
+              hint="Pasien AFM, AFG dan ZD ditulis dengan SOAP lengkapnya di list WhatsApp, bukan hanya assess, terapi dan plan. List jadi jauh lebih panjang. Berlaku untuk semua anggota list ini."
+            >
+              <label className="flex min-h-8 items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={floor.trioFullSoap}
+                  disabled={!editor}
+                  onChange={(e) => run(() => writeTrioFullSoap(floor.id, e.target.checked))}
+                />
+                Tulis SOAP lengkap pasien Trio di list
+              </label>
             </Section>
           </Group>
 
